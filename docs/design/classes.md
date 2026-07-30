@@ -1,473 +1,615 @@
-# c(at)rpg Classes — FINAL DESIGN
-## "The Four Strays" — party classes, leveling, and synergies
+# c(at)rpg Classes — "The Four Strays"
 
-Companion to `docs/design/combat.md` (the single source of truth for combat rules).
-This document defines the four cat classes, their exact stats, growths, skills, passives,
-the XP/leveling system, intended party synergies, and UI-facing flavor text. Every number
-here is final; every skill uses the `Skill` interface from combat.md §6 verbatim.
+**Status: FINAL. Companion to `docs/design/combat.md` ("Claws & Ranks: Nine Lives
+Edition").** Every stat, formula reference, skill field, and status in this
+document conforms to the combat spec. The level-1 party defined here is
+*identical* to the worked-example party in combat.md §13, so that example
+doubles as the level-1 balance baseline and unit test. Deltas (all additive)
+are logged in §12. This version replaces an earlier classes.md written against
+a superseded combat spec.
 
-The four reference cats from combat.md §2 (Bruno, Pip, Miso, Tofu) **are** the level-1
-stat blocks of the four classes. The worked example in combat.md §12 therefore doubles as
-a level-1 class balance test.
+The party is a fixed cast of four named strays — classes and characters are
+1:1, which lets flavor text, barks, and portraits be written once and hard.
 
-Design goals:
-
-1. **Each class owns one axis of the combat system.** Bruiser owns geometry (rows, push,
-   taunt), Pouncer owns the Stalk→Pounce burst loop, Oracle owns the weakness/bestiary
-   game, Purrmedic owns attrition (HP persistence + Nine Lives economy).
-2. **No dead levels, no builds.** Leveling is linear and data-driven: stats every level,
-   a new skill at 3 and 5. Depth lives in combat decisions, not menus.
-3. **Reuse before invention.** All 8 example skills from combat.md ship as class skills;
-   only 8 new skills are added (16 class skills total + universal actions ≈ the "~20
-   skills" v1 budget from combat.md §6).
+| Class id | Cat | Role (brief requirement) | One-line fantasy |
+|---|---|---|---|
+| `bruiser` | **Bruno** | Tank / bruiser | The immovable dumpster-court doorman who throws enemies like trash bags |
+| `trickster` | **Pixel** | Single-target damage | The shelf-clearing menace who deletes one enemy at a time |
+| `hexer` | **Mora** | Control / utility | The void-cat puppeteer who drags enemies out of position |
+| `medic` | **Baguette** | Support / heal | The bakery loaf whose purr knits wounds shut |
 
 ---
 
-## 1. Data Shapes
+## 1. Design goals
+
+1. **Every class hooks the Off-Paw combo engine differently** (combat.md §8):
+   Bruno *shoves*, Mora *pulls*, Pixel *cashes in* Off-Balance windows, and
+   Baguette *funds* the setup turns. No class sits outside the signature system.
+2. **Starter kits are complete on turn one.** Each cat starts with Claw Swipe
+   plus its two core class skills — the exact 8 reference skills from
+   combat.md §4. Leveling adds stats, one capstone skill (L4), and one trait
+   upgrade (L7). Total: 12 class skills, matching the §14 content budget.
+3. **Zero new engine systems.** Traits reuse the existing `Combatant.traits`
+   hook (precedent: `'heavy'`); capstones use only existing skill fields.
+4. **Deterministic leveling.** No RNG anywhere in XP or level-ups.
+
+---
+
+## 2. Data model
 
 ```ts
-// battle/state.ts already defines: Stats = { hp, atk, def, spd, lck }
-interface StatBlock { hp: number; atk: number; def: number; spd: number; lck: number; }
+interface CatClass {
+  id: 'bruiser' | 'trickster' | 'hexer' | 'medic';
+  className: string;             // UI: "Bruiser"
+  catName: string;               // UI: "Bruno"
+  epithet: string;               // UI: portrait subtitle
+  base: Stats;                   // level-1 stats (combat.md §3 shape)
+  growth: Partial<Stats>[];      // 7 rows, applied at L2..L8 in order
+  skills: { skillId: SkillId; unlockLevel: number }[];
+  trait: CatTrait;
+  flavor: { bio: string; barks: { crit: string; ko: string; catPile: string } };
+  palette: { body: number; ears: number; eyes: number };  // procedural blob colors
+}
 
-type ClassId = 'bruiser' | 'pouncer' | 'oracle' | 'purrmedic';
-type PassiveId = 'thick-fur' | 'patient-hunter' | 'keen-whiskers' | 'bedside-manner';
-
-interface ClassDef {
-  id: ClassId;
-  className: string;        // "Bruiser" — the class
-  catName: string;          // "Bruno" — the default party member (fixed party v1)
-  title: string;            // UI flavor: "Duke of the Dumpsters"
-  bodyColor: number;        // procedural blob fill (PixiJS hex)
-  accentColor: number;      // ear/stripe tint
-  icon: string;             // one char, drawn as PixiJS Text in the HUD
-  role: 'tank' | 'striker' | 'control' | 'support';
-  base: StatBlock;          // level 1
-  growth: StatBlock;        // added per level-up (integers, flat)
-  passive: PassiveId;
-  skills: { skillId: string; unlockLevel: 1 | 3 | 5 }[];   // exactly 4 per class
-  defaultRow: 'front' | 'back';
-  blurb: string;            // 1-line class select text
-  barks: { levelUp: string; ko: string; lowHp: string };   // UI toast lines
+interface CatTrait {
+  id: string;
+  name: string;
+  desc: string;                  // tooltip, tier-1 wording
+  tier2Level: number;            // always 7 in v1
+  tier2Desc: string;             // tooltip after upgrade
 }
 ```
 
-Classes are plain data in `data/classes.ts`. The party is fixed in v1: one cat of each
-class, named as below (renaming/recruiting is a later hook, not v1).
+### Skill interface — additive clarifications (see delta ledger §12)
 
-### Passives are enumerated engine hooks (no scripting)
+The combat doc's §4 `Skill` shape is kept unchanged; four optional fields
+formalize behaviors combat.md already specifies in prose (Hiss's dual
+application, Soothing Purr's cleanse, Nine Lives Nudge's revive):
 
-| PassiveId | Class | Exact rule | Engine hook point |
+```ts
+interface StatusApplication {
+  status: StatusId;
+  chance: number;                     // 0..1
+  value?: number;
+  to?: 'target' | 'self' | 'allEnemies';   // NEW, default 'target'
+}
+interface Skill /* extends combat.md §4 */ {
+  applies?: StatusApplication[];
+  cleanses?: StatusId[];        // NEW: remove ONE application of each listed status per target
+  revivePct?: number;           // NEW: skill targets KO'd allies instead of living;
+                                //      revive at pct of maxHP, placed in rank 4
+  oncePerBattle?: boolean;      // NEW: latched per battle per user
+}
+```
+
+Trait hooks fire at exact points in the §4 resolution pipeline; each trait
+below states its injection point. All trait triggers emit a `TraitTriggered`
+event for the UI layer.
+
+---
+
+## 3. Shared basics
+
+Every cat knows **Claw Swipe** from level 1 (verbatim from combat.md §4):
+
+```ts
+export const CLAW_SWIPE: Skill = {
+  id: 'clawSwipe', name: 'Claw Swipe',
+  desc: 'A quick rake. Banks +1 Energy.',
+  cost: 0, usableFrom: [1, 2],
+  target: { side: 'enemy', ranks: [1, 2], pattern: 'single' },
+  power: 100, kind: 'damage', energyGain: 1,
+};
+```
+
+All cats also share the universal actions (combat.md §9): Move (swap), Guard
+(Guarded + 2 bonus Energy), Item, Scatter. Energy: 0–10, start 4, +2 regen at
+own turn start. Lives: 9 pips each (combat.md §12).
+
+---
+
+## 4. Bruiser — **Bruno**, "The Doorstop of Dumpster Court"
+
+**Identity.** A huge marmalade tom with one chewed ear, retired from a decade
+guarding a bodega door. Slow-blinking, unhurried, genuinely kind — until
+something threatens the party, at which point he picks it up and files it in
+the trash. He does not chase; things come to him and regret it.
+
+**Role.** Tank/bruiser. Holds rank 1, eats hits (highest HP + DEF), controls
+aggro with Hiss, and converts his bulk into forced-movement offense: Body Slam
+and Dumpster Dunk are both damage *and* combo fuel for everyone acting after
+him this round. Against bosses he is the main Poise chipper.
+
+### Stats (level 1 → 8)
+
+| L | HP | ATK | DEF | SPD | CRT | enMax |
+|---|---|---|---|---|---|---|
+| 1 | 40 | 10 | 3 | 4 | 5 | 10 |
+| 2 | 44 | 11 | 3 | 4 | 5 | 10 |
+| 3 | 48 | 11 | 4 | 4 | 5 | 10 |
+| 4 | 52 | 12 | 4 | 4 | 5 | 10 |
+| 5 | 56 | 12 | 4 | 5 | 5 | 10 |
+| 6 | 60 | 13 | 4 | 5 | 5 | 10 |
+| 7 | 64 | 13 | 5 | 5 | 5 | 10 |
+| 8 | 68 | 14 | 5 | 5 | 5 | 10 |
+
+```ts
+base:   { hp: 40, atk: 10, def: 3, spd: 4, crt: 5, enMax: 10 },
+growth: [ {hp:4,atk:1}, {hp:4,def:1}, {hp:4,atk:1}, {hp:4,spd:1},
+          {hp:4,atk:1}, {hp:4,def:1}, {hp:4,atk:1} ],
+```
+
+### Skills
+
+| Skill | Unlock | Cost | From | Target | Power | Effects |
+|---|---|---|---|---|---|---|
+| Claw Swipe | 1 | 0 | [1,2] | enemy [1,2] single | 100 | `energyGain: 1` |
+| Body Slam | 1 | 4 | [1,2] | enemy [1,2] single | 120 | `moveTarget: +2` (shove → Off-Balance / Poise chip) |
+| Hiss | 1 | 2 | [1,2] | self | 0 | Guarded to self; Provoked (1.0) to all enemies |
+| **Dumpster Dunk** | **4** | 6 | [1] | enemy [1,2] single | 150 | `moveTarget: +3` — hurl them to the back row |
+
+```ts
+export const BRUISER_SKILLS: Skill[] = [
+  { id: 'bodySlam', name: 'Body Slam',
+    desc: 'Hit first, hurl second. The landing is your teammates’ problem.',
+    cost: 4, usableFrom: [1, 2],
+    target: { side: 'enemy', ranks: [1, 2], pattern: 'single' },
+    power: 120, kind: 'damage', moveTarget: 2 },
+  { id: 'hiss', name: 'Hiss',
+    desc: 'Arch, fluff, dare them. Everyone swings at Bruno; Bruno barely feels it.',
+    cost: 2, usableFrom: [1, 2],
+    target: { side: 'self', ranks: [1, 2, 3, 4], pattern: 'single' },
+    power: 0, kind: 'utility',
+    applies: [ { status: 'guarded',  chance: 1.0, to: 'self' },
+               { status: 'provoked', chance: 1.0, to: 'allEnemies' } ] },
+  { id: 'dumpsterDunk', name: 'Dumpster Dunk',
+    desc: 'Pick it up. Slam-dunk it into the bins at the back. Two points.',
+    cost: 6, usableFrom: [1],
+    target: { side: 'enemy', ranks: [1, 2], pattern: 'single' },
+    power: 150, kind: 'damage', moveTarget: 3 },
+];
+```
+
+Dumpster Dunk notes: a +3 shove clamps at the last occupied enemy rank
+(combat.md §8); any clamped distance ≥ 1 still inflicts Off-Balance, and
+versus a `heavy` boss it chips exactly 1 Poise like any forced-move attempt
+(§11) — deliberately *not* a bigger chip. Its real capstone value is rank
+denial: the front-liner lands in rank 3–4, outside most enemy `usableFrom`.
+
+### Trait — **Immovable Loaf**
+
+- **Tier 1 (L1):** Once per battle, when Bruno would be forced-moved, he does
+  not move and does not become Off-Balance (the attempt is consumed).
+- **Tier 2 (L7):** When it triggers, Bruno also gains **Guarded** (until the
+  start of his next turn).
+- *Injection point:* replaces pipeline step 2 (forced movement) for the
+  triggering skill; the once-per-battle latch resets between battles.
+  Voluntary movement (Move/swap, `moveSelf`) never consumes it.
+- *Tooltip:* "Once per battle, Bruno simply declines to be moved."
+
+**Play pattern.** Turn 1 is usually Hiss (2 energy, holds the line) or Body
+Slam if a shove combo is queued on the timeline. He is also the party's
+answer to enemy Off-Paw play: enemies that shove cats waste their best trick
+on him once per fight.
+
+---
+
+## 5. Trickster — **Pixel**, "Warranty Voider"
+
+**Identity.** A small gray-and-white glitch of a cat, barely two years old,
+radicalized by a laser pointer she never caught. Knocks things off shelves
+*professionally*. Vibrating with energy, zero respect for personal space or
+enemy formations, communicates in trills. Highest SPD in the party — she
+usually acts first, which makes her either the setup (Trip Wire) or, when
+shoves carry over on the timeline, the payoff.
+
+**Role.** Single-target damage. Highest ATK/CRT/SPD, lowest bulk. Pounce is
+the burst opener; Trip Wire is her team-play row-shove that arms Cat Pile;
+Box Ambush (capstone) is the party's only way to reach ranks 4–5, deleting
+the shamans and summoners the enemy formation protects.
+
+### Stats (level 1 → 8)
+
+| L | HP | ATK | DEF | SPD | CRT | enMax |
+|---|---|---|---|---|---|---|
+| 1 | 28 | 12 | 1 | 8 | 15 | 10 |
+| 2 | 30 | 13 | 1 | 8 | 15 | 10 |
+| 3 | 32 | 13 | 1 | 8 | 17 | 10 |
+| 4 | 34 | 13 | 1 | 9 | 17 | 10 |
+| 5 | 36 | 14 | 1 | 9 | 17 | 10 |
+| 6 | 38 | 14 | 1 | 9 | 19 | 10 |
+| 7 | 40 | 15 | 1 | 9 | 19 | 10 |
+| 8 | 42 | 16 | 1 | 10 | 19 | 10 |
+
+```ts
+base:   { hp: 28, atk: 12, def: 1, spd: 8, crt: 15, enMax: 10 },
+growth: [ {hp:2,atk:1}, {hp:2,crt:2}, {hp:2,spd:1}, {hp:2,atk:1},
+          {hp:2,crt:2}, {hp:2,atk:1}, {hp:2,atk:1,spd:1} ],
+```
+
+### Skills
+
+| Skill | Unlock | Cost | From | Target | Power | Effects |
+|---|---|---|---|---|---|---|
+| Claw Swipe | 1 | 0 | [1,2] | enemy [1,2] single | 100 | `energyGain: 1` |
+| Pounce | 1 | 3 | [3,4] | enemy [1,2] single | 150 | `moveSelf: -2` (leap to the front line) |
+| Trip Wire | 1 | 4 | [2,3] | enemy [1,2] row | 60 | `moveTarget: +1` each — the Cat Pile arming tool |
+| **Box Ambush** | **4** | 6 | [1,2,3,4] | enemy [1,2,3,4,5] single | 150 | No movement. The party's only rank-5 reach. |
+
+```ts
+export const TRICKSTER_SKILLS: Skill[] = [
+  { id: 'pounce', name: 'Pounce',
+    desc: 'Wind up the butt-wiggle, delete a face, deal with the seating chart later.',
+    cost: 3, usableFrom: [3, 4],
+    target: { side: 'enemy', ranks: [1, 2], pattern: 'single' },
+    power: 150, kind: 'damage', moveSelf: -2 },
+  { id: 'tripWire', name: 'Trip Wire',
+    desc: 'A stretched string of yarn. The whole front row eats pavement.',
+    cost: 4, usableFrom: [2, 3],
+    target: { side: 'enemy', ranks: [1, 2], pattern: 'row' },
+    power: 60, kind: 'damage', moveTarget: 1 },
+  { id: 'boxAmbush', name: 'Box Ambush',
+    desc: 'She vanishes into a cardboard box. The box reappears ANYWHERE.',
+    cost: 6, usableFrom: [1, 2, 3, 4],
+    target: { side: 'enemy', ranks: [1, 2, 3, 4, 5], pattern: 'single' },
+    power: 150, kind: 'damage' },
+];
+```
+
+Box Ambush is the single deliberate exception to "almost no skill reaches
+rank 5" (combat.md §1): a level-4 capstone at nuke cost, so back-rank
+reinforcements and summoners stay *mostly* safe — but never entirely.
+
+### Trait — **Opportunist**
+
+- **Tier 1 (L1):** Pixel's skills gain **+10 CRT** (i.e., +10 percentage
+  points of crit chance) against **Off-Balance** targets.
+- **Tier 2 (L7):** +20 CRT instead.
+- *Injection point:* step 3 of the damage formula (crit roll) — use
+  `user.crt + bonus` for that roll only. At L8 tier 2: 19 + 20 = 39% crit vs
+  Off-Balance targets.
+- *Tooltip:* "Staggered prey. +10% crit chance against Off-Balance enemies."
+
+**Play pattern.** From rank 2 she Claws or Trip Wires; from rank 3–4 she
+Pounces. Because she is fastest, comboing *into* her requires either enemy
+shoves left over from the previous round or a lucky initiative jitter —
+which is why her Trip Wire (setting up *others*) matters as much as her
+burst. After Pounce she is in rank 1 tanking on 1 DEF: Move-swap back with
+Bruno, or trust Baguette. High risk is the class.
+
+---
+
+## 6. Hexer — **Mora**, "The Void That Stares Back"
+
+**Identity.** A pitch-black cat with lantern-yellow eyes who was definitely a
+witch's familiar at some point — the witch is not discussed. Sits facing
+empty corners. Hums. Yarn moves when she looks at it. Speaks rarely, and in
+complete, unsettling sentences. The other cats pretend this is normal.
+
+**Role.** Control/utility. She wins fights *before* the damage happens:
+Yank of Yarn drags back-line threats into claw range (Off-Balance + rank
+denial in one action), Hairball Hex is the party's DoT, and Phantom Cucumber
+is the stun — the answer to boss windups and elite turns. Second-highest ATK
+so her utility always carries real damage riders.
+
+### Stats (level 1 → 8)
+
+| L | HP | ATK | DEF | SPD | CRT | enMax |
+|---|---|---|---|---|---|---|
+| 1 | 24 | 11 | 0 | 6 | 5 | 10 |
+| 2 | 26 | 12 | 0 | 6 | 5 | 10 |
+| 3 | 28 | 12 | 0 | 7 | 5 | 10 |
+| 4 | 30 | 13 | 0 | 7 | 5 | 10 |
+| 5 | 32 | 13 | 1 | 7 | 5 | 10 |
+| 6 | 34 | 14 | 1 | 7 | 5 | 10 |
+| 7 | 36 | 14 | 1 | 8 | 5 | 10 |
+| 8 | 38 | 15 | 1 | 8 | 5 | 10 |
+
+```ts
+base:   { hp: 24, atk: 11, def: 0, spd: 6, crt: 5, enMax: 10 },
+growth: [ {hp:2,atk:1}, {hp:2,spd:1}, {hp:2,atk:1}, {hp:2,def:1},
+          {hp:2,atk:1}, {hp:2,spd:1}, {hp:2,atk:1} ],
+```
+
+### Skills
+
+| Skill | Unlock | Cost | From | Target | Power | Effects |
+|---|---|---|---|---|---|---|
+| Claw Swipe | 1 | 0 | [1,2] | enemy [1,2] single | 100 | `energyGain: 1` |
+| Yank of Yarn | 1 | 3 | [3,4] | enemy [2,3,4] single | 60 | `moveTarget: -2` — drag them up front, Off-Balanced |
+| Hairball Hex | 1 | 3 | [2,3,4] | enemy [1,2,3] single | 40 | Scratched (value 3, chance 0.9) |
+| **Phantom Cucumber** | **4** | 5 | [3,4] | enemy [1,2,3] single | 30 | Frazzled (chance 0.8) |
+
+```ts
+export const HEXER_SKILLS: Skill[] = [
+  { id: 'yankOfYarn', name: 'Yank of Yarn',
+    desc: 'A thread of fate around the ankle. Front and center, please.',
+    cost: 3, usableFrom: [3, 4],
+    target: { side: 'enemy', ranks: [2, 3, 4], pattern: 'single' },
+    power: 60, kind: 'damage', moveTarget: -2 },
+  { id: 'hairballHex', name: 'Hairball Hex',
+    desc: 'A cursed hairball takes up residence. It itches. Everywhere. Forever.',
+    cost: 3, usableFrom: [2, 3, 4],
+    target: { side: 'enemy', ranks: [1, 2, 3], pattern: 'single' },
+    power: 40, kind: 'damage',
+    applies: [ { status: 'scratched', chance: 0.9, value: 3 } ] },
+  { id: 'phantomCucumber', name: 'Phantom Cucumber',
+    desc: 'She conjures the IDEA of a cucumber directly behind them.',
+    cost: 5, usableFrom: [3, 4],
+    target: { side: 'enemy', ranks: [1, 2, 3], pattern: 'single' },
+    power: 30, kind: 'damage',
+    applies: [ { status: 'frazzled', chance: 0.8 } ] },
+];
+```
+
+Phantom Cucumber interactions (all per existing rules, combat.md §6/§11):
+Frazzled cannot be reapplied while present (no stunlock); on a double-turn
+boss it consumes only one queue slot; landing it on a **Charging** boss
+cancels the telegraphed nuke. The 20% fail case is real — plan a Guard or
+Move-swap fallback.
+
+### Trait — **String Theory**
+
+- **Tier 1 (L1):** Whenever a skill Mora uses forced-moves at least one enemy
+  a clamped distance ≥ 1 **or** chips boss Poise, she gains **+1 Energy**
+  (cap 10, at most once per skill use).
+- **Tier 2 (L7):** +2 Energy instead.
+- *Injection point:* end of pipeline step 4 (after self-movement, before the
+  Cat Pile trigger check, step 5).
+- *Tooltip:* "Pulling strings is its own reward."
+
+**Play pattern.** With String Theory, Yank of Yarn's real cost is 2 (1 at
+tier 2) — she can pull nearly every turn, feeding Off-Balance windows to
+everyone after her on the timeline. Her turn position (SPD 6, between Pixel
+and the slow pair) makes her the natural combo *starter* for Bruno and
+Baguette's half of the round.
+
+---
+
+## 7. Medic — **Baguette**, "Fresh from the Oven"
+
+**Identity.** A plump cream-colored loaf who lived her whole life in a
+bakery window, absorbing warmth and radiating it back. Purrs at a frequency
+that is medically significant. Unflappable — she has seen ovens hotter than
+any dungeon. Carries the party's snacks. Do not touch the snacks.
+
+**Role.** Support/heal. Single-target burst heal with cleanse (Soothing
+Purr), the run-defining in-battle revive that saves Life pips (Nine Lives
+Nudge, combat.md §12), a party-wide heal-over-time capstone (Purrquake), and
+an economy trait that turns her idle Guard turns into team energy.
+
+### Stats (level 1 → 8)
+
+| L | HP | ATK | DEF | SPD | CRT | enMax |
+|---|---|---|---|---|---|---|
+| 1 | 26 | 9 | 1 | 5 | 5 | 10 |
+| 2 | 29 | 9 | 1 | 5 | 5 | 10 |
+| 3 | 32 | 10 | 1 | 5 | 5 | 10 |
+| 4 | 35 | 10 | 2 | 5 | 5 | 10 |
+| 5 | 38 | 11 | 2 | 5 | 5 | 10 |
+| 6 | 41 | 11 | 2 | 6 | 5 | 10 |
+| 7 | 44 | 12 | 2 | 6 | 5 | 10 |
+| 8 | 47 | 12 | 3 | 6 | 5 | 10 |
+
+```ts
+base:   { hp: 26, atk: 9, def: 1, spd: 5, crt: 5, enMax: 10 },
+growth: [ {hp:3}, {hp:3,atk:1}, {hp:3,def:1}, {hp:3,atk:1},
+          {hp:3,spd:1}, {hp:3,atk:1}, {hp:3,def:1} ],
+```
+
+Heals scale off ATK (combat.md §3): Soothing Purr heals 11 at L1 → 14 at L8.
+
+### Skills
+
+| Skill | Unlock | Cost | From | Target | Power | Effects |
+|---|---|---|---|---|---|---|
+| Claw Swipe | 1 | 0 | [1,2] | enemy [1,2] single | 100 | `energyGain: 1` |
+| Soothing Purr | 1 | 4 | [3,4] | ally [1,2,3,4] single | 120 (heal) | Also removes one Scratched application |
+| Nine Lives Nudge | 1 | 6 | [3,4] | KO'd ally | 0 | Revive at 30% max HP into rank 4; once per battle; no Life pip lost |
+| **Purrquake** | **4** | 6 | [3,4] | ally [1,2,3,4] **row** | 60 (heal each) | Mending (value 3, chance 1.0) to each |
+
+```ts
+export const MEDIC_SKILLS: Skill[] = [
+  { id: 'soothingPurr', name: 'Soothing Purr',
+    desc: 'A directed rumble at healing frequency. Also dislodges cursed hairballs.',
+    cost: 4, usableFrom: [3, 4],
+    target: { side: 'ally', ranks: [1, 2, 3, 4], pattern: 'single' },
+    power: 120, kind: 'heal', cleanses: ['scratched'] },
+  { id: 'nineLivesNudge', name: 'Nine Lives Nudge',
+    desc: 'A firm boop on the forehead. "Not yet. Up."',
+    cost: 6, usableFrom: [3, 4],
+    target: { side: 'ally', ranks: [1, 2, 3, 4], pattern: 'single' },
+    power: 0, kind: 'utility', revivePct: 0.30, oncePerBattle: true },
+  { id: 'purrquake', name: 'Purrquake',
+    desc: 'The floor hums. Everyone’s fur settles. Everything is briefly okay.',
+    cost: 6, usableFrom: [3, 4],
+    target: { side: 'ally', ranks: [1, 2, 3, 4], pattern: 'row' },
+    power: 60, kind: 'heal',
+    applies: [ { status: 'mending', chance: 1.0, value: 3 } ] },
+];
+```
+
+Purrquake value math at L1: round(0.60 × 9) = 5 HP to each living cat now,
+plus Mending 3 at the start of each cat's next two turns = up to 11 HP per
+cat, 44 party-wide, for 6 energy — the anti-attrition button for a floor's
+long haul, versus Soothing Purr's 11-point single-target triage.
+
+### Trait — **Purr Engine**
+
+- **Tier 1 (L1):** When Baguette takes the **Guard** action, every *other*
+  living cat gains **+1 Energy** (cap 10). (Her own Guard already banks +2,
+  combat.md §9.)
+- **Tier 2 (L7):** +2 Energy to each other living cat instead.
+- *Injection point:* resolution of the Guard action, after her own +2.
+- *Tooltip:* "An idling engine still charges the battery."
+
+**Play pattern.** Her decision loop is the cleanest teaching tool in the
+game: heal now (Purr), invest (Guard = 5+ party energy at tier 1), or hold 6
+energy as revive insurance so a KO never costs a Life pip. The §13 worked
+example (Baguette Guards while banking "Nine Lives Nudge money") is exactly
+her intended texture.
+
+---
+
+## 8. XP curve and leveling rules
+
+**Party level.** One XP pool, one level for the whole party (1–8). No per-cat
+XP: it avoids catch-up rules, and a cat lost to 0 Lives (combat.md §12) never
+drags a replacement economy with it. Range L1–L8 over a 5-floor run.
+
+**XP table (cumulative):**
+
+| Level | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 |
+|---|---|---|---|---|---|---|---|---|
+| Total XP required | 0 | 30 | 70 | 130 | 210 | 310 | 430 | 570 |
+| (to next) | 30 | 40 | 60 | 80 | 100 | 120 | 140 | — |
+
+```ts
+export const XP_TO_LEVEL = [0, 30, 70, 130, 210, 310, 430, 570]; // index = level-1
+export const LEVEL_CAP = 8;
+```
+
+**XP sources.** Each enemy's data object carries `xp`. Guideline values for
+the dungeon/enemy docs: floor-1 mook 4–6, floor-3 mook 10–14, floor-5 mook
+16–20, elites 2× their mook, bosses 40 / 50 / 60 by depth. Narrative events
+may grant flat XP (dungeon layer's call). Fled or lost battles award nothing.
+Expected pacing: L4 (capstones) during floor 2–3, L7 (trait tier 2) on floor
+4–5, L8 before the final boss. Surplus XP past 570 is ignored.
+
+**On level-up** (applied on the victory screen, immediately; multiple levels
+can trigger from one battle, applied in order; zero RNG):
+
+1. Apply the class's `growth` row for the new level. Max HP increases;
+   **current HP increases by the same amount** (level-ups relieve attrition
+   but never fully heal — HP persistence stays meaningful, combat.md §12).
+   KO'd cats have already stood up at 1 HP post-battle and benefit normally.
+2. **L4:** unlock the class capstone skill (Dumpster Dunk / Box Ambush /
+   Phantom Cucumber / Purrquake). Toast + skill-bar slot pops in.
+3. **L7:** trait upgrades to tier 2. Portrait trait icon gains a gold ring.
+4. Energy, Lives, statuses, cooldowns: untouched. `enMax` stays 10 (items
+   may raise it, combat.md §3).
+
+---
+
+## 9. Party synergies (intended combos, with numbers)
+
+All numbers at level 1, variance 1.0, no crit, before DEF, unless noted.
+Timeline visibility (combat.md §2) is what makes these plannable.
+
+**S1. Yank & Slam** (the tutorial combo; appears in combat.md §13).
+Mora (SPD 6) Yanks a rank-3 caster: 7 damage, pulled to rank 1, Off-Balance,
+and its back-rank-only skills go offline. Bruno (SPD 4, later in the round)
+Body Slams it: round(1.2 × 10 × 1.5) = **18 instead of 12** — and the slam
+shoves it back *out* again, re-arming Off-Balance for anyone still to act.
+String Theory refunds Mora 1 energy: net cost 2.
+
+**S2. Wire the Pile** (the payoff spike).
+Versus two front enemies (all that live): Pixel (SPD 8, usually first) Trip
+Wires from rank 2: ~7 to each, both pushed 1, both Off-Balance → every
+living enemy is Off-Balance → **Cat Pile prompt**: floor(0.30 × (10 + 12 +
+11 + 9)) = **12** to each, DEF-ignoring. The "pile or pick" call: 24 total
+guaranteed now, or decline and let Bruno + Mora swing at +50% (Body Slam 18
+vs 12) while the marks last until round end.
+
+**S3. The Poise Train** (boss burst window).
+Boss (heavy, Poise 3): Mora Yanks (chip 1, +1 energy back), Bruno Body Slams
+(chip 2), Pixel Trip Wires the boss's row (chip 3) → **Poise break**: windup
+cancelled, boss Off-Balance, and — if the boss is alone — Cat Pile opens
+(12 flat) *or* keep the mark and let the remaining actors hit for +50% with
+Pixel's Opportunist adding +10 crit. Three forced-move skills in one round is
+exactly affordable at battle-start energy (costs 3 + 4 + 4 vs 6/6/6 after
+each cat's first regen).
+
+**S4. Cucumber Brake** (control valve).
+Boss telegraphs its 200-power row nuke ("Charging!"). Mora casts Phantom
+Cucumber: 80% to Frazzle → charge cancelled AND one boss queue slot skipped.
+On the 20% fail, the party still has its listed §11 outs — Guard, Hiss, or
+Move-swap out of the named ranks — because the timeline shows who still acts
+before the release.
+
+**S5. Bank & Burst** (economy round).
+Round N: Bruno Hisses (cost 2 — Provoked pulls all single-target damage onto
+his Guarded, DEF-3 frame at −50%), Baguette Guards (Purr Engine: +1 energy
+to each other cat, +2 to herself), Pixel and Mora Claw Swipe (+1 bank each).
+Round N+1 everyone sits at 7–10 energy: Dumpster Dunk + Box Ambush +
+Phantom Cucumber + Purrquake in a single round — the capstone alpha strike.
+
+**Marching order default** (dungeon-side, becomes battle formation):
+**R1 Bruno, R2 Pixel, R3 Mora, R4 Baguette** — the §13 worked-example order.
+Advanced alternative: Pixel to R3 (Pounce opener online turn 1) with Mora at
+R2 (Hairball Hex reaches from rank 2; Yank of Yarn does not — a real
+tradeoff). Enemy shove-threat makes the order a defensive decision too
+(combat.md §8).
+
+---
+
+## 10. UI flavor pack
+
+**Portrait subtitles** (`epithet`): Bruno "The Doorstop of Dumpster Court" ·
+Pixel "Warranty Voider" · Mora "The Void That Stares Back" · Baguette
+"Fresh from the Oven".
+
+**Class-select blurbs** (`flavor.bio`, one string each):
+
+- *Bruno:* "Ten years guarding a bodega door. Nothing got in. Nothing gets
+  past him now. He would simply prefer you didn't make him get up."
+- *Pixel:* "Every object on every shelf is a to-do list. Every enemy is an
+  object on a shelf."
+- *Mora:* "She was somebody's familiar once. The yarn obeys her. The corners
+  of rooms know her name. Please stop asking about the witch."
+- *Baguette:* "Baked to perfection in a shop window, now applying warmth as
+  a combat discipline. Carries the snacks. Guards the snacks."
+
+**Combat barks** (floating `Text`, picked by event):
+
+| Event | Bruno | Pixel | Mora | Baguette |
+|---|---|---|---|---|
+| crit | "Filed under: trash." | "YEET." | "As foretold." | "Oven's hot!" |
+| own KO | "...five minutes..." | "rude." | "I have been here before." | "Mind the snacks." |
+| Cat Pile | "PILE ON." | "DOGPILE! ...cat-pile!" | "The stars align." | "Group hug!" |
+
+**Procedural palettes** (`palette`, PixiJS Graphics blob tints):
+
+| Cat | body | ears | eyes |
 |---|---|---|---|
-| `thick-fur` | Bruiser | While in the **front row**, incoming damage ×0.8. Implemented as an extra `passiveMult` factor in the §3 damage `mult` chain (multiplicative with Guarding, Ruffled, etc.). Applies to Cat Pile? N/A (cats never take pile damage). Does **not** reduce Bleeding (true damage). | damage formula, defender side |
-| `patient-hunter` | Pouncer | **Stalking never expires** (ignore the 3-turn expiry; still consumed on use, still no stacking). | status tick |
-| `keen-whiskers` | Oracle | The **first bestiary discovery per battle** (any cat's hit records any previously-`?` tag result — weak, resist, or neutral — for any species) grants the Oracle **+2 Vigor** immediately (cap 10). Once per battle; does not trigger if the Oracle is KO'd. | bestiary write |
-| `bedside-manner` | Purrmedic | Heals **cast by the Purrmedic** on an ally currently in the **front row** are ×1.25: `heal = floor(caster.effATK * |power| * 1.25 / 100)` (one floor at the end, per combat.md heal rule). Self counts if the Purrmedic is front. | heal resolution |
+| Bruno | `0xE08A2E` (marmalade) | `0xB5661C` | `0xF2C14E` (amber) |
+| Pixel | `0x9AA7B0` (static gray) | `0x6E7B85` | `0x7CE577` (laser green) |
+| Mora | `0x2B2333` (void) | `0x1C1626` | `0xFFD447` (lantern) |
+| Baguette | `0xEED9B7` (crust cream) | `0xD9B98C` | `0x8A5A2B` (warm brown) |
+
+Blob construction per combat.md §1: rounded-rect body, triangle ears, dot
+eyes, line whiskers; Bruno widest, Pixel smallest with a jagged "glitch"
+notch, Mora with slightly taller ears, Baguette an oval loaf with no visible
+paws. Life pips render as paw prints under the portrait (combat.md §12).
 
 ---
 
-## 2. Engine Deltas (sanctioned by combat.md, made exact here)
+## 11. Balance checkpoints (L1, for the tuning pass)
 
-combat.md promises three pieces of content its engine spec doesn't fully pin down. These
-are the complete resolutions — total cost ≈ 35 LoC, no new systems:
-
-1. **`Looming` status (the taunt).** combat.md §6 lists a "taunt-yowl" in the Bruiser kit;
-   the status table (§8) needs one addition:
-
-   | Status | Type | Effect (exact) | Stacking |
-   |---|---|---|---|
-   | **Looming** | buff | While any living cat has Looming: enemy AI **step 4 (temper targeting)** restricts the legal-target set to Looming cats, if at least one Looming cat is a legal target for the chosen skill; otherwise targeting is unaffected. Steps 0 (lethal check) and 1 (panic) **ignore** Looming — a killer still goes for the kill. Duration 2. Cats only. | No stack; refresh. |
-
-   It ticks at the owner's turn start like every status, clears on KO, and is drawn as a
-   puffed-up outline on the cat blob. AI cost: one filter line in `battle/ai.ts`.
-
-2. **`cleanse` effect kind.** combat.md §8 says "Cleansing (Purrmedic groom skill) removes
-   Ruffled, Bleeding, Gunked." Extend `EffectSpec`:
-
-   ```ts
-   interface EffectSpec {
-     kind: 'status' | 'move' | 'cleanse';
-     // kind 'cleanse': remove ALL of Ruffled, Bleeding (all stacks), Gunked
-     // from the target. No roll, no LCK interaction, no other fields.
-     ...
-   }
-   ```
-
-3. **Buffs are not LCK-resisted (clarification).** The §3 status-application roll
-   `applied = rng() < (chance − target.LCK / 100)` applies to **debuff-type statuses
-   only** (Startled, Ruffled, Bleeding, Gunked). Buff-type statuses (Zoomies, Stalking,
-   Guarding, Looming) apply at raw `chance` — a lucky ally must not shrug off his own
-   Zoomies. Roll consumption is unchanged (one roll per effect per target, same order),
-   so determinism is unaffected.
-
-4. **Cat ultimate cooldowns.** Already sanctioned (§6: `cooldown?` — "enemies; also cat
-   ultimates"). Exact rule for cats: after use, the skill is grayed out for `cooldown`
-   of that cat's turns; tick down by 1 at the cat's turn start (same place enemy
-   cooldowns tick). Cooldowns reset at battle start.
-
----
-
-## 3. The Four Classes
-
-Formation default (matches combat.md §12): **front:** Bruno, Pip — **back:** Miso, Tofu.
-
----
-
-### 3.1 BRUNO the BRUISER — "Duke of the Dumpsters"
-
-A vast, scarred orange tom with one chewed ear and the serene confidence of a cat who has
-never lost an argument with a raccoon. He doesn't dodge. He doesn't need to.
-
-- **Role:** tank / bruiser — owns the front row, the push game, and enemy attention.
-- **Icon:** `▲`  **Body:** `0xE8863A` (marmalade) **Accent:** `0xB35B1E`
-- **Default row:** front. **Passive:** `thick-fur` (−20% incoming damage while front row).
-
-**Stats** (base = combat.md reference; growth per level-up):
-
-| | HP | ATK | DEF | SPD | LCK |
-|---|---|---|---|---|---|
-| Base (L1) | 46 | 14 | 9 | 7 | 5 |
-| Growth | +7 | +2 | +1 | +0 | +0 |
-| L3 | 60 | 18 | 11 | 7 | 5 |
-| L6 (cap) | 81 | 24 | 14 | 7 | 5 |
-
-Slow forever (usually acts last — he's the round's cleanup hitter and the Cat Pile
-closer, exactly as in the §12 worked example), never lucky, increasingly immovable.
-
-**Skills** (4 = 2 starting + L3 + L5):
-
-```ts
-// L1 — from combat.md §6
-{ id:'rake', name:'Rake', icon:'≡', tag:'claw', range:'melee', target:'enemy-one',
-  cost:2, power:100, effects:[{kind:'status', status:'bleeding', chance:0.8, duration:3}],
-  description:'Claws rake deep. 80% chance to inflict Bleeding.' },
-
-// L1 — from combat.md §6
-{ id:'body-slam', name:'Body Slam', icon:'●', tag:'pounce', range:'melee', target:'enemy-one',
-  cost:4, power:130, effects:[{kind:'move', move:'push'}],
-  description:'All of the cat, at once. Heavy hit that shoves the target back (Ruffling it).' },
-
-// L3 — NEW (the taunt-yowl promised in combat.md §6)
-{ id:'puff-up', name:'Puff Up', icon:'!', tag:'yowl', range:'reach', target:'self',
-  cost:2, power:0, effects:[{kind:'status', status:'looming', chance:1.0, duration:2}],
-  description:'Fur to maximum. Enemies can only look at YOU for 2 turns.' },
-
-// L5 — NEW ultimate (the "push tricks" promised in combat.md §6)
-{ id:'dumpster-quake', name:'Dumpster Quake', icon:'▼', tag:'pounce', range:'melee',
-  target:'enemy-row', cost:5, cooldown:3, power:90,
-  effects:[{kind:'move', move:'push'}],
-  description:'Land on the whole front row like a dropped fridge. Shoves everything back — and everything shoved gets Ruffled.' },
-```
-
-**Playstyle notes.** Body Slam and Dumpster Quake are `pounce`-tag, so Bruno can Stalk on
-a wasted turn and cash a free auto-crit slam — a tank with a burst option. Dumpster Quake
-vs a full enemy front row is up to 3 Ruffles in one action (or 3 failed pushes if their
-back row is full — read the board first); vs a boss the push converts to Ruffled directly
-(combat.md §1). Puff Up + Guard next turn = ×0.8 × ×0.5 = 60% damage reduction while
-everything swings at him.
-
----
-
-### 3.2 PIP the POUNCER — "The Ambush in Socks"
-
-A small tuxedo cat, permanently vibrating, pupils the size of dinner plates. Pip has two
-states: perfectly motionless, and airborne. There is no third state.
-
-- **Role:** single-target burst striker — owns the Stalk→Pounce→Startle loop.
-- **Icon:** `»`  **Body:** `0x2B2B33` (tuxedo black) **Accent:** `0xF5F5F0` (white socks)
-- **Default row:** front. **Passive:** `patient-hunter` (Stalking never expires).
-
-**Stats:**
-
-| | HP | ATK | DEF | SPD | LCK |
-|---|---|---|---|---|---|
-| Base (L1) | 32 | 15 | 5 | 13 | 12 |
-| Growth | +4 | +3 | +0 | +1 | +1 |
-| L3 | 40 | 21 | 5 | 15 | 14 |
-| L6 (cap) | 52 | 30 | 5 | 18 | 17 |
-
-Highest ATK and SPD in the party, DEF 5 forever: he acts first, deletes something, and
-dies to a stiff breeze if the geometry goes wrong. LCK 17 at cap = 22% crit on non-Stalk
-hits.
-
-**Skills:**
-
-```ts
-// L1 — from combat.md §6
-{ id:'pounce', name:'Pounce', icon:'🐾', tag:'pounce', range:'melee', target:'enemy-one',
-  cost:3, power:160, effects:[{kind:'move', move:'self-front'}],
-  description:'Leap on one enemy for heavy damage. You land in the front row.' },
-
-// L1 — NEW (the "Shred" named in combat.md §6)
-{ id:'shred', name:'Shred', icon:'∥', tag:'claw', range:'melee', target:'enemy-one',
-  cost:2, power:80, effects:[{kind:'status', status:'bleeding', chance:0.9, duration:3, stacks:2}],
-  description:'A blur of claws. 90% chance of Bleeding, 2 stacks deep.' },
-
-// L3 — NEW (the "self-move tricks" from combat.md §6)
-{ id:'slink', name:'Slink Strike', icon:'⌐', tag:'trick', range:'melee', target:'enemy-one',
-  cost:2, power:70, effects:[{kind:'move', move:'self-back'}],
-  description:'Bite and vanish: hit, then melt into the back row.' },
-
-// L5 — NEW ultimate
-{ id:'ninefold-flurry', name:'Ninefold Flurry', icon:'✻', tag:'pounce', range:'melee',
-  target:'enemy-one', cost:5, cooldown:3, power:220,
-  effects:[{kind:'move', move:'self-front'}],
-  description:'Every life at once. A single target experiences nine cats.' },
-```
-
-**Playstyle notes.** The intended loop: turn 1 Stalk (+2 Vigor, Stalking banked forever
-thanks to the passive), turn 2 Pounce free + auto-crit — vs a pounce-weak target that is
-power 160 × crit 1.5 × weak 1.5 and a guaranteed Startle. Ninefold Flurry with Stalking
-banked is the boss-poise nuke (it still counts as one weakness *hit* for the Poise meter,
-per combat.md §10 — poise counts hits, not damage). Slink Strike is the panic button:
-damage plus retreat out of melee reach when the front row gets hot. Shred gives him a
-boss-fight job between bursts — 2 Bleeding stacks is 6 true damage per boss turn.
-
----
-
-### 3.3 MISO the ORACLE — "She Who Stares at Walls"
-
-A cream seal-point who watches empty corners with total conviction. Sometimes the corner
-watches back, and then Miso knows things: what the rat fears, where the piper stands, why
-the red dot can never be caught.
-
-- **Role:** control / utility caster — owns the weakness game, the bestiary, and enemy
-  geometry (pulls).
-- **Icon:** `?`  **Body:** `0xEDE0C8` (cream) **Accent:** `0x6B4F3A` (seal points)
-- **Default row:** back. **Passive:** `keen-whiskers` (first bestiary discovery per
-  battle → Oracle +2 Vigor).
-
-**Stats:**
-
-| | HP | ATK | DEF | SPD | LCK |
-|---|---|---|---|---|---|
-| Base (L1) | 28 | 12 | 4 | 9 | 8 |
-| Growth | +3 | +2 | +0 | +1 | +1 |
-| L3 | 34 | 16 | 4 | 11 | 10 |
-| L6 (cap) | 43 | 22 | 4 | 14 | 13 |
-
-Frailest cat in the party; everything she has is `reach`, so she never needs to leave the
-back row — protect her and she turns every fight into an open-book test.
-
-**Skills:**
-
-```ts
-// L1 — from combat.md §6
-{ id:'caterwaul', name:'Caterwaul', icon:'♪', tag:'yowl', range:'reach', target:'enemy-row',
-  cost:4, power:70,
-  description:'An unholy midnight noise hits an entire enemy row. Cancels boss charges.' },
-
-// L1 — from combat.md §6
-{ id:'curious-paw', name:'Curious Paw', icon:'?', tag:'trick', range:'reach', target:'enemy-one',
-  cost:3, power:90, effects:[{kind:'move', move:'pull'}],
-  description:'Bat the target like a dubious object, yanking it to the front row (Ruffled).' },
-
-// L3 — from combat.md §6
-{ id:'hairball', name:'Hairball', icon:'@', tag:'bite', range:'reach', target:'enemy-one',
-  cost:2, power:50, effects:[{kind:'status', status:'gunked', chance:0.7, duration:2}],
-  description:'Horrifying. 70% chance to Gunk the target (ATK −30%).' },
-
-// L5 — NEW ultimate
-{ id:'old-gods-yowl', name:'Yowl of the Old Gods', icon:'Ω', tag:'yowl', range:'reach',
-  target:'enemy-all', cost:5, cooldown:3, power:75,
-  description:'The corner she stares at stares out. Every enemy hears it; yowl-weak enemies drop where they stand.' },
-```
-
-**Playstyle notes.** Miso's four skills cover four of the five tags (yowl, trick, bite —
-and Swipe covers claw), so she is the party's bestiary scanner: her passive pays +2 Vigor
-for the scan, which usually funds the next probe. Curious Paw is the famous triple-threat
-from combat.md §7 (reposition + Ruffle + formation warp). Yowl of the Old Gods hits every
-enemy in one action: against a yowl-weak pack it is a one-button mass Startle → instant
-Cat Pile check, and in boss fights it cancels a charge *and* tags every minion. Her
-`bite`/`yowl`/`trick` spread means she can hit almost any weakness the Pouncer can't.
-
----
-
-### 3.4 TOFU the PURRMEDIC — "The Loaf That Mends"
-
-A perfectly round white cat, usually found in full loaf position, purring at a frequency
-that knits bone. Tofu is not fast, or fierce. Tofu is *inevitable*, in a comforting way.
-
-- **Role:** support / heal — owns attrition: HP persistence, statuses, tempo gifts.
-- **Icon:** `+`  **Body:** `0xF7F3EC` (rice white) **Accent:** `0xE3A6B0` (pink nose)
-- **Default row:** back. **Passive:** `bedside-manner` (own heals on front-row allies ×1.25).
-
-**Stats:**
-
-| | HP | ATK | DEF | SPD | LCK |
-|---|---|---|---|---|---|
-| Base (L1) | 34 | 10 | 6 | 8 | 10 |
-| Growth | +5 | +2 | +1 | +0 | +1 |
-| L3 | 44 | 14 | 8 | 8 | 12 |
-| L6 (cap) | 59 | 20 | 11 | 8 | 15 |
-
-Second-toughest cat (a healer who folds to one sneeze is a bad healer). ATK growth
-matters because heals scale off ATK (combat.md §3): Lick Wounds at L6 heals
-`floor(20 × 1.2) = 24`, or 30 on a front-row ally.
-
-**Skills:**
-
-```ts
-// L1 — from combat.md §6
-{ id:'lick-wounds', name:'Lick Wounds', icon:'+', tag:'trick', range:'reach', target:'ally-one',
-  cost:3, power:-120,
-  description:'Restorative grooming: heal an ally for 120% of your ATK.' },
-
-// L1 — NEW (the "Gunk-cleanse groom" promised in combat.md §6 & §8)
-{ id:'fastidious-groom', name:'Fastidious Groom', icon:'✚', tag:'trick', range:'reach',
-  target:'ally-one', cost:2, power:-40, effects:[{kind:'cleanse'}],
-  description:'Aggressive tidying. Small heal; removes Ruffled, Bleeding, and Gunk.' },
-
-// L3 — from combat.md §6
-{ id:'zoom-blessing', name:'Midnight Zoomies', icon:'~', tag:'trick', range:'reach',
-  target:'ally-one', cost:3, power:0,
-  effects:[{kind:'status', status:'zoomies', chance:1.0, duration:2}],
-  description:'Bestow the 3 AM energy: SPD ×2 next round, +1 Vigor regen.' },
-
-// L5 — NEW ultimate
-{ id:'thunderpurr', name:'Thunderpurr', icon:'≈', tag:'trick', range:'reach',
-  target:'ally-all', cost:5, cooldown:3, power:-80,
-  description:'The loaf resonates. Every cat is healed for 80% of Tofu\'s ATK. Front-row cats get the deluxe treatment.' },
-```
-
-**Playstyle notes.** Between casts, Tofu Swipes (banking Vigor and scanning `claw` on
-whatever is adjacent) or Guards. Fastidious Groom is the counter to Gunk-heavy floors
-(Rat Pipers) and to boss Bleeding, and at cost 2 it's spammable. Midnight Zoomies is
-secretly an *offensive* skill — it re-orders next round's initiative strip (see synergy
-#4). Thunderpurr heals up to 4×24+25% at L5-6 per action — the reason HP-persistence
-attrition (combat.md §11) is survivable without grinding.
-
----
-
-## 4. XP & Leveling
-
-### Rules
-
-- **One shared party level** (1–6). No per-cat XP: one counter in the HUD, one toast on
-  level-up, no KO'd-cat-missed-XP bookkeeping. All four cats always share the level.
-- **XP is awarded only on victory** (flee = 0 XP), on the loot screen — never mid-battle,
-  so the battle resolver stays pure (combat.md §13).
-- **XP per enemy killed:** `5 + 3 × floorNumber`. **Boss:** `30 + 15 × floorNumber`.
-  (Floor 1 rat = 8 XP; floor 1 boss = 45 XP.)
-- **Thresholds** (cumulative XP for level; plain data, not a formula):
-
-  ```ts
-  const XP_THRESHOLDS = [0, 50, 120, 220, 350, 520];  // index = level-1 → total XP needed
-  ```
-
-  Intended pacing over a 5-floor run (≈6 encounters + boss per floor): L2 mid-floor-1,
-  L3 after boss 1, L4 during floor 2, L5 mid floor 3, L6 (cap) on floor 4. The final
-  floors are faced at cap — endgame difficulty tunes against known numbers.
-
-### What a level-up grants (all resolved on the loot screen, in this order)
-
-1. **Stats:** every cat (including currently-KO'd cats) adds its class `growth` block.
-2. **Heal:** every non-KO'd cat heals `floor(0.25 × newMaxHp)` (overheal discarded).
-   KO'd cats are unaffected (they already revived at 30% if the battle was won —
-   combat.md §11; revive resolves before XP).
-3. **Skills:** at level 3 and level 5, each class's listed skill unlocks with a toast
-   ("Pip learned **Slink Strike**!"). Ultimates arrive at 5 with their cooldowns.
-4. Nothing else. No skill points, no stat choices, no respecs — v1 leveling is a
-   pure data application, ~30 LoC.
-
-### Multi-level overflow
-
-XP can bank past a threshold (a boss kill can grant two levels); apply level-ups one at a
-time in a loop. XP past level 6 is discarded.
-
----
-
-## 5. Party Synergies (intended, tested-on-paper combos)
-
-The classes are tuned so these four lines emerge naturally; enemy design should
-periodically invite each one.
-
-1. **The Softening Pull** (Miso → Pip). Miso's Curious Paw drags a back-row enemy to the
-   front: it's now melee-legal, **Ruffled ×1.25**, and out of formation. Pip, Stalking
-   banked, hits it with a free auto-crit Pounce: vs a pounce-weak target that's
-   `power 160 × 1.5 crit × 1.5 weak × 1.25 Ruffled ≈ ×4.5` — enough to delete any
-   non-boss on-level enemy in one action, with a guaranteed Startle as the corpse
-   insurance. Cost: 3 Vigor total across two cats.
-
-2. **Anthem & Slam Pile** (Miso + Bruno + anyone). Against packs with mixed weaknesses:
-   Miso's Caterwaul/Old Gods Yowl mass-Startles the yowl-weak, Bruno's Body Slam (or a
-   Stalked slam) Startles a pounce-weak straggler, and the instant the last living enemy
-   is Startled the **CAT PILE** fires (combat.md §7) — `0.5 × sum(party effATK)` through
-   DEF to everything. Bruno acting late in the round (SPD 7) makes him the natural pile
-   trigger, exactly as in the §12 worked example.
-
-3. **The Loaf Wall** (Bruno + Tofu). Bruno Puffs Up (Looming — tempers must target him),
-   stands front (`thick-fur` ×0.8), and Guards on off-turns (×0.5, +1 Vigor) — incoming
-   damage ×0.4 while the squishy back row is untouchable to temper-driven AI. Tofu's
-   `bedside-manner` pays ×1.25 on every heal into him because he's front-row. The lethal
-   check (AI step 0) still bypasses Looming, so the wall is strong, not degenerate: never
-   let Pip sit at kill-range HP and assume the taunt saves him.
-
-4. **Tempo Snipe** (Tofu → Pip/Miso). Midnight Zoomies doubles SPD for **next round's**
-   initiative (combat.md §4): Zoomies-Pip (SPD 26+) is guaranteed first on the strip, so
-   he can Startle the fastest enemy *before its turn* — deleting a whole enemy action —
-   and the +1 Vigor regen funds Ninefold Flurry a turn early. Cast it the round before
-   you need the burst; the strip shows you the payoff immediately.
-
-5. **Boss Bleed Clock** (Bruno + Pip vs bosses). Bosses can't be pushed or turn-skipped,
-   but Bleeding is true damage (ignores DEF and all multipliers). Rake (1 stack) + Shred
-   (2 stacks) = max stacks = **9 damage per boss turn**, no rolls after application, plus
-   both hits feed the Poise meter if they're on-weakness. The slow classes get a
-   boss-fight identity that isn't just "hit it".
-
----
-
-## 6. UI-Facing Flavor Text
-
-### Class select / party screen blurbs (one line each)
-
-- **Bruno — Bruiser** · *Duke of the Dumpsters.* "Tanks with his face. Argues with
-  geometry, wins."
-- **Pip — Pouncer** · *The Ambush in Socks.* "Two states: statue and shrapnel. Point him
-  at the biggest problem."
-- **Miso — Oracle** · *She Who Stares at Walls.* "Knows what the rat fears. The rat does
-  not know what Miso fears. Nothing does."
-- **Tofu — Purrmedic** · *The Loaf That Mends.* "Purrs at a frequency that knits bone.
-  Round is a shape AND a strategy."
-
-### Barks (drawn as floating PixiJS Text; `barks` field in ClassDef)
-
-| Cat | Level up | KO (ghost pop) | Low HP (<25%, once per battle) |
-|---|---|---|---|
-| Bruno | "Bigger. Good." | "…save my spot." | "Tis a scratch." |
-| Pip | "FASTER." | "was worth it" | "ow ow ow ow" |
-| Miso | "As foretold." | "The corner calls." | "Inadvisable." |
-| Tofu | "More loaf to love." | "brb" | "Healer needs healing!" |
-
-### System toasts
-
-- Level up: `"MEOWVELOUS! The party reaches level {n}!"`
-- Skill unlock: `"{cat} learned {skill}!"`
-- Cat Pile (already in combat.md, restated for UI): `"CAT PILE!!!"` with the dust cloud.
-- Level cap: `"Level 6 — as sharp as claws get."`
-
----
-
-## 7. Balance Reference (sanity numbers)
-
-Assumed on-level enemy at floor *f*: HP ≈ `20 + 12f`, DEF ≈ `2 + 1.5f` (content doc will
-finalize; classes were tuned against this line and the floor-1 blocks in combat.md §9).
-
-| Check | Math | Result |
+| Check | Value | Verdict |
 |---|---|---|
-| L1 Pip Stalk→Pounce vs pounce-weak rat (DEF 3) | worked example §12 | 51 dmg — kills any floor-1 enemy from half HP ✓ |
-| L6 Pip Ninefold Flurry (Stalked) vs floor-5 elite (DEF 10) | `30×2.2=66 → ×100/110=60 → ×1.5 crit = 90` (±var) | ~90, ~everything non-boss dies ✓ |
-| L6 Bruno survivability vs floor-5 hit (ATK 25, power 100) | `25 → ×100/114 = 21.9 → ×0.8 fur` | ~17/hit → ~5 hits to drop from 81 HP ✓ |
-| L6 Tofu Thunderpurr | `floor(20×0.8)=16` ×4 cats, front ×1.25→20 | 72 party HP/action, cd 3 ✓ |
-| Vigor economy | costliest rotation (4+5) needs Swipe/Stalk filler turns | builders stay mandatory ✓ |
+| Claw Swipe DPT (Pixel vs DEF 1) | 11 avg | baseline |
+| Pounce burst (Pixel, 3 en) | 17 avg | ~1.5× baseline, costs formation |
+| Body Slam into Off-Balance | 18 vs 12 | shove-first ordering pays 50% |
+| Cat Pile | 12 × each enemy | matches §13 example (`0.30 × 42`) |
+| Full heal-out (Purrquake) | ≤ 11/cat over 3 turns | can't outpace 2 mooks' DPT — attrition holds |
+| Capstone costs (5–6) | 1–2 bank turns | Bank & Burst is a real decision, not a default |
+| Max crit (Pixel L8 tier 2 vs OB) | 39% | bounded; damage multiplier ceiling still 2.475 (§3) |
 
-Growth deliberately keeps DEF low on Pip/Miso: the divisor formula means back-row
-placement, Looming, and Startle-tempo — not stats — are their real defenses. That keeps
-the row game load-bearing at every level.
+---
 
-## 8. Implementation Cost
+## 12. Consistency and delta ledger (vs combat.md)
 
-Fits the combat.md §13 budget: classes/skills/passives are rows in `data/classes.ts` and
-`data/skills.ts` (~120 LoC of the 350 budgeted for skills+data); engine deltas from §2
-(~35 LoC: Looming filter in `ai.ts`, `cleanse` branch in the effect resolver, buff/debuff
-flag on statuses, cat cooldown tick); leveling is ~30 LoC in the loot screen plus one HUD
-counter (inside the 100 LoC "misc" line).
+| Item | Status |
+|---|---|
+| Level-1 party stats | Identical to §13 worked example (Bruno/Pixel/Mora/Baguette) — the example is canonically a level-1 party; Mora's 8 Lives is an early Life loss, not a level artifact |
+| 8 reference skills (§4 table) | Reproduced verbatim, zero number changes |
+| Class skill count | Exactly 12 (§14 budget "4 classes × 4 skills" incl. Claw Swipe per cat): the 8 existing + 4 new capstones |
+| New skills use existing fields only | Dumpster Dunk (`moveTarget`), Box Ambush (rank reach), Phantom Cucumber (`applies` frazzled), Purrquake (row heal + `applies` mending) — no new engine verbs |
+| `applies[].to` field | **Additive.** Formalizes Hiss's own §4 prose ("Guarded to self and Provoked to all enemies"); default `'target'` keeps every other skill unchanged |
+| `cleanses`, `revivePct`, `oncePerBattle` | **Additive.** Formalize Soothing Purr / Nine Lives Nudge prose from §4 into data |
+| Traits | Reuse `Combatant.traits` (precedent: `'heavy'`); four hooks with exact pipeline injection points (§§4–7 above); emit `TraitTriggered` events for the UI |
+| Box Ambush reaching rank 5 | The deliberate "almost" in §1's "almost no skill reaches rank 5"; level-gated (L4) and nuke-priced (cost 6) |
+| Frazzled / Off-Balance / Poise / Cat Pile rules | Untouched; capstones interact strictly through §6/§8/§11 rules |
+| Leveling | New content (combat.md defers XP/loot to the dungeon layer, §12 "Victory"); deterministic, no engine changes; level-up heals only by the max-HP delta so floor attrition (§12) is preserved |
+| Estimated added code | ~120 LoC data (`data/classes.ts`, `data/skills.ts`) + ~60 LoC trait hooks + ~40 LoC leveling — within the §14 "content, not engine" line |

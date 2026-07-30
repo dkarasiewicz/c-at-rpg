@@ -1,556 +1,585 @@
-# c(at)rpg Combat System — FINAL DESIGN
-## "Nine Lives: Pounce & Poise" (synthesis build)
+# c(at)rpg Combat — Final Design: "Claws & Ranks: Nine Lives Edition"
 
-Turn-based JRPG combat for a 4-cat party: **Darkest Dungeon row tactics** welded to a
-**Persona-style weakness → Startle → CAT PILE** loop, felinified end to end. You **Stalk**
-before you **Pounce**, you **Startle** prey by hitting its quirks, you **Ruffle** enemies by
-shoving them around, and when every living enemy is Startled at once the party dogpiles.
-Attrition across a run is governed by a shared pool of **Nine Lives**.
-
-This document is the single source of truth. Every formula is exact; every ambiguity from
-the contest entries is resolved here. Target: engine in ~1500 lines of TypeScript, all
-content as plain data objects, fully deterministic given a seed.
+**Status: FINAL — synthesized from three contest entries.** Base system: Design 1
+("Claws & Ranks", the contest winner). Grafts: the headless event-driven engine
+architecture and the Cat Pile all-out attack from Design 2 ("Claws & Effect");
+boss Poise and the Nine Lives death rule from Design 3 ("Nine Lives: Stalk &
+Pounce"). Every contradiction between the sources is resolved in §15. The system
+below is fully specified: an implementing agent needs zero additional design calls.
 
 Design pillars:
 
-1. **Every turn is a real choice** — spend Vigor now, Stalk for burst later, or fix geometry?
-2. **Two systems, one decision space** — rows feed the weakness game (pull the piper into
-   pounce range; the pull itself Ruffles it).
-3. **Plannable, not slot-machine** — initiative is visible, Startle is guaranteed on a
-   weakness hit, enemy tempers are learnable. RNG only flavors magnitudes.
-4. **Deterministic** — one seeded RNG stream, rolls consumed in a specified order.
+1. **Forced movement is the combo engine** ("Off-Paw"): shoving enemies around
+   is both crowd control and a damage amplifier for teammates.
+2. **One exploit system, not two.** No elemental affinities — positioning is the
+   only amplification game, so every class, enemy, and item hooks into it.
+3. **Deterministic and headless.** One seeded RNG stream, rolls in documented
+   order, pure `resolveAction(state, action, rng) -> { newState, events[] }`.
+   The PixiJS layer only animates the event log.
+4. **Light roguelike dread**: HP persists across a floor, KOs burn Lives, but a
+   single fight is low-stakes slapstick — cats batting rats around like toys.
 
 ---
 
 ## 1. Battle Setup & Positioning
 
-Each side has two rows, **FRONT** and **BACK**, max 3 units per row:
+Combat is a side-view formation fight on a single axis:
 
 ```
-[cat back: ≤3] [cat front: ≤3]   VS   [enemy front: ≤3] [enemy back: ≤3]
+  CATS (party)                    ENEMIES
+[R4][R3][R2][R1]   <-- gap -->   [R1][R2][R3][R4][R5]
+ back      front                  front         back
 ```
 
-- **Party:** exactly 4 cats. Player picks the formation before each battle (default 2/2).
-  A KO'd cat is removed from its row.
-- **Enemies:** 1–5 units. Encounter data assigns starting rows (max 3 front, overflow back).
-- **Slot index:** within a side, units are numbered 0..5 (front slots 0–2, back slots 3–5)
-  for rendering, targeting UI (click or press 1–5) and deterministic tie-breaks.
-- **Auto-promotion:** the instant a side's front row is empty, its back row becomes the
-  front row (flip the row flag on every unit; instant and free).
-- **Range rules:**
-  - `melee` skills: usable only from the **front row**, targeting only the **enemy front row**.
-  - `reach` skills: usable from any row, targeting any row.
-- **Movement verbs** (resolve after a skill's damage): `push` (target front→back), `pull`
-  (target back→front), `self-front`/`self-back` (attacker moves). A push/pull **fails
-  silently** if the destination row is full (3 units) or the target is already there.
-- **Ruffled rule (forced movement):** a push or pull that **actually changes the target's
-  row** inflicts **Ruffled** (§8) — no roll, no LCK resistance. Cats hate being moved;
-  so does everything else. Voluntary movement (self-moves, Swap) never Ruffles.
-- **Bosses** are immune to push/pull; a forced-move attempt on a boss applies Ruffled
-  directly instead (your positioning tools stay relevant, just transformed).
+- **Cats** occupy ranks 1–4 (rank 1 = frontmost), exactly one cat per rank.
+  Party order at battle start comes from the dungeon-side marching order.
+- **Enemies** occupy ranks 1–5, one per rank, 1–5 enemies per encounter.
+  Encounter data is a plain front-to-back array, e.g. `['rat','rat','crowShaman']`.
+- **No empty gaps, ever**: when a combatant dies or is KO'd it is removed and
+  everyone behind slides forward one rank. This is the only free movement, and
+  it matters — killing the front rat drags the squishy shaman into claw range.
+- Rank 5 exists only on the enemy side (big encounters, boss summons). Almost
+  no skill reaches rank 5; creatures there are reinforcements that slide into
+  danger as the front dies.
+- Every skill declares which ranks it can be **used from** and which ranks it
+  can **hit**. Position is both a constraint (can my cat act?) and a weapon
+  (can I shove the enemy out of *its* usable ranks?).
 
-No grid, no facing, no pathfinding. Units render as procedural PixiJS blobs (rounded-rect
-body, triangle ears, dot eyes, line whiskers) on a fixed 2×3 grid per side.
+### Data model (combatants)
 
-Encounters are data: `{ enemies: EnemyId[], rows: Row[], isBoss: boolean, canFlee: boolean }`,
-generated by the floor generator from the dungeon seed.
+```ts
+interface Combatant {
+  id: string;
+  name: string;
+  side: 'cat' | 'enemy';
+  rank: number;              // 1-based, current position
+  stats: Stats;              // §3
+  hp: number;
+  energy: number;            // cats only; enemies use cooldowns
+  skills: SkillId[];
+  cooldowns: Record<SkillId, number>;   // enemies only
+  statuses: StatusInstance[];
+  traits: Trait[];           // 'heavy' = immune to forced movement (bosses/elites)
+  lives?: number;            // cats only, 0..9 — see §12
+  poise?: number;            // bosses only — see §11
+}
+```
+
+Units render as procedural PixiJS blobs (rounded-rect body, triangle ears, dot
+eyes, line whiskers), HP/energy bars underneath, status icons above.
 
 ---
 
-## 2. Core Stats (5 + 1 resource)
+## 2. Turn Order (exact algorithm)
 
-| Stat | Meaning | Typical cat (floor 1) | Typical floor-1 enemy |
-|---|---|---|---|
-| **HP** | Hit points; 0 = KO (cats) / dead (enemies) | 28–46 | 18–30 |
-| **ATK** | Prowess: scales damage AND heals (no ATK/MAG split) | 10–16 | 8–12 |
-| **DEF** | Mitigation (smooth divisor, never negates) | 4–10 | 2–6 |
-| **SPD** | Turn order; feeds flee chance | 6–14 | 6–12 |
-| **LCK** | Crit chance and status resistance | 5–15 | 0–5 |
-| **Vigor** | Action resource 0–10 (cats only; enemies use cooldowns) | — | — |
+Round-based initiative with a small seeded roll — predictable enough to plan
+around, noisy enough to stay lively.
 
-Deliberately cut: accuracy/evasion (everything hits — misses are feel-bad RNG), separate
-magic stats, elemental resist percentages. Enemies additionally carry: `weakTag`,
-`resistTag`, `temper` (AI personality, §9) and a priority-ordered skill list.
+At the start of each round:
 
-**Cats have no weak/resist tags.** Enemies cannot Startle cats; enemy pressure comes from
-damage, statuses, tempers and boss telegraphs. (Contradiction resolution — see Appendix.)
+1. For every living combatant `c`, compute
+   `initiative = c.stats.spd + rngInt(0, 2)` (inclusive). One draw per
+   combatant, in a fixed order — cats rank 1→4, then enemies rank 1→5 — so the
+   result is deterministic.
+2. Sort descending by initiative. **Tie-breaks, in order:** cats before
+   enemies → lower current rank first → lower entity id.
+3. The queue is **frozen for the round**. Forced movement does not re-sort it.
+   Combatants that die or are KO'd before their slot are skipped. Combatants
+   summoned mid-round act starting next round.
+4. When the queue is exhausted, run the **round-end phase** (§7), then start
+   the next round.
 
-### Reference party (used in the worked example)
+Bosses with the `doubleTurn` flag get **two independent entries** in the queue
+(two separate initiative rolls pointing at the same combatant).
 
-| Cat | Class | HP | ATK | DEF | SPD | LCK |
+The full initiative queue is **shown to the player** as a timeline bar at the
+top of the screen (Persona/Grandia style). Visible turn order is what makes the
+Off-Paw combo system (§8) a planning game instead of a guessing game.
+
+---
+
+## 3. Core Stats (6) and the Damage Formula
+
+| Stat | Meaning | Typical cat range | Typical enemy range |
+|------|---------|------------------|---------------------|
+| `hp`  | Max hit points | 24–40 | 10–60 (boss 120+) |
+| `atk` | Power for ALL skills — claws, hexes, and heals alike (one offensive stat keeps the list tiny) | 9–14 | 5–12 |
+| `def` | Flat damage reduction | 0–4 | 0–5 |
+| `spd` | Initiative (§2) and flee chance | 3–9 | 3–8 |
+| `crt` | Crit chance, percent | 5–15 | 0–10 |
+| `enMax` | Energy cap (cats only; fixed 10 in v1 — listed as a stat so items can raise it) | 10 | — |
+
+### Damage formula (exact, applied in this order)
+
+```
+1. base     = skill.power / 100 * user.atk
+2. variance = 0.9 + 0.1 * rngInt(0, 2)           // exactly 0.9, 1.0, or 1.1
+3. crit     = (rngFloat() < user.crt / 100) ? 1.5 : 1.0
+4. offBal   = target has Off-Balance ? 1.5 : 1.0
+5. guard    = target has Guarded     ? 0.5 : 1.0
+6. dmg      = round(base * variance * crit * offBal * guard)   // round half up
+7. final    = max(1, dmg - target.def)
+```
+
+There is **no accuracy roll** — attacks always land (misses feel bad in a
+4-actor party; defense is expressed through `def`, Guarded, and positioning).
+Maximum stacked multiplier is 1.1 × 1.5 × 1.5 = 2.475, a bounded burst ceiling.
+
+**Healing:** `heal = round(skill.power / 100 * user.atk)` — no variance, no
+crit, capped at max HP.
+
+**Cat Pile** (§8) uses its own flat formula and skips this pipeline entirely.
+
+All RNG comes from **one seeded stream per battle**, derived as
+`mulberry32(hash(runSeed, floor, encounterIndex))`. Rolls are always drawn in
+a documented order (initiative draws at round start; per damaging action per
+target in rank order: variance, then crit, then per-effect status chances;
+then AI tie-breaks; flee), so replays with the same seed are identical.
+
+---
+
+## 4. Skill Model (data-driven)
+
+A skill is a plain data object. Cats are gated by **energy** (no cooldowns);
+enemies are gated by **cooldowns** (no energy). One resource system per side
+keeps both the UI and the AI simple.
+
+```ts
+interface Skill {
+  id: string;
+  name: string;
+  desc: string;               // one-liner for tooltip
+  cost: number;               // energy (cats). Ignored for enemies.
+  cooldown?: number;          // rounds (enemies). Ignored for cats.
+  usableFrom: number[];       // user's ranks this can be used from, e.g. [1,2]
+  target: {
+    side: 'enemy' | 'ally' | 'self';
+    ranks: number[];          // valid target ranks, e.g. [1,2]
+    pattern: 'single' | 'row';// 'row' hits every valid occupant of `ranks`
+  };
+  power: number;              // 0 = no damage/heal component
+  kind: 'damage' | 'heal' | 'utility';
+  moveTarget?: number;        // + pushes back N, - pulls forward N (forced)
+  moveSelf?: number;          // + retreats N, - advances N (voluntary)
+  applies?: { status: StatusId; chance: number; value?: number }[]; // chance 0..1
+  energyGain?: number;        // bonus energy to user on use (basic attacks)
+  aiWeight?: number;          // base score for enemy AI (§10)
+}
+```
+
+**Resolution order inside one skill use (global rule, no per-skill exceptions):**
+
+1. Damage/heal to all targets →
+2. forced movement (`moveTarget`; applies Off-Balance, §8; decrements boss
+   Poise instead if the target is `heavy`, §11) →
+3. `applies` statuses (roll chance per target) →
+4. self movement (`moveSelf`, never causes Off-Balance) →
+5. Cat Pile trigger check (§8) →
+6. death/victory check.
+
+Damage-before-movement means a push/pull skill **never buffs its own damage** —
+Off-Balance windows are gifts to your *teammates*, which is the heart of the
+combo game.
+
+### Reference skill set (four cat classes)
+
+Classes: **Bruiser** (front-line tomcat), **Trickster** (leaping rogue),
+**Hexer** (back-line witch-cat), **Medic** (support purrer). Each cat knows
+Claw Swipe + 3 class skills (12 class skills in content; 8 specified here as
+the reference set).
+
+| Skill | Class | Cost | From | Targets | Power | Effects |
 |---|---|---|---|---|---|---|
-| Bruno | Bruiser | 46 | 14 | 9 | 7 | 5 |
-| Pip | Pouncer | 32 | 15 | 5 | 13 | 12 |
-| Miso | Oracle | 28 | 12 | 4 | 9 | 8 |
-| Tofu | Purrmedic | 34 | 10 | 6 | 8 | 10 |
+| **Claw Swipe** | all | 0 | [1,2] | enemy [1,2], single | 100 | `energyGain: 1`. Bread-and-butter that banks energy. |
+| **Body Slam** | Bruiser | 4 | [1,2] | enemy [1,2], single | 120 | `moveTarget: +2` — damage, then hurl them backward (Off-Balance for allies to exploit). |
+| **Hiss** | Bruiser | 2 | [1,2] | self | 0 | Applies **Guarded** to self and **Provoked** (chance 1.0) to all enemies until round end. |
+| **Pounce** | Trickster | 3 | [3,4] | enemy [1,2], single | 150 | `moveSelf: -2` (leap to the front line). High burst, scrambles your own formation. |
+| **Trip Wire** | Trickster | 4 | [2,3] | enemy [1,2], **row** | 60 | `moveTarget: +1` on each — the row-shove that sets up Cat Pile (§8). |
+| **Yank of Yarn** | Hexer | 3 | [3,4] | enemy [2,3,4], single | 60 | `moveTarget: -2` — drag a back-liner up front, out of its usable ranks, Off-Balanced. |
+| **Hairball Hex** | Hexer | 3 | [2,3,4] | enemy [1,2,3], single | 40 | Applies **Scratched** (value 3, chance 0.9). |
+| **Soothing Purr** | Medic | 4 | [3,4] | ally any rank, single | 120 (heal) | Also removes one Scratched application. |
+| **Nine Lives Nudge** | Medic | 6 | [3,4] | KO'd ally, single | 0 | Revive at 30% max HP, placed in rank 4 (others shift forward). Once per battle. Does **not** cost the target a Life (§12). |
 
-Fights last 2–4 rounds against 2–4 enemies.
-
----
-
-## 3. Damage Math (exact)
-
-For a damaging skill with `power` (a percent of ATK):
-
-```
-raw       = attacker.effATK * skill.power / 100
-            // effATK = ATK × status multipliers (e.g. Gunked ×0.7), recomputed on read,
-            // NOT floored mid-computation
-mitigated = raw * 100 / (100 + defender.DEF)
-mult      = tagMult * startleMult * ruffleMult * critMult * guardMult
-  tagMult:     1.5 if skill.tag == defender.weakTag
-               0.5 if skill.tag == defender.resistTag, else 1.0
-  startleMult: 1.5 if defender has Startled (or a Broken boss)
-  ruffleMult:  1.25 if defender has Ruffled
-  critMult:    1.5 on crit; critChance = (5 + attacker.LCK) / 100
-               (guaranteed crit, NO roll consumed, if attacker has Stalking
-                and skill.tag == 'pounce')
-  guardMult:   0.5 if defender has Guarding
-variance  = 0.9 + 0.2 * rng()                   // uniform [0.9, 1.1), one roll
-damage    = max(1, floor(mitigated * mult * variance))   // ONE floor, at the end
-```
-
-**Heals:** `heal = floor(caster.effATK * |power| / 100)` — no variance, no crit, capped at
-max HP. Overheal discarded.
-
-**Status application:** per effect per target, one roll:
-`applied = rng() < (effect.chance - target.LCK / 100)`. Exception: Ruffled-from-forced-move
-and Startled-from-weakness are **guaranteed** (no roll, no LCK resist).
-
-**RNG consumption order** (determinism contract) — per damaging action, per target in slot
-order (front 0→2, then back 3→5): ① crit roll (skipped when auto-crit applies), ② variance
-roll, ③ effect rolls in the skill's listed order. Heals consume no rolls. Initiative
-consumes no rolls (fully deterministic sort). The only other consumers: feral/coward AI
-target picks (one roll) and Flee (one roll). One `mulberry32` stream per battle, seeded by
-the dungeon seed + encounter id.
+This is how the system drives content: every skill needs `usableFrom` + target
+ranks + an optional move (which instantly places it in the positioning game);
+every enemy needs a formation slot, `usableFrom` constraints, and a shove or a
+reason to fear shoves; items map to the same hooks (Catnip = energy, Feather
+Wand = revive, Cucumber = guaranteed Frazzle, once per battle).
 
 ---
 
-## 4. Turn Order (exact algorithm)
+## 5. Resource System: Energy (cats)
 
-Round-based initiative, recomputed each round:
+- Every cat has **Energy 0–10**. Battle starts at **4**. Energy does not
+  persist between battles (resets to 4); **HP does persist** — HP is the
+  attrition currency of a floor, energy is the pacing currency of a fight.
+- **Regen:** +2 at the start of that cat's own turn, before acting (cap 10).
+- **Spend:** the skill's `cost`, paid on use. `energyGain` (Claw Swipe's +1)
+  is added after.
+- **Guard action** (§9) grants +2 bonus energy.
+- Net effect: Claw every turn ≈ +3/turn income; a 6-cost nuke needs ~2 turns of
+  setup. The player constantly chooses between cashing out now and banking for
+  a big combo round.
 
-```
-startRound():
-  catPileUsedThisRound = false
-  queue = all living units, sorted by:
-     1. SPD descending  (effective SPD, so Zoomies counts here)
-     2. ties: cats before enemies
-     3. remaining ties: lower slotIndex first
-  for each unit in queue (skip units dead or KO'd mid-round):
-    turnStart(unit):
-      Bleeding deals its damage now (can kill)
-      decrement all status durations; remove any at 0
-    if unit has Startled:
-      consume Startled; gain Wary (until end of NEXT round); TURN SKIPPED
-    else if cat:
-      vigor = min(10, vigor + 2 + (Zoomies ? 1 : 0)); player picks one action
-    else:
-      run enemy AI (§9); tick down its skill cooldowns by 1 first
-  endRound():
-    clear Wary flags whose round expired; round++
-```
-
-- SPD changes (Zoomies) affect ordering **next round** — the queue is frozen at round start.
-- Units summoned mid-round join at the next round's sort.
-- The initiative strip is always visible at the top of the screen (draw order = queue
-  order) — it is the player's planning tool.
-- No accuracy/evasion anywhere: every attack hits.
+Enemies skip energy entirely: each enemy skill has a `cooldown` (0 = usable
+every turn), tracked per skill, decremented at that enemy's turn start.
 
 ---
 
-## 5. Vigor (the resource)
+## 6. Status Effects (6)
 
-- Cats only. Range 0–10. **Starts every battle at 3.** Does not persist between battles.
-- **+2 at the start of the cat's own turn** (before acting; +3 with Zoomies; cap 10).
-- **Swipe** (free basic attack) grants **+1 Vigor** after resolving — basics are builders.
-- **Stalk** grants **+2 extra Vigor** (so +4 total that turn with regen).
-- **Guard** grants **+1 Vigor** immediately (defense is never a fully dead turn).
-- Skills cost 2–5 Vigor; a skill you can't afford is grayed out. Swipe / Stalk / Guard /
-  Swap / Item / Flee are always available.
-- Enemies do not use Vigor; their skills have integer **cooldowns** (turns until reusable).
+| Status | Effect | Tick timing | Duration | Stacking |
+|---|---|---|---|---|
+| **Scratched** (bleed) | Take `value` damage (ignores DEF and Guarded, min 1) | Start of victim's turn, before energy regen | 3 rounds | Values **add** (cap 3 applications, so cap value 9); reapplying resets duration to 3 |
+| **Frazzled** (stun) | Skip your next turn entirely (no regen, no action), then removed | On the victim's turn slot | 1 turn | Cannot be applied while already present (no stunlock). On a double-turn boss, consumes only **one** queue slot. |
+| **Off-Balance** | Take +50% damage (multiplier in §3) | passive | Until **round-end phase** of the current round, or consumed by Cat Pile | No stacking; reapplying does nothing |
+| **Guarded** | Take −50% damage | passive | Until the start of the owner's next turn | No stacking |
+| **Provoked** | Single-target damage skills must target the provoker, if the provoker is in a valid rank; otherwise unrestricted | passive (checked by AI/targeting) | Until round-end phase | Newest provoker wins |
+| **Mending** (regen) | Heal `value` HP | Start of owner's turn | 2 rounds | Duration refreshes, value replaced by the higher |
 
-The rhythm: you can't open every fight with your best skill; poking with Swipe to bank
-Vigor is a genuine tactical choice — and a Swipe can still land a `claw` weakness.
+KO clears all statuses on the KO'd combatant.
 
 ---
 
-## 6. Actions & the Skill Data Model
+## 7. Round-End Phase (exact order)
+
+1. Decrement all durations measured in rounds, removing expired statuses.
+2. Remove all Off-Balance and Provoked from all combatants.
+3. Reset the once-per-round Cat Pile latch (§8).
+4. Check victory / defeat (§12).
+
+(Enemy skill cooldowns do **not** tick here — they tick at each enemy's own
+turn start, §5. Listed to make the omission explicit.)
+
+---
+
+## 8. The Signature Twist: "Off-Paw" — forced movement IS the combo system
+
+> **Rule 1 — Off-Paw:** any combatant moved 1+ ranks against its will becomes
+> **Off-Balance** (takes +50% damage) until the end of the round.
+
+- **Shove-then-shred:** a fast cat pushes/pulls an enemy, and every teammate
+  acting later this round hits it for +50%. The visible initiative timeline
+  makes this plannable: "Pixel yanks at initiative 9, Bruno slams at 6."
+- **Rank denial as a bonus:** the same push that Off-Balances the shaman also
+  shoves it out of its `usableFrom` ranks — next turn it must waste an action
+  Advancing (§10).
+- **It cuts both ways:** enemy brutes shove *your* cats. A Medic knocked to
+  rank 2 is Off-Balance, out of position for Soothing Purr, and the enemies
+  smell blood. Party order is a defensive decision.
+- **Counterplay knobs:** the `heavy` trait (bosses, elites) means the body
+  never moves — but see Poise (§11): staggering blows still pay off against
+  bosses. Voluntary movement (Pounce, Swap, `moveSelf`) never self-inflicts
+  Off-Balance.
+- **Clamping:** push/pull moves the target N ranks (others shift to fill);
+  movement clamps at rank 1 and at the last occupied rank. **If the clamped
+  distance is 0, no Off-Balance** — a front-rank enemy can't be "pulled" for a
+  free debuff.
+
+> **Rule 2 — Cat Pile (all-out attack):** after any cat's action fully
+> resolves, if **every living enemy is Off-Balance** and **at least 2 cats are
+> alive**, a prompt appears (once per round). On accept, all living cats
+> dogpile: each living enemy takes `floor(0.30 * sum(living cats' atk))` —
+> typeless, ignores DEF, Guarded, and the Off-Balance multiplier, cannot miss
+> or crit. Then **Off-Balance is removed from all surviving enemies** (they
+> scramble back to their feet). A procedural dust-cloud with paws sticking out
+> plays. Declining keeps all Off-Balance marks in place.
+
+Cat Pile is the payoff spike for coordinated shoving: Trip Wire's row-push or
+two sequenced single shoves can floor a whole encounter. The real decision is
+Design 2's "pile or pick": pile now for flat damage, or keep the enemies
+Off-Balance and let the remaining cats hit them at +50% the normal way.
+Against a lone boss, the "every living enemy" condition is satisfied exactly
+during a Poise break (§11), making Cat Pile the boss-fight burst window.
+
+It's Darkest Dungeon's positioning tension, flipped from dread to slapstick:
+cats batting enemies around like toys, then piling on.
+
+---
+
+## 9. Player Choices Per Turn (the decision space)
 
 On a cat's turn, exactly one action:
 
-| Action | Cost | Effect |
+1. **Skill** — any known skill with `cost <= energy`, `usableFrom` containing
+   current rank, and a valid target.
+2. **Claw Swipe** — the free fallback that banks +1 energy (only from ranks
+   1–2, so back-liners can't turtle-farm energy).
+3. **Move** — swap with the adjacent cat ahead or behind (voluntary, no
+   Off-Balance). Costs the turn; fixes scrambled formations.
+4. **Guard** — gain Guarded + 2 bonus energy. The "bank a turn" button and the
+   answer to telegraphed boss nukes.
+5. **Item** — use one consumable (Tuna Snack: heal 12; Catnip: +2 energy to an
+   ally; Feather Wand: revive a KO'd ally at 25% max HP). Item effects reuse
+   the Skill shape with `cost: 0`; item content lives in the dungeon layer.
+6. **Scatter!** (flee) — see §12.
+
+Every turn overlaps 2–3 tensions: *spend vs bank* (Claw now or afford Body
+Slam next turn?), *combo sequencing* (who shoves, and do enough teammates act
+after them this round? is a full Cat Pile setup worth it?), *formation risk*
+(Pounce wins faster but leaves the Trickster tanking rank 1), *attrition math*
+(HP persists across the floor — is ending the fight a round sooner worth the
+chip damage?), and *aggro control* (Hiss eats a round of enemy turns but
+stalls your own damage).
+
+---
+
+## 10. Enemy AI (deterministic-ish, <100 lines)
+
+Score-and-pick. All ties resolved by the seeded RNG so fights don't feel
+robotic but replay identically.
+
+```ts
+function takeEnemyTurn(self: Combatant, state: Battle, rng: Rng): Action {
+  const usable = self.skills
+    .map(id => SKILLS[id])
+    .filter(s => cooldownReady(self, s)
+              && s.usableFrom.includes(self.rank)
+              && validTargets(self, s, state).length > 0);
+
+  if (usable.length === 0) return { type: 'advance' }; // move forward 1 rank (voluntary)
+
+  const scored: {skill: Skill; target: Combatant; score: number}[] = [];
+  for (const s of usable) {
+    for (const t of candidateTargets(self, s, state)) {   // honors Provoked
+      let score = s.aiWeight ?? 10;
+      if (s.kind === 'damage') {
+        score += 30 * (1 - t.hp / t.stats.hp);                 // prefer wounded
+        if (expectedDamage(self, s, t) >= t.hp) score += 50;   // kill shot
+        if (t.statuses.has('offBalance')) score += 15;         // exploits combos too!
+      }
+      if (s.kind === 'heal') score += t.hp / t.stats.hp < 0.5 ? 40 : -100;
+      if (s.applies?.some(a => t.statuses.has(a.status))) score -= 100; // don't reapply
+      if (s.moveTarget && !t.traits.includes('heavy')
+          && !t.statuses.has('offBalance')) score += 15;       // enemies combo you back
+      scored.push({ skill: s, target: t, score });
+    }
+  }
+  scored.sort((a, b) => b.score - a.score);
+  const top = scored.filter(b => b.score === scored[0].score);
+  const pick = top[rng.int(0, top.length - 1)];
+  return { type: 'skill', skill: pick.skill, target: pick.target };
+}
+```
+
+Target candidates for single-target damage skills: if any cat has Provoked this
+enemy and stands in a valid rank, that cat is the only candidate; otherwise all
+valid-rank cats (scoring then favors the most wounded; final ties → lower
+rank). `expectedDamage` uses variance 1.0 and no crit. Encounter personality
+comes from skill data (`aiWeight`, cooldowns, `usableFrom`), not code. A boss
+script hook runs before scoring: if a windup finished or a phase entry queued a
+scripted move (§11), it executes unconditionally.
+
+---
+
+## 11. Boss Fights — differentiators
+
+Bosses are data + five flags, not a second engine:
+
+1. **`heavy` + Poise (merged rule).** The boss body never moves, but every
+   forced-movement attempt from a skill (a `moveTarget` whose clamped distance
+   *would* have been ≥1 on a normal target) is a **staggering blow**: it
+   decrements the boss's visible **Poise** counter (typically 3) by 1, at most
+   once per skill use. At Poise 0 the boss becomes **Off-Balance until the
+   round-end phase**, any charging windup is cancelled, and Poise resets. The
+   player's combo engine stays alive against bosses — it just runs on a rhythm
+   instead of every turn, and a Poise break on a lone boss opens Cat Pile (§8).
+2. **Double turn** — two independent entries in the initiative queue (§2).
+   Frazzled consumes only one of the two slots.
+3. **Phase switch at 50% HP** — the boss's `skills` array is swapped for a
+   phase-2 list the moment HP crosses the threshold; cooldowns clear. Visual:
+   recolor + screen shake + log line.
+4. **Telegraphed nuke** — a phase-2 skill with `cooldown: 3` that takes two
+   turn-slots: on first use the boss gains a "Charging!" marker (a big warning
+   glyph over its head plus a log line naming the ranks it will hit), and the
+   next boss turn-slot releases a row-hitting 200-power attack. The party gets
+   a full window to Guard, Hiss, Swap out of the targeted ranks, Frazzle it, or
+   break Poise (both Frazzled and a Poise break cancel the charge).
+5. **Summons** — a skill that spawns a minion into the lowest empty enemy rank
+   (up to rank 5, cap 2 summons alive). Summons act starting next round. Live
+   minions must also be Off-Balance for a Cat Pile, so summons *ration* the
+   pile — intended pressure.
+6. **No fleeing** in boss battles.
+
+All boss behavior is data:
+`{ poise, doubleTurn, phases: [{ hpPct, skills }], windupSkills: [{ skillId, telegraphText }], summonSkillId }`.
+
+Example boss: **The Vacuum King** (floor 3) — heavy, Poise 3, 140 HP, double
+turn. Phase 2 "MAX SUCTION" pulls all cats 1 rank forward each turn — forced
+movement, so the boss weaponizes the player's own twist against them.
+
+---
+
+## 12. Victory / Defeat / Flee / Cat Death
+
+- **Victory:** all enemies at 0 HP → seeded loot + XP screen (dungeon layer's
+  job). No auto-heal: cats carry their wounds to the next room — floor
+  attrition, DD-style. Energy resets to 4 next fight; battle statuses clear.
+- **Defeat:** all living cats KO'd → the run ends (roguelike restart;
+  meta-unlocks out of scope).
+- **Flee ("Scatter!"):** an action any cat can take, not allowed vs bosses.
+  `chance = clamp(0.4 + 0.05 * (avgCatSpd - avgEnemySpd), 0.25, 0.9)`, one
+  `rngFloat()` roll. Success: battle ends immediately, no loot, all statuses
+  cleared, party returns to the room entrance (the encounter entity remains).
+  Failure: the turn is wasted. No stacking penalty for retries.
+- **Cat death — the Nine Lives rule.** At 0 HP a cat is **Knocked Out**:
+  removed from formation (others slide forward), statuses cleared, cannot act
+  or be targeted except by revival effects (Nine Lives Nudge, Feather Wand).
+  After a **won** battle, each still-KO'd cat stands up at 1 HP and **loses 1
+  of its 9 Lives** (shown as paw pips on the portrait; in-battle revival
+  avoids the Life loss — that's why the Medic matters). A cat at **0 Lives is
+  gone for the rest of the run**: its slot disappears (ranks compress to the
+  remaining cats) and its skills go with it. If every remaining cat is gone or
+  KO'd, the run ends. Lives do not regenerate; a rare shrine event may restore
+  one (dungeon layer).
+  *Why this hybrid:* single fights stay low-stakes and experimental (light
+  tone), while the run accumulates real dread — Darkest Dungeon pressure at
+  one integer per cat, without a first KO bricking a class-locked party.
+
+---
+
+## 13. Worked Example — one full round, real numbers
+
+**Party** (front to back):
+
+| Cat | Class | Rank | HP | ATK | DEF | SPD | CRT | EN | Lives |
+|---|---|---|---|---|---|---|---|---|---|
+| Bruno | Bruiser | 1 | 40/40 | 10 | 3 | 4 | 5 | 4 | 9 |
+| Pixel | Trickster | 2 | 28/28 | 12 | 1 | 8 | 15 | 4 | 9 |
+| Mora | Hexer | 3 | 24/24 | 11 | 0 | 6 | 5 | 4 | 8 |
+| Baguette | Medic | 4 | 26/26 | 9 | 1 | 5 | 5 | 4 | 9 |
+
+**Enemies:** Rat Thug A (R1, HP 18, ATK 7, DEF 1, SPD 5), Rat Thug B (R2,
+HP 18, ATK 7, DEF 1, SPD 5), Crow Shaman (R3, HP 14, ATK 8, DEF 0, SPD 7; its
+hex is `usableFrom [2,3,4]`, its Peck `usableFrom [1,2]`).
+
+**Initiative rolls** (spd + rngInt(0,2)): Bruno 4+2=6, Pixel 8+1=**9**, Mora
+6+2=**8**, Baguette 5+1=6, Rat A 5+2=7, Rat B 5+0=5, Crow 7+1=**8**.
+Sorted: Pixel 9 → [tie at 8: cats before enemies] Mora 8 → Crow 8 → Rat A 7 →
+[tie at 6, both cats: lower rank first] Bruno 6 → Baguette 6 → Rat B 5.
+
+1. **Pixel** (regen +2 → EN 6). From rank 2 Pounce is illegal (needs rank
+   3–4), so **Claw Swipe** on Rat A, power 100: base 12.0 × variance 1.0 ×
+   **crit** (roll 0.07 < 0.15) 1.5 = 18 − DEF 1 = **17**. Rat A 18→1.
+   EN 6+1 = 7.
+2. **Mora** (regen +2 → EN 6). **Yank of Yarn** (cost 3) on the Crow (rank 3,
+   valid). Damage first: base 0.6×11 = 6.6 × variance 1.1 = 7.26 → round
+   **7** − DEF 0 = 7. Crow 14→7. Then forced pull 2: Crow to enemy rank 1,
+   Rat A slides to 2, Rat B to 3. Moved 2 ranks → **Off-Balance**. Cat Pile
+   check: Rats A and B are not Off-Balance → no prompt. EN 3.
+3. **Crow Shaman** (Off-Balance, now rank 1). Its hex isn't usable from rank
+   1; only Peck (targets cat ranks 1–2). Candidates: Bruno (100% HP), Pixel
+   (100%) — tie score → lower rank → Bruno. Peck: base 8.0 × variance 0.9 =
+   7.2 → 7 − DEF 3 = **4**. Bruno 40→36.
+4. **Rat A** (1 HP, rank 2). Shiv (`usableFrom [1,2]`, targets cat ranks 1–2)
+   prefers the most wounded → Bruno (36/40). Base 7 × 1.1 = 7.7 → 8 − 3 =
+   **5**. Bruno 36→31.
+5. **Bruno** (regen +2 → EN 6). **Body Slam** (cost 4) on the Off-Balance Crow
+   at enemy rank 1: base 1.2×10 = 12 × variance 1.0 × no crit × **Off-Balance
+   1.5** = 18 − 0 = **18**. Crow 7→**dead** (push moot). Rats slide: A→1,
+   B→2. EN 2. *(Had the Crow been a `heavy` elite, the Body Slam push would
+   instead have chipped 1 Poise.)*
+6. **Baguette** (regen +2 → EN 6). Bruno is at 31/40 — Soothing Purr would
+   heal round(1.2×9) = 11, but he isn't in danger, so she **Guards**: Guarded
+   until her next turn, EN 6+2 = 8, banking toward Nine Lives Nudge money she
+   hopefully won't need.
+7. **Rat B** (rank 2). Shiv on the most wounded reachable cat → Bruno:
+   7 × 0.9 = 6.3 → 6 − 3 = **3**. Bruno 31→28.
+
+**Round-end phase:** no round-duration statuses remain (the Crow took its
+Off-Balance to the grave); the Off-Balance/Provoked sweep clears nothing; the
+Cat Pile latch resets; nobody is at 0 HP on either side → next round. Two rats
+at ranks 1–2, party healthy. Pixel is weighing a swap back to rank 3 to line
+up Pounce — or staying at rank 2 for Trip Wire next round to row-shove both
+rats Off-Balance and cash a **Cat Pile**
+(`floor(0.30 × (10+12+11+9)) = 12` to each rat, killing Rat A outright and
+leaving Rat B at 6).
+
+One round showcased: initiative ties, energy regen/banking, crit, variance,
+pull-combo (Yank → Body Slam for +50%), rank denial (the Crow's hex went
+offline), corpse sliding, AI wounded-targeting, the Guard economy, and the
+Cat Pile setup calculus.
+
+---
+
+## 14. Scope & Module Budget (~1500 LoC engine)
+
+The engine is **headless and pure** (grafted from Design 2):
+`resolveAction(state, action, rng) -> { newState, events[] }`. The PixiJS
+scene consumes the events queue (`Damage`, `Heal`, `Moved`, `OffBalance`,
+`PoiseBreak`, `CatPilePrompt`, `CatPile`, `StatusApplied`, `KO`, `Revive`,
+`PhaseChange`, `Charging`, `Summon`, `Fled`, `Victory`, `Defeat`, …) and
+animates it with tween-only motion (position/scale/alpha shakes, flash tints,
+floating `Text` numbers) — zero assets, trivially 60fps, and the whole combat
+core is unit-testable; the worked example above doubles as a unit test.
+
+| Module | ~LoC | Contents |
 |---|---|---|
-| **Skill** | skill's Vigor cost | as defined by data |
-| **Swipe** | 0 | `claw` melee, power 60; grants +1 Vigor after resolving |
-| **Stalk** | 0 | +2 Vigor; gain **Stalking**: next `pounce`-tag skill costs 0 and auto-crits |
-| **Guard** | 0 | +1 Vigor; gain **Guarding** until your next turn (incoming damage ×0.5) |
-| **Swap** | 0 (full turn) | Move self to the other row |
-| **Item** | 0 (full turn) | Use one consumable (tuna = heal, catnip = Zoomies, …) |
-| **Flee** | full turn | Party-wide escape attempt (§11); non-boss only |
-
-### Skill as data
-
-```ts
-type Tag = 'claw' | 'bite' | 'pounce' | 'yowl' | 'trick';
-type TargetMode = 'enemy-one' | 'enemy-row' | 'enemy-all' | 'ally-one' | 'ally-all' | 'self';
-
-interface EffectSpec {
-  kind: 'status' | 'move';
-  status?: StatusId;      // for kind 'status'
-  chance?: number;        // 0..1, LCK-resisted
-  duration?: number;      // turns
-  stacks?: number;        // Bleeding only; default 1
-  move?: 'push' | 'pull' | 'self-front' | 'self-back';   // for kind 'move'
-}
-
-interface Skill {
-  id: string; name: string; icon: string;  // icon = a char drawn as PixiJS Text
-  tag: Tag;
-  range: 'melee' | 'reach';
-  target: TargetMode;
-  cost: number;           // Vigor (cats); ignored for enemies
-  cooldown?: number;      // turns (enemies; also cat ultimates)
-  power: number;          // percent of ATK; 0 = no damage; negative = heal of |power|
-  effects?: EffectSpec[];
-  description: string;
-}
-```
-
-Resolution order for one action: pay cost → per target in slot order (damage → effects in
-listed order, moves after statuses) → attacker self-moves → post hooks (Swipe/Guard Vigor,
-Stalking consumption) → Cat Pile eligibility check (§7) → death/victory check.
-
-### Eight example skills (real data)
-
-```ts
-{ id:'pounce', name:'Pounce', icon:'🐾', tag:'pounce', range:'melee', target:'enemy-one',
-  cost:3, power:160, effects:[{kind:'move', move:'self-front'}],
-  description:'Leap on one enemy for heavy damage. You land in the front row.' },
-
-{ id:'rake', name:'Rake', icon:'≡', tag:'claw', range:'melee', target:'enemy-one',
-  cost:2, power:100, effects:[{kind:'status', status:'bleeding', chance:0.8, duration:3}],
-  description:'Claws rake deep. 80% chance to inflict Bleeding.' },
-
-{ id:'body-slam', name:'Body Slam', icon:'●', tag:'pounce', range:'melee', target:'enemy-one',
-  cost:4, power:130, effects:[{kind:'move', move:'push'}],
-  description:'All of the cat, at once. Heavy hit that shoves the target back (Ruffling it).' },
-
-{ id:'caterwaul', name:'Caterwaul', icon:'♪', tag:'yowl', range:'reach', target:'enemy-row',
-  cost:4, power:70,
-  description:'An unholy midnight noise hits an entire enemy row. Cancels boss charges.' },
-
-{ id:'curious-paw', name:'Curious Paw', icon:'?', tag:'trick', range:'reach', target:'enemy-one',
-  cost:3, power:90, effects:[{kind:'move', move:'pull'}],
-  description:'Bat the target like a dubious object, yanking it to the front row (Ruffled).' },
-
-{ id:'lick-wounds', name:'Lick Wounds', icon:'+', tag:'trick', range:'reach', target:'ally-one',
-  cost:3, power:-120,
-  description:'Restorative grooming: heal an ally for 120% of your ATK.' },
-
-{ id:'hairball', name:'Hairball', icon:'@', tag:'bite', range:'reach', target:'enemy-one',
-  cost:2, power:50, effects:[{kind:'status', status:'gunked', chance:0.7, duration:2}],
-  description:'Horrifying. 70% chance to Gunk the target (ATK −30%).' },
-
-{ id:'zoom-blessing', name:'Midnight Zoomies', icon:'~', tag:'trick', range:'reach',
-  target:'ally-one', cost:3, power:0,
-  effects:[{kind:'status', status:'zoomies', chance:1.0, duration:2}],
-  description:'Bestow the 3 AM energy: SPD ×2 next round, +1 Vigor regen.' },
-```
-
-### Class kits (content, not engine)
-
-Each cat class = 1 passive + 4 skills + the universal actions. ~20 skills total ships v1.
-
-- **Bruiser** (front tank): Rake, Body Slam, taunt-yowl, push tricks. Passive: −20%
-  incoming damage while in the front row.
-- **Pouncer** (burst striker): Pounce, Shred, self-move tricks. Passive: Stalking lasts
-  until used (no 3-turn expiry).
-- **Oracle** (reach caster): Caterwaul, Curious Paw, Hairball. Passive: first weakness
-  discovery per battle refunds 2 Vigor.
-- **Purrmedic** (support): Lick Wounds, Midnight Zoomies, Gunk-cleanse groom. Passive:
-  heals on front-row allies +25%.
-
-This is how the system drives content: every enemy needs a `weakTag`/`resistTag`/`temper`/
-row preference (4 data decisions = a complete enemy identity); every skill needs a tag and
-a range (which instantly places it in the weakness game and the row game); items map to
-statuses (catnip → Zoomies, tuna → heal, cucumber → guaranteed Startle, once per battle).
+| `battle/state.ts` | 150 | Combatant, Battle, rank ops (slide, push/pull clamp, swap), seeded RNG stream |
+| `battle/turns.ts` | 160 | Initiative rolls, round loop, round-end phase, win/lose/flee, Lives bookkeeping |
+| `battle/resolve.ts` | 280 | Skill pipeline (damage formula, movement, statuses, energy), Cat Pile |
+| `battle/status.ts` | 120 | 6 status defs + tick/stack/expiry rules |
+| `battle/ai.ts` | 100 | §10 scorer + boss script hook |
+| `battle/boss.ts` | 100 | Poise, double-turn, phase swap, charge telegraph, summons |
+| `battle/ui.ts` | 550 | PixiJS: rank slots, cat/enemy blobs, initiative timeline, skill bar, Life pips, Poise counter, floating damage Text, dust-cloud Cat Pile, tweened lunges; mouse targeting + 1–5 keys |
+| `data/*.ts` | (content, not engine) | 4 classes × 4 skills, ~10 enemies, 3 bosses, items, encounters |
 
 ---
 
-## 7. SIGNATURE TWIST — Whisker Sense: Stalk → Startle → Ruffle → CAT PILE
+## 15. Contradiction Ledger (how the three designs were reconciled)
 
-1. **Every enemy has one `weakTag` and one `resistTag`** (of the 5 tags). A weakness hit
-   deals ×1.5 **and inflicts Startled — guaranteed, no roll** (unless the target is Wary,
-   Guarding-N/A for enemies, or a boss, §10).
-2. **Startled** = knocked down: the unit **skips its next turn** and takes **×1.5 damage**
-   until it recovers. On recovery it gains **Wary** (Startle-immune until end of the next
-   round) — no stun-locking.
-3. **Whisker Sense (discovery):** tags a *species* hasn't been hit with show as `?` in the
-   target UI. Once any cat hits a species with a tag, the result (weak/resist/neutral) is
-   recorded in a run-wide bestiary forever. Scanning-by-scratching is a real early-fight
-   activity; crits are never required to learn.
-4. **Ruffled (the positional economy, grafted from Whisker Tactics):** forced movement
-   inflicts Ruffled — **+25% damage taken, duration 2** (ticks like any status). Push/pull
-   skills are cheap setup; the payoff is your heavy hitters exploiting the window. Pulling
-   the back-row piper does three jobs at once: repositions it into melee range, Ruffles it,
-   and drags the enemy formation out of shape.
-5. **Stalk → Pounce:** Stalking makes your next `pounce`-tag skill **free and auto-crit**.
-   Pounce is the most common weakness among skittish enemies, so the optimal loop — *stalk,
-   wait, pounce, startle, pile* — is also exactly what a cat would do.
-6. **CAT PILE:** the instant **every living enemy is Startled simultaneously** (a Broken
-   boss counts as Startled), the party auto-executes a Cat Pile — max once per round:
-   every living enemy takes
-   `floor(0.5 * sum(living cats' effATK) * 100 / (100 + enemy.DEF))`
-   untyped, unavoidable damage (no variance, no crit, min 1), with a gleeful
-   procedurally-drawn pile-of-cats dust cloud. All Startled states are consumed by the
-   pile (victims still gain Wary). This is the all-out-attack payoff and the reason to
-   sequence turns against the initiative strip.
-
-**Why turns stay interesting** — every cat turn asks three overlapping questions:
-
-- **Economy:** spend Vigor on a skill, Swipe for +1, Guard for +1 and safety, or Stalk for
-  +2 and a free auto-crit Pounce next turn? (Tempo vs burst.)
-- **Affinity:** throw the known weakness for a guaranteed Startle, or an unknown `?` tag to
-  fill the bestiary? Can we Startle *everything* before the round ends and trigger Cat
-  Pile, or is a Wary timer in the way?
-- **Geometry:** is the pouncer in front? Pull the back-row piper into Rake range (free
-  Ruffle), or push the bruiser rat away from the medic (it wastes a turn swapping back)?
-  Startle order matters too: startling a *fast* enemy before its turn deletes that turn.
-
----
-
-## 8. Status Effects (7 + one flag)
-
-One array of `{id, duration, stacks}` per unit and a small switch — that's the engine.
-**Global rules:** durations tick down at the owner's **turn start** (after Bleeding
-damage); a status at 0 is removed. Unless stated, re-application refreshes duration and
-never stacks. All statuses clear on death/KO and at battle end.
-
-| Status | Type | Effect (exact) | Stacking |
-|---|---|---|---|
-| **Startled** | debuff | Consumed at turn start: skip the turn, then gain **Wary**. While present: incoming damage ×1.5. | Never stacks; cannot apply while Wary; guaranteed (no roll) on weakness hit. |
-| **Ruffled** | debuff | Incoming damage ×1.25. Duration 2. | No stack; refresh. Applied (no roll) by forced row change; bosses get it in place of the move. |
-| **Bleeding** | debuff | At turn start take `3 × stacks` true damage (ignores DEF and all multipliers; can kill). Duration 3. | Stacks to 3; re-apply = +1 stack and refresh. |
-| **Gunked** | debuff | effATK ×0.7 (damage AND heals). Duration 2. | No stack; refresh. |
-| **Zoomies** | buff | SPD ×2 (next round's initiative) and Vigor regen +1. Duration 2. | No stack; refresh. |
-| **Stalking** | buff | Next `pounce`-tag skill: cost 0 + guaranteed crit. Consumed on use, else expires after 3 turns. | No stack. |
-| **Guarding** | buff | Incoming damage ×0.5. Duration 1 (naturally expires at your next turn start). | No stack. |
-
-**Wary** is a flag (`waryUntilRound = round + 1`), not a status: immune to Startled until
-it clears at end of that round. Cleansing (Purrmedic groom skill) removes Ruffled,
-Bleeding, Gunked.
-
----
-
-## 9. Enemy AI (deterministic, <100 lines)
-
-Each enemy has a `temper` and a priority-ordered skill list. Enemies pace via cooldowns.
-
-```ts
-function enemyAct(self: Unit, battle: Battle) {
-  // 0. LETHAL CHECK (graft from Whisker Tactics): if any ready+legal damaging skill's
-  //    MINIMUM damage (variance 0.9, no crit) kills a legal target, use the first such
-  //    skill on the lowest-HP killable target (tie: lowest slotIndex). Done.
-  // 1. PANIC: if self.hp < 25% maxHp and a heal/buff skill is ready → cast on self. Done.
-  // 2. Otherwise: first skill in priority order that is (cooldown ready) AND (range-legal
-  //    from my row) AND (has ≥1 legal target); fallback = Bite (0-cd melee, power 60).
-  // 3. Melee-locked? (chosen skill melee + I'm in back row + front row full):
-  //    Swap forward instead of acting. Done.
-  // 4. Target by temper (tie-break: lowest slotIndex):
-  //    'bully'  → lowest-HP legal target
-  //    'hunter' → highest-effATK legal target
-  //    'coward' → my last attacker if legal, else seeded-random legal target
-  //    'feral'  → seeded-random legal target
-}
-```
-
-Readable after a few fights (that's the point — formation choice answers tempers), fully
-reproducible: the only rolls are coward/feral target picks, drawn from the battle stream.
-
-### Reference enemies (floor 1)
-
-| Enemy | HP | ATK | DEF | SPD | LCK | weak / resist | temper | skills |
-|---|---|---|---|---|---|---|---|---|
-| Sewer Rat | 24 | 9 | 3 | 11 | 0 | pounce / yowl | bully | Gnaw (bite, melee, power 100) |
-| Rat Piper | 26 | 11 | 4 | 8 | 5 | yowl / claw | coward | Sour Note (yowl, reach, power 80, 70% Gunk, cd 0) |
-| Dust Bunny | 16 | 7 | 0 | 9 | 0 | claw / bite | feral | Choking Puff (bite, melee, power 60, 30% Gunk) |
-| Alley Toad | 34 | 10 | 6 | 6 | 0 | trick / pounce | hunter | Tongue Slap (bite, reach, power 90, pull, cd 1) |
-
----
-
-## 10. Boss Rules
-
-Bosses reuse the whole engine plus flags — no new systems:
-
-1. **Bulk:** 8–12× a floor enemy's HP; occupies the enemy front row alone (drawn 2 slots
-   wide). Immune to push/pull (forced-move attempts apply **Ruffled** instead) and immune
-   to the Startled turn-skip.
-2. **Poise Break:** instead of Startle, each weakness hit adds +1 to a visible **Poise
-   meter** (resets at round start). At **3 weakness hits in one round** the boss becomes
-   **Broken**: skips its next turn and takes ×1.5 damage until the end of the following
-   round. **Broken counts as Startled for Cat Pile eligibility** — coordinate three
-   weakness hits plus startling every minion in one round and the pile fires on the boss
-   too. The initiative strip becomes a puzzle board.
-3. **Telegraphed Charge:** skills with `charge: 1` announce on turn A ("The Rat King
-   inhales…") and fire next turn (typical payload: power 100–140 vs all cats). Two
-   answers, always: any **`yowl`-tag hit cancels the charge** (cats interrupt with noise,
-   naturally), and Guarding halves it. The AI uses charge skills on a fixed cadence
-   (every 3rd round, first action).
-4. **Phase change at ≤50% HP:** swap to skill list B, optionally change `weakTag`
-   (announced: "Its fur bristles differently…"; the bestiary entry for the boss resets
-   to `?`).
-5. **Summons:** a summon skill spawns ≤2 minions into empty enemy slots (they act from
-   next round). Live minions must all be Startled for a pile, so summons *ration* Cat
-   Pile — intended pressure.
-6. **No fleeing** boss fights.
-
----
-
-## 11. Victory, Defeat, Flee, and Nine Lives
-
-- **Victory:** all enemies dead → seeded loot screen. Statuses cleared, Vigor discarded,
-  **HP persists between fights** (attrition is real; food and the Purrmedic are the
-  answers).
-- **Knockout, not permadeath:** the run starts with a shared pool of **9 Lives** (a row of
-  paw prints in the HUD). A cat at 0 HP is **Knocked Out** — cartoon-ghost pop, removed
-  from battle, untargetable — and the pool loses 1 Life. After a won battle, KO'd cats
-  revive at **30% max HP**. Generous early, terrifying at 2 lives.
-- **Run over** when: (a) a cat would be KO'd with 0 Lives remaining, or (b) all 4 cats are
-  KO'd in one battle. Roguelike loop: keep meta-unlocks (if any), reroll the dungeon seed.
-- No mid-battle revival in v1 (keeps the resolver simple); a rare "Nine Lives Treat"
-  consumable is a clean later hook.
-- **Flee** (non-boss only, full-turn party action, one seeded roll):
-  `chance = clamp(0.5 + 0.04 * (avgCatSPD - avgEnemySPD), 0.25, 0.90)`,
-  **+0.10 per previous failed attempt this battle** (pity ramp, still clamped at 0.90).
-  Success → battle ends, no loot, damage and Lives spent stay spent, party returns to its
-  dungeon tile, the encounter entity remains. Failure → the acting cat's turn is wasted.
-
----
-
-## 12. Worked Example — Two Full Rounds, Every Number Reproducible
-
-**Party** (front: Bruno, Pip / back: Miso, Tofu) — stats in §2.
-**Enemies:** Sewer Rat A (slot 0), Sewer Rat B (slot 1) in front; Rat Piper (slot 3) in
-back — stat blocks in §9. All tags start as `?` in the bestiary (new run).
-
-**Round 1 initiative** (SPD desc; cats win ties; then slotIndex):
-Pip 13 → Rat A 11 → Rat B 11 → Miso 9 → Tofu 8 → Bruno 7 → Piper 6.
-
-1. **Pip** (Vigor 3+2=5): **Stalk.** +2 Vigor → 7; gains *Stalking*.
-2. **Rat A** (no lethal min-damage kill available; bully → lowest-HP front cat = Pip 32):
-   Gnaw. Crit roll 0.61 ≥ 0.05, no crit; variance 0.96.
-   `raw 9 → mit 9·100/105 = 8.571 → floor(8.571·0.96) = 8`. Pip 32→24.
-3. **Rat B**: Gnaw on Pip (24, still lowest). Crit roll 0.03 < 0.05 → **crit**; variance
-   1.05. `floor(8.571 · 1.5 · 1.05) = 13`. Pip 24→11.
-4. **Miso** (Vigor 5): **Curious Paw** (cost 3 → 2) on the Piper. Crit 0.71 no; variance
-   1.04. `raw 12·0.9 = 10.8 → mit 10.8·100/104 = 10.385 → floor(10.385·1.04) = 10`.
-   Piper 26→16. Bestiary: rat-piper vs `trick` = neutral. Pull succeeds (front row had
-   2/3) → Piper is now front **and Ruffled (duration 2, no roll)**.
-5. **Tofu** (Vigor 5): **Lick Wounds** (cost 3 → 2) on Pip: `floor(10 · 1.2) = 12`.
-   Pip 11→23.
-6. **Bruno** (Vigor 5): **Rake** (cost 2 → 3) on Rat A. Crit 0.30 no; variance 1.02.
-   `raw 14 → mit 14·100/103 = 13.592 → floor(13.592·1.02) = 13`. Rat A 24→11. Bleed roll
-   0.21 < (0.80 − 0) → **Bleeding, 1 stack**. Bestiary: sewer-rat vs `claw` = neutral.
-7. **Piper** (coward → last attacker = Miso): Sour Note. Crit 0.44 no; variance 0.93.
-   `raw 11·0.8 = 8.8 → mit 8.8·100/104 = 8.462 → floor(8.462·0.93) = 7`. Miso 28→21.
-   Gunk roll 0.55 < (0.70 − 0.08 LCK) → **Miso Gunked (2)**. (Ruffled affects damage the
-   Piper *takes*, not deals.)
-
-**Round 2 initiative** (unchanged — no SPD effects): Pip → Rat A → Rat B → Miso → Tofu →
-Bruno → Piper. Statuses at each owner's turn start: Rat A's Bleeding would tick 3, but…
-
-1. **Pip** (Vigor 7+2=9): **Pounce** on Rat A — *Stalking*: cost 0, auto-crit (no crit
-   roll). Variance 0.98. `raw 15·1.6 = 24 → mit 24·100/103 = 23.301 → ×1.5 weak ×1.5
-   crit ×0.98 = floor(51.38) = 51`. Rat A (11) **dies**. Bestiary: sewer-rat weak to
-   `pounce`. Pip self-moves front (already front).
-2. **Rat B** (turn start: nothing ticks): no lethal (min Gnaw vs Pip = floor(8.571·0.9)=7
-   < 23); bully → Pip (23 < Bruno 46). Crit 0.88 no; variance 0.91 → `floor(8.571·0.91)
-   = 7`. Pip 23→16.
-3. **Miso** (Gunked ticks 2→1; effATK = 12·0.7 = 8.4; Vigor 2+2=4): **Caterwaul**
-   (cost 4 → 0) on the enemy front row (Rat B, Piper), targets in slot order:
-   - Rat B: crit 0.52 no; var 1.01. `raw 8.4·0.7 = 5.88 → mit 5.88·100/103 = 5.709 →
-     ×0.5 resist ×1.01 = floor(2.88) = 2`. Rat B 24→22. Bestiary: rats resist `yowl`.
-   - Piper: crit 0.19 no; var 0.95. `mit 5.88·100/104 = 5.654 → ×1.5 weak ×1.25 Ruffled
-     ×0.95 = floor(10.07) = 10`. Piper 16→6 and **Startled** (weakness, guaranteed).
-   - Cat Pile check: Rat B not Startled → no pile.
-4. **Tofu** (Vigor 2+2=4): **Lick Wounds** (cost 3 → 1) on Pip: +12 → Pip 28.
-5. **Bruno** (Vigor 3+2=5): **Body Slam** (cost 4 → 1) on Rat B. Crit 0.66 ≥ 0.10 no;
-   variance 1.06. `raw 14·1.3 = 18.2 → mit 18.2·100/103 = 17.670 → ×1.5 weak ×1.06 =
-   floor(28.09) = 28`. Rat B (22) **dies** (push moot). **Cat Pile check: every living
-   enemy (just the Piper) is Startled → CAT PILE!** Each living enemy takes
-   `floor(0.5 · (14 + 15 + 8.4 + 10) · 100 / (100+4)) = floor(23.7·100/104) = 22`.
-   Piper (6 HP) is buried in cats. **Victory** — the Piper never even got to spend its
-   Startled skip.
-
-Two rounds demonstrate: Stalk→auto-crit Pounce, bestiary scanning, pull-as-triple-threat
-(reposition + Ruffle + tempo), resist/weakness math, Gunk shrinking both Caterwaul and the
-pile sum, guaranteed Startle, the once-per-round pile trigger, and the lethal/temper AI.
-Every number follows from §3 given the listed rolls.
-
----
-
-## 13. Implementation Budget (~1500 LoC)
-
-Engine is pure and synchronous — `resolveAction(state, action) → BattleEvent[]` — and the
-PixiJS layer replays the event list (floating damage Text, blob lerps on the ticker).
-Combat logic never touches rendering; the worked example above is a unit test.
-
-| Module | Est. LoC | Notes |
-|---|---|---|
-| `battle/state.ts` — Unit, rows, statuses, seeded RNG stream | 200 | one mulberry32, ordered rolls |
-| `battle/engine.ts` — round loop, initiative, action resolution, damage formula, Ruffle/Startle/Cat Pile, victory/defeat/flee, Nine Lives | 420 | pure functions |
-| `battle/ai.ts` — lethal check, panic, temper policy, boss charge/poise | 110 | §9–§10 verbatim |
-| `battle/skills.ts` + `data/*.ts` — Skill interface, effect resolver, ~20 skills, ~12 enemies, 2 bosses, 4 classes | 350 | plain objects |
-| `battle/ui.ts` — PixiJS scene: unit blobs, initiative strip, target picker (mouse + 1–5 keys), skill bar, floating numbers, log, pile animation | 420 | Graphics + Text only |
-| Misc — bestiary, Nine Lives HUD, item hooks | 100 | |
+| Conflict | Resolution |
+|---|---|
+| Resource: per-cat Energy (D1) vs per-cat MP (D2) vs shared 9-cap Moxie (D3) | **Per-cat Energy.** A shared pool couples all four cats to one number and punishes the last cat in initiative order; per-cat energy keeps every turn's spend/bank tension local and readable. The "party sequencing" pressure Moxie provided is preserved by Cat Pile setup and Off-Paw ordering. |
+| Exploit engine: forced-movement Off-Balance (D1) vs elemental affinities + Down/One More (D2) vs both (D3) | **Off-Balance only.** Two parallel exploit systems compete for the same design space, stack multipliers past the budget (weak × off-balance × crit ≈ 3.4×), and blow the LoC/content budget. Affinities and One More are cut; their *payoffs* (all-out attack, boss stagger rhythm) are re-hosted on Off-Balance via Cat Pile and Poise. |
+| Extra actions: One More / Pounce Pass (D2) | **Cut.** Extra-action chains need caps, pass UI, and regen exceptions — the hardest ~150 lines and the trickiest edge cases in D2. Cat Pile keeps the "coordinated payoff" fantasy without any extra-turn machinery. |
+| All-out attack trigger: all enemies Down (D2) | **Retargeted:** all living enemies Off-Balance, once per round; consumes survivors' Off-Balance, keeping D2's "pile or pick" decision intact. |
+| Damage math: flat-DEF subtraction (D1) vs ATK/(ATK+DEF) ratio (D2/D3) | **D1's formula** — the entire stat table, skill powers, and worked example are already balanced around it, and flat DEF makes Guarded/DEF-item math legible. `max(1, …)` handles the negative-base edge. |
+| Accuracy rolls + Blind (D2) | **Cut** — no misses. With 4 actors and no extra-turn engine, a whiffed turn is pure feel-bad; Blind existed only to serve accuracy. |
+| Bosses vs the combo engine: `heavy` shuts it off (D1) vs Poise (D2/D3) | **Merged:** heavy bosses never move, but forced-move attempts decrement Poise; a Poise break = Off-Balance window + windup cancel + Cat Pile access. Fixes D1's dead-system boss problem with D3's rhythm. |
+| Death: Bruised −25% maxHP (D1) vs Bruised −20% (D2) vs Nine Lives pips (D3) | **Nine Lives pips (per cat), Bruised cut** — one attrition marker, not two; on-theme; one integer per cat. In-battle revival avoids the Life loss, giving the Medic a real job. Per-cat pips (not a shared pool) so reckless play with one cat doesn't tax the others invisibly. |
+| Stun naming/behavior: Frazzled (D1) vs Shock (D2) vs Startled (D3) | **Frazzled**, D1 rules (no reapply while present). Clarified here: on a double-turn boss it consumes only one queue slot. |
+| Status tick timing: start of victim's turn (D1) vs end of turn (D2/D3) | **D1:** DoTs tick at the start of the victim's turn (before regen); round-counted durations decrement in the round-end phase. One clock, no per-turn duration bookkeeping. |
+| Enemy throttle: cooldowns (D1/D3) vs MP (D2) | **Cooldowns** for enemies, energy for cats — one resource system per side. |
+| AI unpredictability: RNG tie-breaks (D1/D3) vs 20% second-best pick (D2) | **RNG tie-breaks only.** A deliberate 20% suboptimal pick undermines the "plan around the timeline" promise; `aiWeight` supplies species personality. |
+| Stalk action (D3) | **Cut** — overlaps Guard (defensive banking) and Off-Balance (burst windows); a third setup verb dilutes the twist. |
+| Positioning: 4v5 single-file ranks (D1/D3) vs none (D2) | **Ranks (D1's exact model).** They are the twist's substrate and the main driver of class/enemy/item identity. D3's size-2 bosses are unnecessary once heavy bosses simply anchor rank 1. |
+| Initiative: spd + rngInt(0,2) per round (D1) vs pure spd sort (D2/D3) | **D1's jittered roll.** The ±2 jitter keeps same-speed mirror matches from being fully static while the visible timeline (frozen per round) preserves plannability. |
+| Engine architecture | **D2's headless pure-function + event queue**, grafted wholesale (§14). |
 
 ---
 
 ## Appendix: Judging Notes
 
-Scores (1–10): **(a)** fun/decision depth per turn, **(b)** implementability in ~1500 LoC,
-**(c)** fit with 4-cat party + light roguelike tone, **(d)** drives class/enemy/item design.
+Scores are 1–10 per criterion: (a) fun/decision depth per turn,
+(b) implementability within ~1500 lines of TS, (c) fit with a 4-cat party and
+light roguelike tone, (d) how well it drives class/enemy/item design.
 
-| Design | a | b | c | d | Total |
+| Design | (a) Fun/depth | (b) Implementability | (c) Fit/tone | (d) Content driver | Total |
 |---|---|---|---|---|---|
-| 1. Whisker Tactics (DD ranks + Ruffled) | 7 | 8 | 8 | 8 | 31 |
-| 2. Paws & Panic (P5 Down/One More/Pass Paw) | 8 | 9 | 8 | 8 | 33 |
-| **3. Nine Lives: Pounce & Poise (hybrid)** | **9** | **7** | **9** | **9** | **34 — winner** |
+| **1. Claws & Ranks** | **9** | 8 | **9** | 8 | **34 — winner** |
+| 2. Claws & Effect | 8 | **9** | 8 | 8 | 33 |
+| 3. Nine Lives: Stalk & Pounce | 8 | 6 | **9** | 8 | 31 |
 
-**Rationale.** D3 wins: it already fuses the pitch's two named inspirations, its
-Stalk→Pounce loop is the most *cat* mechanic in the contest, rows give enemy design a
-second axis (D2's biggest gap), and Poise Break is the best boss answer to knockdown
-loops. Its weakness is scope (two systems), addressed here by keeping D2's discipline:
-one resource, no extra-action insertion, uniform status engine. D2 scored highest on
-buildability and has the juiciest single loop, but zero positioning flattens enemy/skill
-design space. D1's positioning is the deepest but its payoff (Ruffled alone) is subtler
-than a knockdown loop, and 1-axis rank compaction + size-2 bosses is fiddlier than two
-rows.
-
-**Grafts taken.** From D1: Ruffled on forced movement (welded to push/pull — positioning
-becomes a damage economy), the AI lethal check, boss push-immunity converting to Ruffled,
-"melee-locked enemies waste turns repositioning" tempo warfare. From D2: Guard generating
-resource (+1 Vigor), flee pity ramp (+0.10/failure), the event-emitting pure-reducer
-architecture, per-species bestiary framing, keyboard 1–5 targeting.
-
-**Contradictions resolved.** (1) *Knockdown model:* D2's One More/Pass Paw inserts extra
-actions into the queue vs D3's Startle turn-skip — chose Startle: same tempo reward,
-~150 fewer LoC, no infinite-chain edge cases; Cat Pile stays as the all-startled payoff
-and a Broken boss counts as Startled so the pile exists in boss fights (fixing D3's
-dead-end there). (2) *Cat weaknesses:* D2 gave cats elemental weaknesses; rejected —
-enemies cannot Startle cats (avoids feel-bad chain-stuns, keeps AI simple; Guard remains
-the answer to charges, not to knockdown denial). (3) *Crits knock down* (D2) vs
-weakness-only (D3) — weakness-only: Startle stays deterministic and plannable; crits are
-pure magnitude. (4) *DEF:* divisor (D1/D3) over flat subtraction (D2) — no negative-base
-clamping edge cases, scales across floors. (5) *Resource persistence:* D2 carried EN
-between fights; rejected — Vigor resets to 3 (every fight opens with the same readable
-economy). (6) *Initiative jitter:* D1's per-round rng — rejected; deterministic sort
-makes the initiative strip a reliable planning tool and saves RNG-ordering bugs.
-(7) *Lives:* shared pool of 9 (D3) over per-cat 9 (D1) — one HUD counter, and losing a
-specialist cat forever (D1's 0-lives-gone rule) would gut class synergy, per D2's
-argument. (8) *Positioning grain:* two rows (D3) over four ranks + compaction (D1) —
-80% of the decisions at half the movement code; D1's remove-and-insert semantics are
-unnecessary with rows. (9) *Status engine:* unified `{id, duration, stacks}` ticking at
-owner turn start; D1's "until end of next turn" phrasing for Ruffled became duration 2
-under the uniform rule.
+- **Design 1 (winner).** The richest per-turn decision space: six actions that
+  each touch position, economy, and timing, plus the cleanest signature twist —
+  damage-before-movement makes shoves inherently cooperative rather than
+  selfish. It is also the most precisely specified entry (exact tie-breaks,
+  clamping rules, resolution order, RNG draw order), so it costs the fewest
+  follow-up design decisions. Weaknesses: the `heavy` trait made the signature
+  system go dead in boss fights (fixed by grafting Poise), and it lacked a
+  climactic payoff moment (fixed by grafting Cat Pile).
+- **Design 2.** The best engineering (headless pure engine, event queue —
+  grafted verbatim) and the best payoff moment (Cat Pile). But One More /
+  Pounce Pass chains are the hardest 150 lines in any of the three designs
+  (caps, regen exceptions, prompt interleaving), no positioning means classes
+  differentiate only by element and target count, and hidden-affinity probing
+  adds a bookkeeping layer (per-species reveal persistence) for depth that
+  fades once a species is known.
+- **Design 3.** The strongest theme (Stalk/Pounce/Moxie/Nine Lives all read
+  "cat") and the best death rule, but it is three systems welded together —
+  ranks AND affinities AND a shared pool AND Stalk — which overshoots the LoC
+  budget and overloads a single turn with overlapping currencies. The shared
+  9-cap pool also lets one cat starve the next, which plays worse than it
+  reads. Its Poise and Nine Lives ideas were the two best individual
+  mechanics in the contest, and both survive into the final design.
