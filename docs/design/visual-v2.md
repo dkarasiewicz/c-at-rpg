@@ -63,3 +63,22 @@ generated server-side via Masonry and cached in the shared content pool.
 - Idle/hit animation: gentle code-driven motion (breathing scale, tilt, aura
   pulse via additive-blend glow) instead of frame strips for v1; strips are a
   later upgrade using the GPT Image 2 anchored-strip pipeline.
+
+## Style contract (runtime consistency)
+
+One versioned source of truth consumed by BOTH the pregeneration batches and
+the runtime GM service, so on-the-fly art is indistinguishable from shipped art:
+
+- `src/content/artStyle.ts` exports `ART_STYLE = { version, basePrompt,
+  negative, palette, model: 'gpt-image-2', fallbackModel:
+  'gemini-3-pro-image-preview', anchorUrl }` — `basePrompt` is the exact cel-
+  shading/palette paragraph used for every asset in this repo; `anchorUrl`
+  points at the deployed copy of `docs/art/style-anchor-bruno.png` (served from
+  the site's own `/assets/`, so the server-side generator can pass it as a
+  reference image).
+- Category framing prompts (battle sprite / icon / tile / scene) are also
+  exported so runtime items use the same camera/lighting wording as the
+  pregenerated icon batch.
+- Every generated asset (build-time or runtime) records `styleVersion` in its
+  manifest/pool row. Bumping the style bible bumps the version; the pool can
+  then filter or lazily regenerate stale-style art instead of mixing styles.

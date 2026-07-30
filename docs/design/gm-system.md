@@ -89,3 +89,24 @@ results screen feeds `rating`; negative-rated content is retired.
 - Rate limiting per IP on Vercel; Masonry spend capped per day.
 - Secrets (ANTHROPIC_API_KEY, MASONRY_KEY, KV) live in Vercel env, never in
   the client bundle.
+
+## Runtime visual consistency + cross-playthrough persistence (hard requirements)
+
+1. **Consistency:** every runtime Masonry generation MUST be built from
+   `src/content/artStyle.ts` (see visual-v2.md "Style contract"): base style
+   prompt + category framing prompt + the style anchor as reference image +
+   the pinned model. No endpoint composes its own style wording. Generated
+   art is validated the same way the batch pipeline does (no text/watermark —
+   cheap check: a Haiku vision call or skip-and-flag for curation).
+2. **Persistence:** the content pool is the system of record. Every
+   stand/item/event generated for ANY player is written to the pool with its
+   art URL, `styleVersion`, and provenance, and becomes available to ALL
+   future runs (pool-first reuse). Art files are persisted to durable storage
+   (Vercel Blob or the Masonry asset URL if permanent) — never only in the
+   session. A player finishing a run enriches the shared world: their cats'
+   stands can appear as rival NPCs/loot flavor in other players' runs
+   (pool table `stands` doubles as a rival-encounter source, SHOULD-tier).
+3. **Cold start:** the shipped static content is just pool generation zero —
+   the pregenerated biome assets and default cats seed the pool at deploy time
+   (a `scripts/seed-pool.ts` uploads manifests + art URLs), so reuse works
+   from the first player onward.
