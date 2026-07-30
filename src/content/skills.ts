@@ -39,7 +39,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   bodySlam: {
     id: "bodySlam",
     name: "Body Slam",
-    desc: "Hit first, hurl second. The landing is your teammates’ problem.",
+    desc:
+      "«THE DUMPSTER KING» hits first, hurls second. The landing is your " +
+      "teammates’ problem.",
     cost: 4,
     usableFrom: [1, 2],
     target: { side: "enemy", ranks: [1, 2], pattern: "single" },
@@ -63,8 +65,10 @@ export const SKILLS: Record<SkillId, Skill> = {
   },
   dumpsterDunk: {
     id: "dumpsterDunk",
-    name: "Dumpster Dunk",
-    desc: "Pick it up. Slam-dunk it into the bins at the back. Two points.",
+    name: "DUMPSTER DUNK",
+    desc:
+      "«THE DUMPSTER KING» rises, picks them up, and slam-dunks them into " +
+      "the bins at the back. Two points.",
     cost: 6,
     usableFrom: [1],
     target: { side: "enemy", ranks: [1, 2], pattern: "single" },
@@ -100,8 +104,10 @@ export const SKILLS: Record<SkillId, Skill> = {
   },
   boxAmbush: {
     id: "boxAmbush",
-    name: "Box Ambush",
-    desc: "She vanishes into a cardboard box. The box reappears ANYWHERE.",
+    name: "BOX AMBUSH",
+    desc:
+      "Her Stand «BOX AMBUSH» swallows her whole. The box reappears " +
+      "ANYWHERE.",
     cost: 6,
     usableFrom: [1, 2, 3, 4],
     target: { side: "enemy", ranks: [1, 2, 3, 4, 5], pattern: "single" },
@@ -115,7 +121,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   yankOfYarn: {
     id: "yankOfYarn",
     name: "Yank of Yarn",
-    desc: "A thread of fate around the ankle. Front and center, please.",
+    desc:
+      "«STRING THEORY» loops a thread of fate around the ankle. Front and " +
+      "center, please.",
     cost: 3,
     usableFrom: [3, 4],
     target: { side: "enemy", ranks: [2, 3, 4], pattern: "single" },
@@ -136,8 +144,8 @@ export const SKILLS: Record<SkillId, Skill> = {
   },
   phantomCucumber: {
     id: "phantomCucumber",
-    name: "Phantom Cucumber",
-    desc: "She conjures the IDEA of a cucumber directly behind them.",
+    name: "PHANTOM CUCUMBER",
+    desc: "«STRING THEORY» conjures the IDEA of a cucumber directly behind them.",
     cost: 5,
     usableFrom: [3, 4],
     target: { side: "enemy", ranks: [1, 2, 3], pattern: "single" },
@@ -152,7 +160,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   soothingPurr: {
     id: "soothingPurr",
     name: "Soothing Purr",
-    desc: "A directed rumble at healing frequency. Also dislodges cursed hairballs.",
+    desc:
+      "«PURR ENGINE» directs a rumble at healing frequency. Also dislodges " +
+      "cursed hairballs.",
     cost: 4,
     usableFrom: [3, 4],
     target: { side: "ally", ranks: [1, 2, 3, 4], pattern: "single" },
@@ -174,8 +184,10 @@ export const SKILLS: Record<SkillId, Skill> = {
   },
   purrquake: {
     id: "purrquake",
-    name: "Purrquake",
-    desc: "The floor hums. Everyone’s fur settles. Everything is briefly okay.",
+    name: "PURRQUAKE",
+    desc:
+      "«PURR ENGINE» redlines. The floor hums, everyone’s fur settles, and " +
+      "everything is briefly okay.",
     cost: 6,
     usableFrom: [3, 4],
     target: { side: "ally", ranks: [1, 2, 3, 4], pattern: "row" },
@@ -192,7 +204,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   shiv: {
     id: "shiv",
     name: "Shiv",
-    desc: "A sharpened bottle cap, held with bad intent.",
+    desc:
+      "Its Stand «BOTTLE CAP REQUIEM» presents a sharpened bottle cap, held " +
+      "with bad intent.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -204,7 +218,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   swoop: {
     id: "swoop",
     name: "Swoop",
-    desc: "A leathery dive-bomb out of the dark.",
+    desc:
+      "«ECHO CHAMBER» screams the coordinates; a leathery dive-bomb out of " +
+      "the dark.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2, 3],
@@ -216,7 +232,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   nibble: {
     id: "nibble",
     name: "Nibble",
-    desc: "Mostly lint. Some teeth.",
+    desc: "Its Stand «SOFT OBLIVION» is mostly lint. Some teeth.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -229,7 +245,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   peck: {
     id: "peck",
     name: "Peck",
-    desc: "A spiteful jab of the beak.",
+    desc: "A spiteful jab of the beak, conducted by «MURDER BALLAD».",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -241,7 +257,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   hex: {
     id: "hex",
     name: "Hex",
-    desc: "A croaked curse that reaches any rank and leaves it bleeding.",
+    desc:
+      "«MURDER BALLAD» croaks a curse that reaches any rank and leaves it " +
+      "bleeding.",
     cost: 0,
     cooldown: 2,
     usableFrom: [2, 3, 4],
@@ -259,7 +277,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   ram: {
     id: "ram",
     name: "Ram",
-    desc: "Full speed ahead. Obstacle rescheduled to the next rank.",
+    desc:
+      "«CLEAN SWEEP» declares your rank part of the route. Full speed " +
+      "ahead; obstacle rescheduled.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -272,7 +292,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   spray: {
     id: "spray",
     name: "Spray",
-    desc: "A fanning arc of cold water. Cats HATE this.",
+    desc: "«WET BLANKET» fans an arc of cold water. Cats HATE this.",
     cost: 0,
     cooldown: 2,
     usableFrom: [2, 3, 4],
@@ -285,7 +305,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   squirt: {
     id: "squirt",
     name: "Squirt",
-    desc: "One pressurized spit while the tank refills.",
+    desc: "One pressurized spit while «WET BLANKET» refills the tank.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2, 3, 4],
@@ -297,7 +317,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   yarnSlam: {
     id: "yarnSlam",
     name: "Yarn Slam",
-    desc: "A fist of wound-up yarn, dense as regret.",
+    desc: "«CABLE KNIT» winds up a fist of yarn, dense as regret.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -313,7 +333,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   bite: {
     id: "bite",
     name: "Bite",
-    desc: "Porcelain teeth close and shove. Both hurt.",
+    desc: "«BONE CHINA» closes porcelain teeth and shoves. Both hurt.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -326,7 +346,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   laserZap: {
     id: "laserZap",
     name: "Laser Zap",
-    desc: "The red dot, weaponized. It can find you anywhere.",
+    desc: "«RED SHIFT» — the red dot, weaponized. It can find you anywhere.",
     cost: 0,
     cooldown: 0,
     usableFrom: [2, 3, 4],
@@ -338,7 +358,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   lidBash: {
     id: "lidBash",
     name: "Lid Bash",
-    desc: "A trash-can lid, swung like a door slamming shut.",
+    desc: "«MIDNIGHT BUFFET» swings a trash-can lid like a door slamming shut.",
     cost: 0,
     cooldown: 1,
     usableFrom: [1, 2],
@@ -352,7 +372,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   trashToss: {
     id: "trashToss",
     name: "Trash Toss",
-    desc: "Whatever was in the can. It is heavier than it looks.",
+    desc:
+      "Whatever «MIDNIGHT BUFFET» found in the can. It is heavier than it " +
+      "looks.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -364,7 +386,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   dampSlap: {
     id: "dampSlap",
     name: "Damp Slap",
-    desc: "A cold, wet sock across the face. Deeply insulting.",
+    desc: "«THE MISSING PAIR», cold and wet, across the face. Deeply insulting.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -377,7 +399,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   grizzledCuff: {
     id: "grizzledCuff",
     name: "Grizzled Cuff",
-    desc: "An open-pawed lesson from someone who has taught it before.",
+    desc:
+      "«GRANDFATHER CLAWS» delivers an open-pawed lesson it has taught many " +
+      "times before.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -393,7 +417,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   hoseWhack: {
     id: "hoseWhack",
     name: "Hose Whack",
-    desc: "The nozzle comes down like a riding crop.",
+    desc: "«ABSOLUTE VOID» brings the nozzle down like a riding crop.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -404,7 +428,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   dustBlast: {
     id: "dustBlast",
     name: "Dust Blast",
-    desc: "Reverse thrust. A bag's worth of grit, everywhere at once.",
+    desc:
+      "«ABSOLUTE VOID» reverses thrust. A bag's worth of grit, everywhere " +
+      "at once.",
     cost: 0,
     cooldown: 2,
     usableFrom: [1, 2],
@@ -418,7 +444,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   maxSuction: {
     id: "maxSuction",
     name: "MAX SUCTION",
-    desc: "Every hatch open, every motor screaming. The room leans toward it.",
+    desc:
+      "«ABSOLUTE VOID» opens every hatch, every motor screaming. The room " +
+      "leans toward it.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -435,7 +463,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   maul: {
     id: "maul",
     name: "Maul",
-    desc: "Nothing personal. Strictly business.",
+    desc: "«BAD TO THE BONE» collects. Nothing personal. Strictly business.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -446,7 +474,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   junkyardToss: {
     id: "junkyardToss",
     name: "Junkyard Toss",
-    desc: "Picked up by the scruff. Filed at the back with the other problems.",
+    desc:
+      "«BAD TO THE BONE» picks you up by the scruff and files you at the " +
+      "back with the other problems.",
     cost: 0,
     cooldown: 2,
     usableFrom: [1, 2],
@@ -460,8 +490,10 @@ export const SKILLS: Record<SkillId, Skill> = {
   // cooldown 3; the charge turn is boss.ts's job, this is the release.
   theBigBark: {
     id: "theBigBark",
-    name: "The Big Bark",
-    desc: "One bark. The whole front of the room stops existing politely.",
+    name: "THE BIG BARK",
+    desc:
+      "«BAD TO THE BONE» barks once. The whole front of the room stops " +
+      "existing politely.",
     cost: 0,
     cooldown: 3,
     usableFrom: [1, 2],
@@ -477,7 +509,9 @@ export const SKILLS: Record<SkillId, Skill> = {
   scepterBonk: {
     id: "scepterBonk",
     name: "Scepter Bonk",
-    desc: "Royal assent, administered directly to the skull.",
+    desc:
+      "«PURPLE REIGN» grants royal assent, administered directly to the " +
+      "skull.",
     cost: 0,
     cooldown: 0,
     usableFrom: [1, 2],
@@ -490,7 +524,7 @@ export const SKILLS: Record<SkillId, Skill> = {
   summonVermin: {
     id: "summonVermin",
     name: "Summon Vermin",
-    desc: "A squeak of command. The walls answer.",
+    desc: "«PURPLE REIGN» squeaks a command. The walls answer.",
     cost: 0,
     cooldown: 3,
     usableFrom: [1, 2],

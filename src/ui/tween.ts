@@ -32,6 +32,16 @@ interface Active {
 const active: Active[] = [];
 let ticking = false;
 
+/**
+ * A tween target backed by a destroyed pixi display object must never be
+ * written to (its position/scale internals are nulled — writing `y` throws
+ * "Cannot set properties of null"). Plain driver objects have no
+ * `destroyed` and always pass.
+ */
+function isDestroyed(obj: object): boolean {
+  return (obj as { destroyed?: unknown }).destroyed === true;
+}
+
 function ensureTicker(): void {
   if (ticking) return;
   ticking = true;
@@ -39,10 +49,22 @@ function ensureTicker(): void {
     const dt = ticker.deltaMS;
     for (const tw of active) {
       if (tw.dead) continue;
+      // target destroyed mid-flight (scene unmount, floater cleanup, …):
+      // drop the tween silently — onDone would act on a dead object.
+      if (isDestroyed(tw.obj)) {
+        tw.dead = true;
+        continue;
+      }
       tw.t += dt;
       const p = tw.t >= tw.ms ? 1 : tw.ease(tw.t / tw.ms);
-      for (const k in tw.to) {
-        tw.obj[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * p;
+      try {
+        for (const k in tw.to) {
+          tw.obj[k] = tw.from[k] + (tw.to[k] - tw.from[k]) * p;
+        }
+      } catch {
+        // e.g. an ObservablePoint whose owner was destroyed — kill the tween
+        tw.dead = true;
+        continue;
       }
       if (tw.t >= tw.ms) {
         tw.dead = true;
@@ -73,6 +95,7 @@ export function tween<T extends object>(
   onDone?: () => void,
 ): void {
   ensureTicker();
+  if (isDestroyed(obj)) return; // reading props of a destroyed target throws
   const target = obj as unknown as Record<string, number>;
   const from: Record<string, number> = {};
   const to: Record<string, number> = {};
@@ -122,10 +145,12 @@ export function shake(
   ms = 250,
 ): void {
   ensureTicker();
+  if (isDestroyed(target)) return;
   const baseX = target.x;
   const baseY = target.y;
   const driver = { t: 0 };
   const apply = () => {
+    if (isDestroyed(target)) return; // container died mid-shake (unmount)
     const decay = 1 - driver.t;
     const a = Math.random() * Math.PI * 2; // visual RNG only
     target.x = baseX + Math.cos(a) * amplitude * decay;
@@ -135,6 +160,7 @@ export function shake(
   Ticker.shared.add(tick);
   tween(driver, { t: 1 }, ms, "linear", () => {
     Ticker.shared.remove(tick);
+    if (isDestroyed(target)) return;
     target.x = baseX;
     target.y = baseY;
   });

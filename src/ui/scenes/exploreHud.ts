@@ -8,7 +8,7 @@
  * Pure presentation + input: every gameplay mutation goes through the
  * callbacks the explore scene provides (UI never computes outcomes).
  */
-import { Container, Graphics, Text } from "pixi.js";
+import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { ClassId, ItemId, RunState } from "../../core/types";
 import { CONSUMABLES } from "../../content/consumables";
 import { CLASSES } from "../../content/classes";
@@ -20,6 +20,28 @@ import { R, RADIUS, rh, rw, rx, ry } from "../layout";
 import { mono, ui } from "../textStyles";
 import { makeBar, makePanel, makePawRow, makeTooltip } from "../widgets";
 import { drawCatPortrait } from "../draw/cats";
+import { portraitTexture } from "../sprites";
+
+/**
+ * Cat HUD portrait: generated `portrait:<id>` sprite when the manifest has
+ * one (visual-v2), procedural head recipe otherwise. Centered on (0, 0),
+ * `size` px square. `ko` greys the sprite / draws the ×-eyed variant.
+ */
+function makeHudPortrait(classId: ClassId, ko: boolean, size = 48): Container {
+  const holder = new Container();
+  const tex = portraitTexture(classId);
+  if (tex) {
+    const sp = new Sprite({ texture: tex, anchor: 0.5 });
+    sp.scale.set(size / Math.max(tex.width, tex.height));
+    if (ko) sp.tint = 0x777788;
+    holder.addChild(sp);
+    return holder;
+  }
+  const g = new Graphics();
+  drawCatPortrait(g, classId, ko);
+  holder.addChild(g);
+  return holder;
+}
 
 export interface HudCallbacks {
   getRun(): RunState;
@@ -243,8 +265,7 @@ export class ExploreHud {
           .stroke({ width: 1, color: PAL.border }),
       );
       const gone = cat.lives <= 0;
-      const portrait = new Graphics();
-      drawCatPortrait(portrait, cat.classId, gone);
+      const portrait = makeHudPortrait(cat.classId, gone);
       portrait.position.set(8 + 24, 10 + 24);
       card.addChild(portrait);
 
@@ -448,8 +469,7 @@ export class ExploreHud {
         style: mono(14, { fill: PAL.gold }),
       });
       rank.position.set(12, 14);
-      const portrait = new Graphics();
-      drawCatPortrait(portrait, classId);
+      const portrait = makeHudPortrait(classId, false);
       portrait.scale.set(0.7);
       portrait.position.set(52, 22);
       const name = new Text({

@@ -1,0 +1,125 @@
+{
+  "version": 1,
+  "sprites": {
+    "cat:bruno": {
+      "file": "cat-bruno.png",
+      "w": 640,
+      "h": 640
+    },
+    "cat:pixel": {
+      "file": "cat-pixel.png",
+      "w": 640,
+      "h": 640
+    },
+    "cat:mora": {
+      "file": "cat-mora.png",
+      "w": 640,
+      "h": 640
+    },
+    "cat:baguette": {
+      "file": "cat-baguette.png",
+      "w": 640,
+      "h": 640
+    },
+    "portrait:bruno": {
+      "file": "portrait-bruno.png",
+      "w": 256,
+      "h": 256
+    },
+    "portrait:pixel": {
+      "file": "portrait-pixel.png",
+      "w": 256,
+      "h": 256
+    },
+    "portrait:mora": {
+      "file": "portrait-mora.png",
+      "w": 256,
+      "h": 256
+    },
+    "portrait:baguette": {
+      "file": "portrait-baguette.png",
+      "w": 256,
+      "h": 256
+    },
+    "enemy:ratThug": {
+      "file": "enemy-ratThug.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:sewerBat": {
+      "file": "enemy-sewerBat.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:dustBunny": {
+      "file": "enemy-dustBunny.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:crowShaman": {
+      "file": "enemy-crowShaman.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:roombaScout": {
+      "file": "enemy-roombaScout.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:sprinklerImp": {
+      "file": "enemy-sprinklerImp.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:yarnGolem": {
+      "file": "enemy-yarnGolem.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:porcelainHound": {
+      "file": "enemy-porcelainHound.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:laserGhost": {
+      "file": "enemy-laserGhost.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:trashPanda": {
+      "file": "enemy-trashPanda.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:sockWraith": {
+      "file": "enemy-sockWraith.png",
+      "w": 640,
+      "h": 640
+    },
+    "enemy:elderStray": {
+      "file": "enemy-elderStray.png",
+      "w": 640,
+      "h": 640
+    },
+    "boss:vacuumKing": {
+      "file": "boss-vacuumKing.png",
+      "w": 640,
+      "h": 640
+    },
+    "boss:dogfather": {
+      "file": "boss-dogfather.png",
+      "w": 640,
+      "h": 640
+    },
+    "boss:ratPrince": {
+      "file": "boss-ratPrince.png",
+      "w": 640,
+      "h": 640
+    },
+    "title:hero": {
+      "file": "title-hero.png",
+      "w": 1792,
+      "h": 1015
+    }
+  }
+}

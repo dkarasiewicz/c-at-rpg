@@ -5,7 +5,7 @@
  * chips and the ghost shove arrow. Pure presentation: every widget is fed
  * engine state / values and never computes gameplay outcomes.
  */
-import { Container, Graphics, Text } from "pixi.js";
+import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { BattleState, Combatant, Skill, StatusId } from "../../core/types";
 import { ENEMIES } from "../../content/enemies";
 import { PAL, darken } from "../palette";
@@ -22,6 +22,10 @@ import {
 } from "../widgets";
 import { drawCat, drawCatPortrait } from "../draw/cats";
 import { drawEnemy, makeHeavyGlyph, makeTierChevrons } from "../draw/enemies";
+import { catTexture, enemyTexture, portraitTexture } from "../sprites";
+
+/** Greyed tint for KO'd sprite portraits (procedural uses KO_GREY fills). */
+const KO_TINT = 0x777788;
 
 /* ---------------------------------------------------------------------- */
 /* Initiative ribbon (ui-art §8)                                           */
@@ -50,6 +54,18 @@ export interface Ribbon {
 /** Small portrait for a combatant (cat head / enemy silhouette), ~36px. */
 export function makeMiniPortrait(c: Combatant, size = 36): Container {
   const holder = new Container();
+  // generated portrait/sprite when available (visual-v2), procedural else
+  const tex =
+    c.side === "cat" && c.classId
+      ? portraitTexture(c.classId)
+      : enemyTexture(c.speciesId ?? "");
+  if (tex) {
+    const sp = new Sprite({ texture: tex, anchor: 0.5 });
+    sp.scale.set(size / Math.max(tex.width, tex.height));
+    if (c.ko) sp.tint = KO_TINT;
+    holder.addChild(sp);
+    return holder;
+  }
   const g = new Graphics();
   if (c.side === "cat" && c.classId) {
     drawCatPortrait(g, c.classId, c.ko);
@@ -488,10 +504,19 @@ export function makeActivePanel(): ActivePanel {
       view.visible = c !== null;
       if (!c || c.side !== "cat" || !c.classId) return;
 
-      const portrait = new Graphics();
-      drawCat(portrait, c.classId, "battle", 0.95, c.ko);
-      portrait.position.set(58, h - 10);
-      content.addChild(portrait);
+      const tex = catTexture(c.classId);
+      if (tex) {
+        const sp = new Sprite({ texture: tex, anchor: { x: 0.5, y: 1 } });
+        sp.scale.set((h - 20) / tex.height);
+        sp.position.set(58, h - 10);
+        if (c.ko) sp.tint = KO_TINT;
+        content.addChild(sp);
+      } else {
+        const portrait = new Graphics();
+        drawCat(portrait, c.classId, "battle", 0.95, c.ko);
+        portrait.position.set(58, h - 10);
+        content.addChild(portrait);
+      }
 
       const name = new Text({
         text: `${c.name} — ${c.classId}`,

@@ -95,7 +95,9 @@ export const R = {
     subtitleY: 260, // UI-18 PAL.textDim
     moon: { x: 980, y: 150, r: 90, craterDx: 18, craterDy: -12, craterR: 82 },
     rooftopY: 470, // skyline strip spans y 470–720
-    catXs: [420, 520, 620, 720], // Bruno, Pixel, Mora, Baguette (sit pose)
+    // Bruno, Pixel, Mora, Baguette (sit pose) — flanking the center column
+    // so the lineup never overlaps the menu buttons (K3; buttons x 500–780)
+    catXs: [180, 300, 960, 1080],
     menuButtons: [
       [500, 360, 280, 48],
       [500, 420, 280, 48],

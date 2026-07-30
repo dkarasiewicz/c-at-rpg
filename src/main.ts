@@ -11,6 +11,7 @@ import { DESIGN_H, DESIGN_W } from "./ui/layout";
 import { installFonts } from "./ui/textStyles";
 import { initInput, setSceneKeyHandler } from "./ui/input";
 import { loadMeta, saveRun } from "./core/run/save";
+import { newRun } from "./core/run/runState";
 import {
   createSceneManager,
   LAYER_NAMES,
@@ -30,6 +31,7 @@ import { LandingScene } from "./ui/scenes/landing";
 import { LootOverlay } from "./ui/overlays/loot";
 import { createPauseOverlay } from "./ui/overlays/pause";
 import { mountGalleryIfRequested } from "./ui/draw/glyphs";
+import { initSprites } from "./ui/sprites";
 
 /** Scenes whose on-screen time counts as run play time. */
 const RUN_SCENES: readonly SceneId[] = [
@@ -52,6 +54,9 @@ const RUN_SCENES: readonly SceneId[] = [
   });
   document.getElementById("pixi-container")!.appendChild(app.canvas);
   installFonts();
+  // visual-v2 generated sprites: manifest + textures, fail-soft (a missing
+  // manifest just leaves the procedural renderers in charge). Never throws.
+  await initSprites();
 
   /* ---- root + letterbox scaling (ui-art §1) ------------------------ */
   const root = new Container();
@@ -123,6 +128,33 @@ const RUN_SCENES: readonly SceneId[] = [
       ctx.run.playTimeMs += t.deltaMS;
     }
   });
+
+  // Dev/CI observability hook (read-only, like ?gallery=1): lets automated
+  // smokes poll the active scene id instead of guessing from pixels.
+  (window as unknown as { __scene?: () => string }).__scene = () =>
+    manager.current;
+
+  // ?smoke=battle — dev/CI hook (like ?gallery=1): skip boot/title, start a
+  // fresh run and drop straight into a non-boss battle so automated UI
+  // smokes can exercise combat deterministically. Follows the FSM legally:
+  // boot → title → floorgen → explore → battle.
+  const smoke = new URLSearchParams(window.location.search).get("smoke");
+  if (smoke === "battle") {
+    manager.goto("boot");
+    manager.goto("title");
+    ctx.run = newRun("SMOKE1");
+    manager.goto("floorgen");
+    const poll = setInterval(() => {
+      if (manager.current === "explore") {
+        clearInterval(poll);
+        manager.goto("battle", {
+          enemies: ["ratThug", "ratThug", "sewerBat"],
+          encounterIndex: 1,
+        });
+      }
+    }, 100);
+    return;
+  }
 
   manager.goto("boot");
 })();

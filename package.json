@@ -12,6 +12,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "pixi.js": "^8.8.1"
   },
   "devDependencies": {

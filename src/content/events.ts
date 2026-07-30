@@ -21,8 +21,8 @@ export const EVENTS: GameEvent[] = [
     floors: [1, 6],
     prompt:
       "In the middle of the corridor sits a ball of yarn, wound too perfectly, " +
-      "lit by no torch you can find. It smells faintly of magic and wet wool. " +
-      "It rolls half a paw-width toward you. On its own.",
+      "lit by no torch you can find. It smells faintly of Stand energy and wet " +
+      "wool. It rolls half a paw-width toward you. On its own. Menacingly.",
     options: [
       {
         label: "Bat it around. It exists to be batted.",
@@ -451,8 +451,9 @@ export const EVENTS: GameEvent[] = [
     floors: [2, 6],
     prompt:
       "It appears on the far wall. It dances. It has no source, no mass, no " +
-      "mercy. Generations of cats have chased it; none have caught it. " +
-      "It slides three inches to the left, daring you.",
+      "user, no mercy — an enemy Stand, the elders insist, whose wielder has " +
+      "never been found. Generations of cats have chased it; none have caught " +
+      "it. It slides three inches to the left, daring you.",
     options: [
       {
         label: "CHASE.",
@@ -536,8 +537,9 @@ export const EVENTS: GameEvent[] = [
     floors: [3, 6],
     prompt:
       "The Ancient Enemy sleeps in its charging dock, one light blinking slow " +
-      "and red. Its dust bin rattles when the draft moves it — rattles like a " +
-      "great many shinies. Every tail in the party is already puffed.",
+      "and red, its Stand «CLEAN SWEEP» idling in standby above it. Its dust " +
+      "bin rattles when the draft moves it — rattles like a great many " +
+      "shinies. Every tail in the party is already puffed.",
     options: [
       {
         label: "Pounce it. End the bloodline.",
@@ -703,7 +705,7 @@ export const EVENTS: GameEvent[] = [
         outcomes: [
           {
             weight: 1,
-            text: "His purr is a war drum heard from a safe distance. He speaks of the Rat King's grandsire, of the Great De-Clawing, of a red dot he almost caught in '09. Your wounds knit as you listen.",
+            text: "His purr is a war drum heard from a safe distance. He speaks of the Rat King's grandsire, of the Great De-Clawing, of Stands lost in the wash, of a red dot he almost caught in '09. Your wounds knit as you listen.",
             effects: [{ kind: "heal", target: "party", amount: 4 }],
           },
         ],
@@ -713,7 +715,7 @@ export const EVENTS: GameEvent[] = [
         outcomes: [
           {
             weight: 1,
-            text: "The grate is warm. The mistake is instant. The Elder rises like smoke with a grudge, and you learn firsthand why the dungeon never managed to kill him.",
+            text: "The grate is warm. The mistake is instant. The Elder rises like smoke with a grudge — and «GRANDFATHER CLAWS» rises behind him, vast and patient — and you learn firsthand why the dungeon never managed to kill him.",
             effects: [
               {
                 kind: "fight",

@@ -50,9 +50,11 @@ export const CLASSES: Record<ClassId, CatClass> = {
     flavor: {
       bio:
         "Ten years guarding a bodega door. Nothing got in. Nothing gets past " +
-        "him now. He would simply prefer you didn't make him get up.",
+        "him now. His Stand, «THE DUMPSTER KING», looms behind him — a " +
+        "crowned colossus of alley trash and yarn. Neither of them would " +
+        "prefer to get up.",
       barks: {
-        crit: "Filed under: trash.",
+        crit: "«THE DUMPSTER KING» descends! Filed under: trash.",
         ko: "...five minutes...",
         catPile: "PILE ON.",
       },
@@ -94,10 +96,12 @@ export const CLASSES: Record<ClassId, CatClass> = {
     },
     flavor: {
       bio:
-        "Every object on every shelf is a to-do list. Every enemy is an " +
+        "Every object on every shelf is a to-do list. Her Stand, " +
+        "«BOX AMBUSH», is a cardboard phantom that waits inside any box, " +
+        "anywhere, including boxes that do not exist yet. Every enemy is an " +
         "object on a shelf.",
       barks: {
-        crit: "YEET.",
+        crit: "«BOX AMBUSH»! YEET.",
         ko: "rude.",
         catPile: "DOGPILE! ...cat-pile!",
       },
@@ -143,10 +147,11 @@ export const CLASSES: Record<ClassId, CatClass> = {
     },
     flavor: {
       bio:
-        "She was somebody's familiar once. The yarn obeys her. The corners " +
-        "of rooms know her name. Please stop asking about the witch.",
+        "She was somebody's familiar once. Her Stand, «STRING THEORY», " +
+        "hums through every thread in the dungeon; the yarn obeys her. The " +
+        "corners of rooms know her name. Please stop asking about the witch.",
       barks: {
-        crit: "As foretold.",
+        crit: "«STRING THEORY». As foretold.",
         ko: "I have been here before.",
         catPile: "The stars align.",
       },
@@ -192,9 +197,11 @@ export const CLASSES: Record<ClassId, CatClass> = {
     flavor: {
       bio:
         "Baked to perfection in a shop window, now applying warmth as a " +
-        "combat discipline. Carries the snacks. Guards the snacks.",
+        "combat discipline. Her Stand, «PURR ENGINE», idles at healing " +
+        "frequency and redlines at group-hug. Carries the snacks. Guards " +
+        "the snacks.",
       barks: {
-        crit: "Oven's hot!",
+        crit: "«PURR ENGINE», full throttle!",
         ko: "Mind the snacks.",
         catPile: "Group hug!",
       },

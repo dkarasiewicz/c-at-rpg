@@ -216,7 +216,8 @@ export const ENEMIES: Record<EnemyId, EnemyDef> = {
       windup: {
         skillId: "theBigBark",
         telegraph:
-          "The Dogfather draws a monstrous breath — ranks 1-2 are marked!",
+          "«BAD TO THE BONE» rears behind The Dogfather, drawing a " +
+          "monstrous breath — ranks 1-2 are marked!",
       },
     },
   },

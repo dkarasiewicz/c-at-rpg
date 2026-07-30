@@ -7,7 +7,7 @@
  * the engine itself is never blocked by animation. Zero rule logic lives
  * here: every outcome, legality check and preview number comes from core.
  */
-import { BitmapText, Container, Graphics, Text } from "pixi.js";
+import { BitmapText, Container, Graphics, Sprite, Text } from "pixi.js";
 import type {
   BattleAction,
   BattleEvent,
@@ -59,6 +59,7 @@ import { killTweens, shake, tween } from "../tween";
 import { makeBar, makeEnergyPips, makeStatusChip, type Bar } from "../widgets";
 import { drawCat } from "../draw/cats";
 import { drawEnemy } from "../draw/enemies";
+import { catTexture, enemyTexture } from "../sprites";
 import { layer, type GameCtx, type Scene } from "../sceneManager";
 import type { EventWinContext, LootOverlayParams } from "../overlays/loot";
 import {
@@ -104,8 +105,9 @@ interface UnitView {
   id: string;
   side: "cat" | "enemy";
   root: Container; // at (slotX, groundY); feet origin
-  body: Container; // idle bob + Off-Balance tilt
-  gfx: Graphics;
+  body: Container; // idle bob + breathing + Off-Balance tilt
+  gfx: Graphics | Sprite; // generated sprite when available, procedural else
+  aura: Graphics; // additive Stand-aura flash behind the body
   hpBar: Bar;
   hpNow: number;
   hpMax: number;
@@ -130,6 +132,21 @@ const slotX = (side: "cat" | "enemy", rank: number): number =>
 
 const HEAD_Y = -104; // status rows / floaters spawn height above the feet
 const TILT = (8 * Math.PI) / 180;
+const ATTACK_TILT = 0.09; // slight lean into the lunge (rad)
+const BREATH_AMP = 0.015; // ±1.5% idle breathing scale
+
+/** Sprite target height (px, feet-aligned), matched to procedural sizes. */
+const GRADE_H: Record<string, number> = {
+  minion: 78,
+  standard: 92,
+  elite: 115,
+  boss: 147,
+};
+const spriteHeightFor = (c: Combatant): number => {
+  if (c.side === "cat") return c.classId === "bruiser" ? 112 : 100;
+  const grade = ENEMIES[c.speciesId ?? ""]?.look.sizeGrade ?? "standard";
+  return GRADE_H[grade] ?? 92;
+};
 
 /* ---------------------------------------------------------------------- */
 /* The scene                                                               */
@@ -218,6 +235,35 @@ export function createBattleScene(): Scene {
     }
   };
 
+  /**
+   * Stand name for a combatant, read defensively from content flavor (the
+   * theme pivot adds Stand names to content as optional fields; the UI must
+   * work with or without them and never modifies content).
+   */
+  const standNameOf = (id: string): string | null => {
+    const c = bs?.combatants.find((x) => x.id === id);
+    if (!c) return null;
+    const src: unknown =
+      c.side === "cat" && c.classId
+        ? CLASSES[c.classId]
+        : ENEMIES[c.speciesId ?? ""];
+    if (typeof src !== "object" || src === null) return null;
+    const o = src as Record<string, unknown>;
+    const flavor =
+      typeof o.flavor === "object" && o.flavor !== null
+        ? (o.flavor as Record<string, unknown>)
+        : {};
+    const v = o.stand ?? o.standName ?? flavor.stand ?? flavor.standName;
+    return typeof v === "string" && v.length > 0 ? v : null;
+  };
+
+  /** "「THE DUMPSTER KING」 Body Slam" when a Stand is known, else the skill. */
+  const announceSkill = (actorId: string, skillId: string): string => {
+    const stand = standNameOf(actorId);
+    const name = skillName(skillId);
+    return stand ? `「${stand.toUpperCase()}」 ${name}` : name;
+  };
+
   const pushLog = (text: string): void => {
     logLines.push(text);
     if (logLines.length > 40) logLines.shift();
@@ -287,12 +333,35 @@ export function createBattleScene(): Scene {
     const root = new Container();
     root.position.set(slotX(c.side, c.rank), R.combat.groundY);
     const body = new Container();
-    const gfx = new Graphics();
-    if (c.side === "cat" && c.classId) {
-      drawCat(gfx, c.classId, "battle");
+    const h = spriteHeightFor(c);
+
+    // Stand-aura flash (additive, alpha-tweened on hit) behind the body
+    const aura = new Graphics()
+      .ellipse(0, -h * 0.48, h * 0.44, h * 0.52)
+      .fill(0xffffff);
+    aura.blendMode = "add";
+    aura.alpha = 0;
+    body.addChild(aura);
+
+    // generated sprite (visual-v2) with the procedural recipe as fallback
+    let gfx: Graphics | Sprite;
+    const tex =
+      c.side === "cat" && c.classId
+        ? catTexture(c.classId)
+        : enemyTexture(c.speciesId ?? "");
+    if (tex) {
+      const sp = new Sprite({ texture: tex, anchor: { x: 0.5, y: 1 } });
+      sp.scale.set(h / tex.height); // fit slot height, square = aspect kept
+      gfx = sp;
     } else {
-      const def = ENEMIES[c.speciesId ?? ""];
-      if (def) drawEnemy(gfx, def.look);
+      const g = new Graphics();
+      if (c.side === "cat" && c.classId) {
+        drawCat(g, c.classId, "battle");
+      } else {
+        const def = ENEMIES[c.speciesId ?? ""];
+        if (def) drawEnemy(g, def.look);
+      }
+      gfx = g;
     }
     body.addChild(gfx);
     root.addChild(body);
@@ -336,6 +405,7 @@ export function createBattleScene(): Scene {
       root,
       body,
       gfx,
+      aura,
       hpBar,
       hpNow: c.hp,
       hpMax: c.stats.hp,
@@ -986,14 +1056,31 @@ export function createBattleScene(): Scene {
           tween(a.root, { x: homeX + dir * 28 }, 90, "quadOut", () => {
             tween(a.root, { x: homeX }, 180, "quadOut");
           });
+          // slight tilt into the attack, returning to any Off-Balance lean
+          const baseRot = a.statuses.has("offBalance")
+            ? (a.side === "cat" ? -1 : 1) * TILT
+            : 0;
+          tween(
+            a.body,
+            { rotation: baseRot + dir * ATTACK_TILT },
+            90,
+            "quadOut",
+            () => {
+              tween(a.body, { rotation: baseRot }, 180, "quadOut");
+            },
+          );
         }
         u.hpNow = Math.max(0, u.hpNow - e.amount);
         u.hpBar.set(u.hpNow / u.hpMax);
-        // hit flash + jitter
+        // hit flash + jitter + Stand-aura flash
         u.gfx.tint = 0xff9a9a;
         delay(90, () => {
-          u.gfx.tint = 0xffffff;
+          if (!u.gfx.destroyed) u.gfx.tint = 0xffffff;
         });
+        u.aura.tint = e.crit ? PAL.gold : PAL.stFrazzled; // gold crit / spectral purple
+        killTweens(u.aura);
+        u.aura.alpha = e.crit ? 0.6 : 0.4;
+        tween(u.aura, { alpha: 0 }, 280, "quadOut");
         tween(
           u.body,
           { x: (Math.random() < 0.5 ? -1 : 1) * 5 },
@@ -1025,7 +1112,9 @@ export function createBattleScene(): Scene {
             ? `Cat Pile! ${nameOf(e.id)} takes ${e.amount}.`
             : e.source === "scratched"
               ? `${nameOf(e.id)} bleeds for ${e.amount} (Scratched).`
-              : `${skillName(e.source)} hits ${nameOf(e.id)} for ${e.amount}${
+              : `${announceSkill(lastActorId ?? "", e.source)} hits ${nameOf(
+                  e.id,
+                )} for ${e.amount}${
                   e.crit ? " — CRIT!" : ""
                 }${e.offBal ? " (Off-Balance ✶)" : ""}`,
         );
@@ -1037,7 +1126,13 @@ export function createBattleScene(): Scene {
         u.hpNow = Math.min(u.hpMax, u.hpNow + e.amount);
         u.hpBar.set(u.hpNow / u.hpMax);
         floater(u.root.x, u.root.y + HEAD_Y, `+${e.amount}`, PAL.heal);
-        pushLog(`${nameOf(e.id)} recovers ${e.amount} HP.`);
+        const healStand =
+          e.source !== "mending" ? standNameOf(lastActorId ?? "") : null;
+        pushLog(
+          healStand
+            ? `「${healStand.toUpperCase()}」 mends ${nameOf(e.id)} for ${e.amount} HP.`
+            : `${nameOf(e.id)} recovers ${e.amount} HP.`,
+        );
         return 220;
       }
       case "moved": {
@@ -1660,11 +1755,15 @@ export function createBattleScene(): Scene {
         fn();
       }
 
-      // ambience: idle bob, star orbits, active-slot pulse, charge bounce
+      // ambience: idle bob + breathing, star orbits, slot pulse, charge bounce
       const t = elapsed / 1000;
       for (const u of units.values()) {
         if (u.dead) continue;
         u.body.y = Math.sin((t * Math.PI * 2) / 1.6 + u.bobPhase) * 2;
+        // slow breathing: ±1.5% vertical scale, slight inverse horizontal
+        const br = Math.sin((t * Math.PI * 2) / 2.8 + u.bobPhase) * BREATH_AMP;
+        u.body.scale.y = 1 + br;
+        u.body.scale.x = 1 - br * 0.5;
         if (u.stars.visible) {
           u.stars.children.forEach((star, i) => {
             const a = t * 0.8 * Math.PI * 2 + (i * Math.PI * 2) / 3;
