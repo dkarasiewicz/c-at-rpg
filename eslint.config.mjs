@@ -17,4 +17,23 @@ export default tseslint.config(
     },
     rules: {},
   },
+  // ARCHITECTURE.md §0 layering: src/core and src/content are pure logic/data —
+  // pixi.js (and any of its subpaths) must never be imported there.
+  {
+    files: ["src/core/**/*.{ts,tsx}", "src/content/**/*.{ts,tsx}"],
+    rules: {
+      "no-restricted-imports": [
+        "error",
+        {
+          patterns: [
+            {
+              group: ["pixi.js", "pixi.js/*"],
+              message:
+                "src/core and src/content must stay pixi-free (ARCHITECTURE.md §0).",
+            },
+          ],
+        },
+      ],
+    },
+  },
 );

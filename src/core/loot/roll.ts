@@ -1,0 +1,407 @@
+/**
+ * c(at)rpg — loot roll engine (loot.md §5, value formulas §3).
+ *
+ * Pure functions: every roll comes from the caller-provided `Rng`
+ * (chestSeed / victorySeed / eventSeed / shop streams — ARCHITECTURE.md §4).
+ * Roll order per loot.md §5e — unneeded rolls are SKIPPED, not burned:
+ *   ① Shinies variance (fights only) → ② drop-chance rolls (§5a) →
+ *   ③ category/draw roll → ④ rarity → ⑤ slot → ⑥ def pick →
+ *   ⑦ Sleek secondary pick. Stat values are formulas (§3) — no rolls.
+ *
+ * EquipInstance uids are assigned sequentially starting at `ctx.nextUid`;
+ * inventory.applyGrant bumps the stored counter past the highest granted uid.
+ */
+import type {
+  ClassId,
+  EquipInstance,
+  ItemId,
+  LootGrant,
+  MewHookId,
+  Rarity,
+  Rng,
+  StatKey,
+} from "../types";
+import { pickWeighted, roundHalfUp } from "../util";
+import { EQUIP_DEFS, RARITY_TABLE } from "../../content/equipment";
+import {
+  BOSS_CONSUMABLE_ROLLS,
+  BOSS_RARITY,
+  BUNDLES,
+  CHEST_DRAWS,
+  CONSUMABLE_WEIGHTS,
+  FIGHT_DROPS,
+  RARITY_WEIGHTS,
+  SHINY_INCOME,
+  type LootBundle,
+} from "../../content/lootTables";
+
+/** Weighted-pick order for rarity rolls (loot.md §3 table order). */
+export const RARITY_ORDER: readonly Rarity[] = [
+  "stray",
+  "sleek",
+  "pedigree",
+  "mewthical",
+];
+
+/** Trinket def pick pool, in loot.md §2 table order (content table order). */
+const TRINKET_DEFS = Object.values(EQUIP_DEFS).filter(
+  (d) => d.slot === "trinket",
+);
+
+/** Weapon def lookup by class. */
+const WEAPON_BY_CLASS = new Map(
+  Object.values(EQUIP_DEFS)
+    .filter((d) => d.slot === "weapon")
+    .map((d) => [d.classId as ClassId, d]),
+);
+
+/** Context every grant roll needs (caller = scene / run-state layer). */
+export interface LootCtx {
+  /** Floor number `n` (1..6). Shop rolls pass the floor just cleared. */
+  floor: number;
+  /**
+   * Living cats' classes, in the fixed party order — the §5 weapon-class
+   * pick pool (a dead class's weapon never drops again).
+   */
+  livingClasses: ClassId[];
+  /** Mewthical uniques already dropped this run (unique-or-downgrade rule). */
+  uniquesDropped: MewHookId[];
+  /** First uid to assign to granted EquipInstances. */
+  nextUid: number;
+  /** Current wallet — required for the TITHE bundle's `min(current, …)`. */
+  currentShinies?: number;
+}
+
+/* ------------------------------------------------------------------ */
+/* §3 value formulas                                                   */
+/* ------------------------------------------------------------------ */
+
+/** Rarity-weight floor band (loot.md §5): floors 1-2 / 3-4 / 5-6. */
+export function floorBand(floor: number): "f12" | "f34" | "f56" {
+  return floor <= 2 ? "f12" : floor <= 4 ? "f34" : "f56";
+}
+
+/**
+ * Per-stat base value by item level L (loot.md §3). `atk` differs by slot:
+ * weapon `1+L`, trinket `ceil((1+L)/2)` (the reduced trinket-atk base).
+ */
+export function baseValue(
+  stat: StatKey,
+  L: number,
+  slot: "weapon" | "trinket",
+): number {
+  switch (stat) {
+    case "atk":
+      return slot === "weapon" ? 1 + L : Math.ceil((1 + L) / 2);
+    case "hp":
+      return 3 + 2 * L;
+    case "crt":
+      return 3 + L;
+    case "def":
+    case "spd":
+    case "enMax":
+      return L <= 3 ? 1 : 2;
+  }
+}
+
+/** `max(1, round(base · rarityMult))` — round half up (loot.md §3). */
+export function primaryValue(
+  stat: StatKey,
+  L: number,
+  rarity: Rarity,
+  slot: "weapon" | "trinket",
+): number {
+  return Math.max(
+    1,
+    roundHalfUp(baseValue(stat, L, slot) * RARITY_TABLE[rarity].mult),
+  );
+}
+
+/** `max(1, round(0.5 · base · rarityMult))` (loot.md §3). */
+export function secondaryValue(
+  stat: StatKey,
+  L: number,
+  rarity: Rarity,
+  slot: "weapon" | "trinket",
+): number {
+  return Math.max(
+    1,
+    roundHalfUp(0.5 * baseValue(stat, L, slot) * RARITY_TABLE[rarity].mult),
+  );
+}
+
+/**
+ * Build a fully-resolved EquipInstance (stats are formulas, no rolls).
+ * `sleekSecondary` is required for sleek (the one rolled line); pedigree /
+ * mewthical take the whole pool; stray has none. Mewthical carries the def's
+ * hook — callers enforce the unique-or-downgrade rule BEFORE calling this.
+ */
+export function makeEquipInstance(
+  uid: number,
+  defId: ItemId,
+  itemLevel: number,
+  rarity: Rarity,
+  sleekSecondary?: StatKey,
+): EquipInstance {
+  const def = EQUIP_DEFS[defId];
+  const stats: Partial<Record<StatKey, number>> = {
+    [def.primary]: primaryValue(def.primary, itemLevel, rarity, def.slot),
+  };
+  const lines = RARITY_TABLE[rarity].secondaryLines;
+  if (lines === 1) {
+    if (sleekSecondary === undefined) {
+      throw new Error("makeEquipInstance: sleek needs its rolled secondary");
+    }
+    stats[sleekSecondary] = secondaryValue(
+      sleekSecondary,
+      itemLevel,
+      rarity,
+      def.slot,
+    );
+  } else if (lines === 2) {
+    for (const s of def.secondaryPool) {
+      stats[s] = secondaryValue(s, itemLevel, rarity, def.slot);
+    }
+  }
+  const inst: EquipInstance = { uid, defId, itemLevel, rarity, stats };
+  if (rarity === "mewthical" && def.uniqueId) inst.hook = def.uniqueId;
+  return inst;
+}
+
+/* ------------------------------------------------------------------ */
+/* §5 equipment roll ladder (steps ④-⑦)                                */
+/* ------------------------------------------------------------------ */
+
+const SLOT_WEIGHTS = [
+  { slot: "weapon" as const, weight: 40 },
+  { slot: "trinket" as const, weight: 60 },
+];
+
+function rollEquipInternal(
+  rng: Rng,
+  L: number,
+  rarityWeights: Record<Rarity, number>,
+  livingClasses: ClassId[],
+  dropped: Set<MewHookId>,
+  uid: number,
+): EquipInstance {
+  // ④ rarity (one d100 against cumulative weights, §3 table order)
+  let rarity = pickWeighted(rng, RARITY_ORDER, (r) => rarityWeights[r]);
+  // ⑤ slot: weapon 40 / trinket 60
+  let slot = pickWeighted(rng, SLOT_WEIGHTS, (s) => s.weight).slot;
+  if (slot === "weapon" && livingClasses.length === 0) slot = "trinket"; // degenerate guard
+  // ⑥ def pick: weapon uniform over LIVING classes; trinket uniform over 6
+  const def =
+    slot === "weapon"
+      ? WEAPON_BY_CLASS.get(
+          livingClasses[rng.int(0, livingClasses.length - 1)],
+        )!
+      : TRINKET_DEFS[rng.int(0, TRINKET_DEFS.length - 1)];
+  // Mewthical rule: the drop IS the def's unique — or downgrades to Pedigree
+  // if the unique already dropped this run / the def has no unique (§5).
+  if (rarity === "mewthical") {
+    if (def.uniqueId && !dropped.has(def.uniqueId)) {
+      dropped.add(def.uniqueId);
+    } else {
+      rarity = "pedigree";
+    }
+  }
+  // ⑦ Sleek secondary pick (1 roll, uniform over the pool of 2); other
+  // rarities take none/both — no roll (skipped, not burned).
+  const sleekSecondary =
+    rarity === "sleek" ? def.secondaryPool[rng.int(0, 1)] : undefined;
+  return makeEquipInstance(uid, def.id, L, rarity, sleekSecondary);
+}
+
+/**
+ * One equipment drop (steps ④-⑦), e.g. for the GEAR bundles or shop stock.
+ * Pass `rarityWeights` explicitly (floor band, boss 70/30, shop split, …).
+ */
+export function rollOneEquip(
+  rng: Rng,
+  L: number,
+  rarityWeights: Record<Rarity, number>,
+  ctx: LootCtx,
+): EquipInstance {
+  return rollEquipInternal(
+    rng,
+    L,
+    rarityWeights,
+    ctx.livingClasses,
+    new Set(ctx.uniquesDropped),
+    ctx.nextUid,
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/* grant rolls                                                         */
+/* ------------------------------------------------------------------ */
+
+function shiny(income: { base: number; perFloor: number }, n: number): number {
+  return income.base + income.perFloor * n;
+}
+
+/** One roll on the §7 consumable table (weights sum to 100). Exactly 1 draw. */
+export function rollConsumable(rng: Rng): ItemId {
+  return pickWeighted(rng, CONSUMABLE_WEIGHTS, (c) => c.weight).id;
+}
+
+interface GrantBuilder {
+  shinies: number;
+  equips: EquipInstance[];
+  consumables: { defId: ItemId; count: number }[];
+}
+
+function addConsumable(g: GrantBuilder, defId: ItemId, count = 1): void {
+  const existing = g.consumables.find((c) => c.defId === defId);
+  if (existing) existing.count += count;
+  else g.consumables.push({ defId, count });
+}
+
+/**
+ * Chest open (loot.md §5b): shinies `15+8n`, then 2 independent draws on the
+ * chest table. Caller seeds the Rng from the chest's stored `chestSeed`
+ * (one fresh mulberry32 per open — ARCHITECTURE §4).
+ */
+export function rollChest(rng: Rng, ctx: LootCtx): LootGrant {
+  const n = ctx.floor;
+  const g: GrantBuilder = {
+    shinies: shiny(SHINY_INCOME.chest, n),
+    equips: [],
+    consumables: [],
+  };
+  const dropped = new Set(ctx.uniquesDropped);
+  let uid = ctx.nextUid;
+  for (let d = 0; d < 2; d++) {
+    // ③ category/draw roll
+    const draw = pickWeighted(rng, CHEST_DRAWS, (c) => c.weight).kind;
+    if (draw === "consumable") {
+      addConsumable(g, rollConsumable(rng));
+    } else if (draw === "equipment") {
+      g.equips.push(
+        rollEquipInternal(
+          rng,
+          n,
+          RARITY_WEIGHTS[floorBand(n)],
+          ctx.livingClasses,
+          dropped,
+          uid++,
+        ),
+      );
+    } else {
+      g.shinies += shiny(SHINY_INCOME.shinyPile, n); // no roll
+    }
+  }
+  return g;
+}
+
+/**
+ * Regular fight victory (loot.md §5a), seeded from the victory stream:
+ * ① shinies `8+4n+rngInt(0,4)` → ② drop-chance rolls (consumable 25%,
+ * equipment 10%, both always drawn) → content rolls for whichever hit.
+ */
+export function rollVictory(rng: Rng, ctx: LootCtx): LootGrant {
+  const n = ctx.floor;
+  const g: GrantBuilder = {
+    shinies:
+      shiny(SHINY_INCOME.fight, n) + rng.int(0, SHINY_INCOME.fight.variance),
+    equips: [],
+    consumables: [],
+  };
+  const consumableHit = rng.float() < FIGHT_DROPS.consumableChance;
+  const equipmentHit = rng.float() < FIGHT_DROPS.equipmentChance;
+  if (consumableHit) addConsumable(g, rollConsumable(rng));
+  if (equipmentHit) {
+    g.equips.push(
+      rollEquipInternal(
+        rng,
+        n,
+        RARITY_WEIGHTS[floorBand(n)],
+        ctx.livingClasses,
+        new Set(ctx.uniquesDropped),
+        ctx.nextUid,
+      ),
+    );
+  }
+  return g;
+}
+
+/**
+ * Floor boss (loot.md §5c) — guaranteed, in the §5c list order:
+ * shinies `60+25n` → 1 equipment (`L = floor+1`, pedigree 70 / mewthical 30)
+ * → 2 consumable rolls.
+ */
+export function rollBossLoot(rng: Rng, ctx: LootCtx): LootGrant {
+  const n = ctx.floor;
+  const g: GrantBuilder = {
+    shinies: shiny(SHINY_INCOME.boss, n),
+    equips: [],
+    consumables: [],
+  };
+  g.equips.push(
+    rollEquipInternal(
+      rng,
+      n + 1,
+      BOSS_RARITY,
+      ctx.livingClasses,
+      new Set(ctx.uniquesDropped),
+      ctx.nextUid,
+    ),
+  );
+  for (let i = 0; i < BOSS_CONSUMABLE_ROLLS; i++) {
+    addConsumable(g, rollConsumable(rng));
+  }
+  return g;
+}
+
+/** Bundle ids rollBundle accepts (MOULT lives in inventory.applyMoult). */
+export type GrantBundleId =
+  "SNACK_STASH" | "SHINY_HOARD" | "GEAR" | "GEAR_FANCY" | "TITHE";
+
+/**
+ * Event loot bundles (loot.md §5d). TITHE returns NEGATIVE shinies, already
+ * clamped to `ctx.currentShinies` (`min(current, 20+5n)`). MOULT is not a
+ * grant — call inventory.applyMoult instead.
+ */
+export function rollBundle(
+  rng: Rng,
+  bundleId: GrantBundleId,
+  ctx: LootCtx,
+): LootGrant {
+  const bundle: LootBundle = BUNDLES[bundleId];
+  const n = ctx.floor;
+  const g: GrantBuilder = { shinies: 0, equips: [], consumables: [] };
+  switch (bundle.kind) {
+    case "consumableRolls":
+      for (let i = 0; i < bundle.rolls; i++)
+        addConsumable(g, rollConsumable(rng));
+      break;
+    case "shinies":
+      g.shinies = bundle.base + bundle.perFloor * n; // no roll
+      break;
+    case "gear": {
+      const L = bundle.level === "floorPlus1" ? n + 1 : n;
+      const weights =
+        bundle.rarity === "band" ? RARITY_WEIGHTS[floorBand(n)] : bundle.rarity;
+      g.equips.push(
+        rollEquipInternal(
+          rng,
+          L,
+          weights,
+          ctx.livingClasses,
+          new Set(ctx.uniquesDropped),
+          ctx.nextUid,
+        ),
+      );
+      break;
+    }
+    case "tithe": {
+      const loss = bundle.base + bundle.perFloor * n;
+      g.shinies = -Math.min(ctx.currentShinies ?? loss, loss); // no roll
+      break;
+    }
+    case "moult":
+      throw new Error("rollBundle: MOULT is applied via inventory.applyMoult");
+  }
+  return g;
+}

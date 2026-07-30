@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "run": {
+    "runSeed": "MEOW-1987",
+    "floorNum": 2,
+    "cats": [
+      {
+        "classId": "bruiser",
+        "hp": 48,
+        "lives": 9,
+        "weapon": {
+          "uid": 1,
+          "defId": "mittsOfMenace",
+          "itemLevel": 1,
+          "rarity": "stray",
+          "stats": {
+            "atk": 2
+          }
+        },
+        "trinket": null,
+        "tempMods": [],
+        "energyNextBattle": 0
+      },
+      {
+        "classId": "trickster",
+        "hp": 32,
+        "lives": 9,
+        "weapon": {
+          "uid": 2,
+          "defId": "ribbonRapier",
+          "itemLevel": 1,
+          "rarity": "stray",
+          "stats": {
+            "atk": 2
+          }
+        },
+        "trinket": null,
+        "tempMods": [],
+        "energyNextBattle": 0
+      },
+      {
+        "classId": "hexer",
+        "hp": 28,
+        "lives": 9,
+        "weapon": {
+          "uid": 3,
+          "defId": "tangleTalisman",
+          "itemLevel": 1,
+          "rarity": "stray",
+          "stats": {
+            "atk": 2
+          }
+        },
+        "trinket": null,
+        "tempMods": [],
+        "energyNextBattle": 0
+      },
+      {
+        "classId": "medic",
+        "hp": 32,
+        "lives": 9,
+        "weapon": {
+          "uid": 4,
+          "defId": "chimeBell",
+          "itemLevel": 1,
+          "rarity": "stray",
+          "stats": {
+            "atk": 2
+          }
+        },
+        "trinket": null,
+        "tempMods": [],
+        "energyNextBattle": 0
+      }
+    ],
+    "marchingOrder": [
+      "bruiser",
+      "trickster",
+      "hexer",
+      "medic"
+    ],
+    "xp": 80,
+    "level": 3,
+    "inventory": {
+      "shinies": 84,
+      "slots": [
+        {
+          "defId": "tunaSnack",
+          "count": 3
+        },
+        {
+          "defId": "cardboardBox",
+          "count": 1
+        },
+        {
+          "defId": "bagOfFleas",
+          "count": 1
+        },
+        {
+          "uid": 5,
+          "defId": "tangleTalisman",
+          "itemLevel": 1,
+          "rarity": "stray",
+          "stats": {
+            "atk": 2
+          }
+        },
+        {
+          "defId": "theCucumber",
+          "count": 1
+        },
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "nextUid": 6
+    },
+    "score": {
+      "floorsCleared": 0,
+      "floorsReached": 2,
+      "enemiesDefeated": 6,
+      "bossesDefeated": 0,
+      "catPiles": 0,
+      "shiniesCollected": 64
+    },
+    "firedEventIds": [
+      "perfectBox"
+    ],
+    "floorFiredEventIds": [],
+    "uniquesDropped": [],
+    "playTimeMs": 0
+  },
+  "floorDelta": {
+    "partyPos": {
+      "x": 3,
+      "y": 3
+    },
+    "explored": "fwAAgD8AAMAfAADgDwAA8AcAAPgDAAD8AQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
+    "stepCount": 0,
+    "stairsLocked": false,
+    "entities": [
+      {
+        "kind": "chest",
+        "id": 0,
+        "opened": false
+      },
+      {
+        "kind": "chest",
+        "id": 1,
+        "opened": false
+      },
+      {
+        "kind": "event",
+        "id": 2,
+        "used": false
+      },
+      {
+        "kind": "roamer",
+        "id": 3,
+        "x": 11,
+        "y": 15,
+        "dead": false,
+        "state": "patrol",
+        "stunnedFor": 0,
+        "lostSightFor": 0,
+        "wpIndex": 0
+      },
+      {
+        "kind": "roamer",
+        "id": 4,
+        "x": 15,
+        "y": 5,
+        "dead": false,
+        "state": "patrol",
+        "stunnedFor": 0,
+        "lostSightFor": 0,
+        "wpIndex": 0
+      },
+      {
+        "kind": "roamer",
+        "id": 5,
+        "x": 26,
+        "y": 16,
+        "dead": false,
+        "state": "patrol",
+        "stunnedFor": 0,
+        "lostSightFor": 0,
+        "wpIndex": 0
+      },
+      {
+        "kind": "roamer",
+        "id": 6,
+        "x": 3,
+        "y": 17,
+        "dead": false,
+        "state": "patrol",
+        "stunnedFor": 0,
+        "lostSightFor": 0,
+        "wpIndex": 0
+      },
+      {
+        "kind": "roamer",
+        "id": 7,
+        "x": 25,
+        "y": 8,
+        "dead": false,
+        "state": "patrol",
+        "stunnedFor": 0,
+        "lostSightFor": 0,
+        "wpIndex": 0
+      }
+    ]
+  }
+}
