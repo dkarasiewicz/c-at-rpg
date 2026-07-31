@@ -2,67 +2,67 @@
   "version": 1,
   "sprites": {
     "scene:event:yarnBall": {
-      "file": "event-yarnBall.png",
+      "file": "event-yarnBall.webp",
       "w": 1600,
       "h": 907
     },
     "scene:event:suspiciousHuman": {
-      "file": "event-suspiciousHuman.png",
+      "file": "event-suspiciousHuman.webp",
       "w": 1600,
       "h": 907
     },
     "scene:event:cursedPost": {
-      "file": "event-cursedPost.png",
+      "file": "event-cursedPost.webp",
       "w": 1600,
       "h": 907
     },
     "scene:event:shrineOfNine": {
-      "file": "event-shrineOfNine.png",
+      "file": "event-shrineOfNine.webp",
       "w": 1600,
       "h": 907
     },
     "scene:event:perfectBox": {
-      "file": "event-perfectBox.png",
+      "file": "event-perfectBox.webp",
       "w": 1600,
       "h": 907
     },
     "scene:event:milkBowl": {
-      "file": "event-milkBowl.png",
+      "file": "event-milkBowl.webp",
       "w": 1600,
       "h": 907
     },
     "scene:event:redDot": {
-      "file": "event-redDot.png",
+      "file": "event-redDot.webp",
       "w": 1600,
       "h": 907
     },
     "scene:event:dormantRoomba": {
-      "file": "event-dormantRoomba.png",
+      "file": "event-dormantRoomba.webp",
       "w": 1600,
       "h": 907
     },
     "scene:event:catnipPatch": {
-      "file": "event-catnipPatch.png",
+      "file": "event-catnipPatch.webp",
       "w": 1600,
       "h": 907
     },
     "scene:event:elderStray": {
-      "file": "event-elderStray.png",
+      "file": "event-elderStray.webp",
       "w": 1600,
       "h": 907
     },
     "scene:landing": {
-      "file": "landing.png",
+      "file": "landing.webp",
       "w": 1600,
       "h": 907
     },
     "scene:victory": {
-      "file": "victory.png",
+      "file": "victory.webp",
       "w": 1600,
       "h": 907
     },
     "scene:defeat": {
-      "file": "defeat.png",
+      "file": "defeat.webp",
       "w": 1600,
       "h": 907
     }

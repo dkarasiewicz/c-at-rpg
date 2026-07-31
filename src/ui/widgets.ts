@@ -3,13 +3,14 @@
  * hotkey chips, buttons, panels, tooltips, paw-pip rows. Pure presentation:
  * widgets are fed values; they never compute gameplay outcomes.
  */
-import { Container, Graphics, Text } from "pixi.js";
+import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { StatusId } from "../core/types";
 import { PAL, darken, hpColor } from "./palette";
 import { RADIUS, WRAP } from "./layout";
 import { mono, ui } from "./textStyles";
 import { tween } from "./tween";
 import { drawPaw } from "./draw/cats";
+import { spriteTextureFor } from "./sprites";
 
 /** Status chip glyphs + fills (ui-art §2). */
 export const STATUS_STYLE: Record<StatusId, { glyph: string; color: number }> =
@@ -299,6 +300,64 @@ export function makeTooltip(text: string): Container {
       .stroke({ width: 2, color: PAL.border }),
     txt,
   );
+  return view;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Generated-art helpers (visual v2 — fail-soft, procedural fallback)      */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * Square icon sprite for a manifest id ('item:tunaSnack', 'equip:tinBell'…),
+ * anchored center and sized to `size`×`size`. Returns null when the sprite
+ * pack is absent so callers keep their procedural glyph fallback.
+ */
+export function makeSpriteIcon(id: string, size: number): Sprite | null {
+  const tex = spriteTextureFor(id);
+  if (!tex) return null;
+  const icon = new Sprite(tex);
+  icon.anchor.set(0.5);
+  icon.width = size;
+  icon.height = size;
+  return icon;
+}
+
+/**
+ * Cover-fit a generated illustration ('scene:*'…) into a w×h region:
+ * scaled to fill, cropped by a rounded-rect mask. `align: 'right'` keeps
+ * the right edge (the scene set's subjects sit in the right third);
+ * `dim` adds a PAL.bgDeep darkening overlay for text-over-art readability.
+ * Extra children added to the returned container are clipped by the same
+ * mask. Returns null when the texture is absent (procedural bg stays).
+ */
+export function makeCoverSprite(
+  id: string,
+  w: number,
+  h: number,
+  opts: { align?: "center" | "right"; radius?: number; dim?: number } = {},
+): Container | null {
+  const tex = spriteTextureFor(id);
+  if (!tex || tex.width <= 0 || tex.height <= 0) return null;
+  const view = new Container();
+  const sp = new Sprite(tex);
+  const s = Math.max(w / tex.width, h / tex.height);
+  sp.scale.set(s);
+  const sw = tex.width * s;
+  const sh = tex.height * s;
+  sp.position.set(opts.align === "right" ? w - sw : (w - sw) / 2, (h - sh) / 2);
+  view.addChild(sp);
+  const mask = new Graphics()
+    .roundRect(0, 0, w, h, opts.radius ?? 0)
+    .fill(0xffffff);
+  view.addChild(mask);
+  view.mask = mask;
+  if (opts.dim !== undefined && opts.dim > 0) {
+    view.addChild(
+      new Graphics()
+        .rect(0, 0, w, h)
+        .fill({ color: PAL.bgDeep, alpha: opts.dim }),
+    );
+  }
   return view;
 }
 

@@ -37,7 +37,7 @@ import { sellFromInventory, sellValue } from "../../core/loot/shop";
 import { PAL } from "../palette";
 import { DESIGN_H, DESIGN_W, RADIUS } from "../layout";
 import { display, mono, ui } from "../textStyles";
-import { makeButton, makePanel, makeTooltip } from "../widgets";
+import { makeButton, makePanel, makeSpriteIcon, makeTooltip } from "../widgets";
 import { drawCatPortrait } from "../draw/cats";
 
 /* ---------------------------------------------------------------------- */
@@ -99,6 +99,23 @@ function slotIcon(slot: EquipInstance | ConsumableStack): string {
   return isEquip(slot)
     ? EQUIP_DEFS[slot.defId].icon
     : CONSUMABLES[slot.defId].icon;
+}
+
+/**
+ * Generated-icon manifest id for an inventory slot: consumables map to
+ * 'item:<defId>', equipment to 'equip:<defId>' — except Mewthical uniques,
+ * which carry their own hand-drawn 'equip:<uniqueId>' art (loot.md §5:
+ * uniques ARE the def's Mewthical drop). Shared with the loot overlay,
+ * landing shop and explore HUD belt.
+ */
+export function itemSpriteId(slot: EquipInstance | ConsumableStack): string {
+  if (isEquip(slot)) {
+    const def = EQUIP_DEFS[slot.defId];
+    const art =
+      slot.rarity === "mewthical" && def.uniqueId ? def.uniqueId : slot.defId;
+    return `equip:${art}`;
+  }
+  return `item:${slot.defId}`;
 }
 
 function slotTooltipText(
@@ -165,15 +182,29 @@ function makeCell(o: CellOpts): Container {
 
   if (o.slot !== null) {
     const slot = o.slot;
-    const icon = new Text({
-      text: slotIcon(slot),
-      style: mono(24, {
-        fill: isEquip(slot) ? RARITY_COLOR[slot.rarity] : PAL.text,
-      }),
-    });
-    icon.anchor.set(0.5);
-    icon.position.set(CELL / 2, CELL / 2 - 4);
-    cell.addChild(icon);
+    const art = makeSpriteIcon(itemSpriteId(slot), CELL - 8);
+    if (art) {
+      art.position.set(CELL / 2, CELL / 2);
+      cell.addChild(art);
+      if (isEquip(slot)) {
+        // the glyph's fill used to carry rarity — keep it as an inner ring
+        cell.addChild(
+          new Graphics()
+            .roundRect(2, 2, CELL - 4, CELL - 4, RADIUS.button)
+            .stroke({ width: 2, color: RARITY_COLOR[slot.rarity] }),
+        );
+      }
+    } else {
+      const icon = new Text({
+        text: slotIcon(slot),
+        style: mono(24, {
+          fill: isEquip(slot) ? RARITY_COLOR[slot.rarity] : PAL.text,
+        }),
+      });
+      icon.anchor.set(0.5);
+      icon.position.set(CELL / 2, CELL / 2 - 4);
+      cell.addChild(icon);
+    }
     const corner = new Text({
       text: isEquip(slot) ? `L${slot.itemLevel}` : `×${slot.count}`,
       style: mono(10, { fill: PAL.textDim }),
@@ -412,13 +443,24 @@ export function makeInventoryPanel(
         .stroke({ width: 1, color: PAL.border });
       chip.addChild(cbg);
       if (item) {
-        const icon = new Text({
-          text: EQUIP_DEFS[item.defId].icon,
-          style: mono(18, { fill: RARITY_COLOR[item.rarity] }),
-        });
-        icon.anchor.set(0.5);
-        icon.position.set(22, 22);
-        chip.addChild(icon);
+        const art = makeSpriteIcon(itemSpriteId(item), 38);
+        if (art) {
+          art.position.set(22, 22);
+          chip.addChild(
+            art,
+            new Graphics()
+              .roundRect(1, 1, 42, 42, RADIUS.button)
+              .stroke({ width: 2, color: RARITY_COLOR[item.rarity] }),
+          );
+        } else {
+          const icon = new Text({
+            text: EQUIP_DEFS[item.defId].icon,
+            style: mono(18, { fill: RARITY_COLOR[item.rarity] }),
+          });
+          icon.anchor.set(0.5);
+          icon.position.set(22, 22);
+          chip.addChild(icon);
+        }
         if (!dead) {
           let tip: Container | null = null;
           chip.eventMode = "static";
@@ -575,13 +617,18 @@ export function makePickupModal(opts: PickupModalOpts): PickupModal {
   panel.addChild(title);
 
   const inc = opts.incoming;
+  const incArt = makeSpriteIcon(itemSpriteId(inc), 32);
   const incIcon = new Text({
-    text: slotIcon(inc),
+    text: incArt ? "" : slotIcon(inc),
     style: mono(22, {
       fill: isEquip(inc) ? RARITY_COLOR[inc.rarity] : PAL.text,
     }),
   });
   incIcon.position.set(24, 56);
+  if (incArt) {
+    incArt.position.set(38, 70);
+    panel.addChild(incArt);
+  }
   const incName = new Text({
     text: isEquip(inc)
       ? `${equipName(inc)} — ${inc.rarity} L${inc.itemLevel}   ${equipStatsText(inc)}`

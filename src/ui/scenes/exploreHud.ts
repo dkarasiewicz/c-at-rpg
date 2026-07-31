@@ -18,7 +18,13 @@ import { maxHp } from "../../core/run/party";
 import { PAL, THEMES } from "../palette";
 import { R, RADIUS, rh, rw, rx, ry } from "../layout";
 import { mono, ui } from "../textStyles";
-import { makeBar, makePanel, makePawRow, makeTooltip } from "../widgets";
+import {
+  makeBar,
+  makePanel,
+  makePawRow,
+  makeSpriteIcon,
+  makeTooltip,
+} from "../widgets";
 import { drawCatPortrait } from "../draw/cats";
 import { portraitTexture } from "../sprites";
 
@@ -360,9 +366,17 @@ export class ExploreHud {
           .fill(PAL.panel)
           .stroke({ width: 1, color: usable ? PAL.gold : PAL.border }),
       );
-      const icon = new Text({ text: def?.icon ?? "?", style: mono(12) });
-      icon.anchor.set(0.5);
-      icon.position.set(11, 10);
+      const art = makeSpriteIcon(`item:${entry.defId}`, 18);
+      let icon: Container;
+      if (art) {
+        art.position.set(11, 11);
+        icon = art;
+      } else {
+        const glyph = new Text({ text: def?.icon ?? "?", style: mono(12) });
+        glyph.anchor.set(0.5);
+        glyph.position.set(11, 10);
+        icon = glyph;
+      }
       const count = new Text({
         text: String(entry.count),
         style: mono(9, { fill: PAL.textDim }),

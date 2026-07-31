@@ -46,6 +46,7 @@ import { isKeyDown } from "../input";
 import { drawCatPortrait, drawPaw } from "../draw/cats";
 import { drawEnemy } from "../draw/enemies";
 import { drawChest, drawStairs } from "../draw/glyphs";
+import { spriteTextureFor } from "../sprites";
 import { layer, type GameCtx, type Scene } from "../sceneManager";
 import type { LootOverlayParams } from "../overlays/loot";
 import { ExploreHud, themeIndex } from "./exploreHud";
@@ -86,6 +87,15 @@ const KEY_DIRS: [string, StepDir][] = [
 type ChestEntity = Extract<Entity, { kind: "chest" }>;
 type EventEntity = Extract<Entity, { kind: "event" }>;
 
+/**
+ * Deterministic per-tile hash for floor-texture variation. Pure (x, y) —
+ * NOT a gameplay RNG stream; the visual layer never draws from those.
+ */
+const tileHash = (x: number, y: number): number =>
+  (Math.imul(x + 1, 0x9e3779b1) ^ Math.imul(y + 1, 0x85ebca6b)) >>> 0;
+
+const FLOOR_VARIANTS = ["tile:floor", "tile:floor2", "tile:floor3"] as const;
+
 const isPack = (e: Entity): e is Roamer =>
   e.kind === "roamer" || e.kind === "boss";
 
@@ -114,11 +124,17 @@ interface ChestView {
   e: ChestEntity;
   view: Container;
   opened: boolean;
+  /** Generated prop sprite (null = procedural drawChest fallback). */
+  sprite: Sprite | null;
+  hoard: boolean;
 }
 interface EventView {
   e: EventEntity;
   view: Container;
-  q: Text;
+  /** Procedural "?" marker (null when the sparkle sprite is in use). */
+  q: Text | null;
+  /** Generated prop:eventSparkle (gentle pulse in update()). */
+  sprite: Sprite | null;
 }
 
 /* ---------------------------------------------------------------------- */
@@ -177,8 +193,7 @@ export class ExploreScene implements Scene {
 
     // world-space stack: tiles → entities → party → fog → fx (markers)
     this.scroller = new Container();
-    const tiles = new Graphics();
-    this.drawTiles(tiles);
+    const tiles = this.buildTiles();
     const entityLayer = new Container();
     this.fogLayer = new Container();
     this.fx = new Container();
@@ -323,7 +338,15 @@ export class ExploreScene implements Scene {
 
     // ambience (visual only)
     const bob = Math.sin(this.t / 300) * 3;
-    for (const ev of this.eventViews) ev.q.y = -2 + bob;
+    const sparkle = 0.8 + 0.2 * Math.sin(this.t / 400);
+    for (const ev of this.eventViews) {
+      if (ev.q) ev.q.y = -2 + bob;
+      if (ev.sprite) {
+        // gentle pulse on the generated sparkle prop
+        ev.sprite.alpha = sparkle;
+        ev.sprite.y = bob * 0.6;
+      }
+    }
     const pulse = 0.5 + 0.5 * Math.sin(this.t / 160);
     for (const pv of this.packViews) {
       pv.alert.alpha = 0.4 + 0.6 * pulse;
@@ -661,43 +684,143 @@ export class ExploreScene implements Scene {
 
   /* ---------------------------- rendering ---------------------------- */
 
-  private drawTiles(g: Graphics): void {
+  /**
+   * Static tile layer, built ONCE per mount (visual-v2): one Sprite per
+   * tile from the env textures (LINEAR-scaled 512² squares → 48 px cells)
+   * with the original procedural Graphics as per-cell fallback, so the
+   * game stays fully playable assetless. Dressing passes: the boss-lair
+   * door gets tile:doorBoss, chest-bearing dead-end alcoves get tile:nook
+   * under the chest. Floor variants are picked by a pure (x, y) hash —
+   * zero draws from the gameplay RNG streams.
+   */
+  private buildTiles(): Container {
     const f = this.floor;
     const th = THEMES[themeIndex(f.floor)];
-    for (let y = 0; y < f.h; y++) {
-      for (let x = 0; x < f.w; x++) {
-        const t = f.tiles[idx(f.w, x, y)];
-        const px = x * TILE;
-        const py = y * TILE;
-        if (t === Tile.Wall || t === Tile.Door) {
-          g.rect(px, py, TILE, TILE).fill(th.wallFace);
-          g.rect(px, py, TILE, 8).fill(th.wallTop);
-          if (t === Tile.Door) {
-            // 32×40 floorA arch inset (ui-art §7)
-            g.roundRect(px + 8, py + 8, 32, 40, 10).fill(th.floorA);
-          }
-        } else {
-          g.rect(px, py, TILE, TILE).fill(
-            (x + y) % 2 === 0 ? th.floorA : th.floorB,
-          );
-          g.rect(px + 1, py + 1, TILE - 2, TILE - 2).stroke({
-            width: 1,
-            color: th.wallFace,
-            alpha: 0.15,
-          });
-          if (t === Tile.StairsDown) {
-            drawStairs(g, px + TILE / 2, py + TILE / 2);
-          } else if (t === Tile.StairsUp) {
-            // scenery spawn stair: dim swirl ("the way back has collapsed")
-            g.circle(px + TILE / 2, py + TILE / 2, 16).fill(PAL.void);
-            g.circle(px + TILE / 2, py + TILE / 2, 9).stroke({
-              width: 2,
-              color: PAL.textDim,
-            });
+    const wrap = new Container();
+    const sprites = new Container(); // textured cells
+    const g = new Graphics(); // procedural cells (fallback only)
+    const dressing = new Container(); // alpha-keyed overlays (nook)
+    wrap.addChild(sprites, g, dressing);
+
+    // boss-lair door tiles: doors 4-adjacent to the lair room (§8)
+    const bossDoors = new Set<number>();
+    const boss = f.entities.find((e) => e.kind === "boss");
+    if (boss && isPack(boss)) {
+      const lair = f.rooms[boss.homeRoom];
+      if (lair) {
+        const inLair = (x: number, y: number): boolean =>
+          x >= lair.x &&
+          x < lair.x + lair.w &&
+          y >= lair.y &&
+          y < lair.y + lair.h;
+        for (let y = 0; y < f.h; y++) {
+          for (let x = 0; x < f.w; x++) {
+            if (f.tiles[idx(f.w, x, y)] !== Tile.Door) continue;
+            if (
+              inLair(x - 1, y) ||
+              inLair(x + 1, y) ||
+              inLair(x, y - 1) ||
+              inLair(x, y + 1)
+            ) {
+              bossDoors.add(idx(f.w, x, y));
+            }
           }
         }
       }
     }
+
+    // chest-nook alcoves: chest tiles walled on 3 sides (populate §6.3)
+    const nooks = new Set<number>();
+    for (const e of f.entities) {
+      if (e.kind !== "chest") continue;
+      let walls = 0;
+      for (const [dx, dy] of [
+        [0, -1],
+        [1, 0],
+        [0, 1],
+        [-1, 0],
+      ] as const) {
+        const nx = e.x + dx;
+        const ny = e.y + dy;
+        if (
+          !inBounds(f.w, f.h, nx, ny) ||
+          f.tiles[idx(f.w, nx, ny)] === Tile.Wall
+        ) {
+          walls++;
+        }
+      }
+      if (walls === 3) nooks.add(idx(f.w, e.x, e.y));
+    }
+
+    /** Add a textured cell; false = caller draws the procedural cell. */
+    const addCell = (
+      id: string,
+      px: number,
+      py: number,
+      into = sprites,
+    ): boolean => {
+      const tex = spriteTextureFor(id);
+      if (!tex) return false;
+      const s = new Sprite(tex);
+      s.position.set(px, py);
+      s.width = TILE;
+      s.height = TILE;
+      into.addChild(s);
+      return true;
+    };
+
+    for (let y = 0; y < f.h; y++) {
+      for (let x = 0; x < f.w; x++) {
+        const i = idx(f.w, x, y);
+        const t = f.tiles[i];
+        const px = x * TILE;
+        const py = y * TILE;
+        if (t === Tile.Wall || t === Tile.Door) {
+          const id =
+            t === Tile.Door
+              ? bossDoors.has(i) && spriteTextureFor("tile:doorBoss")
+                ? "tile:doorBoss"
+                : "tile:door"
+              : "tile:wall";
+          if (!addCell(id, px, py)) {
+            g.rect(px, py, TILE, TILE).fill(th.wallFace);
+            g.rect(px, py, TILE, 8).fill(th.wallTop);
+            if (t === Tile.Door) {
+              // 32×40 floorA arch inset (ui-art §7)
+              g.roundRect(px + 8, py + 8, 32, 40, 10).fill(th.floorA);
+            }
+          }
+        } else {
+          let id: string;
+          if (t === Tile.StairsDown) id = "tile:stairsDown";
+          else if (t === Tile.StairsUp) id = "tile:stairsUp";
+          else id = FLOOR_VARIANTS[tileHash(x, y) % FLOOR_VARIANTS.length];
+          if (!addCell(id, px, py)) {
+            g.rect(px, py, TILE, TILE).fill(
+              (x + y) % 2 === 0 ? th.floorA : th.floorB,
+            );
+            g.rect(px + 1, py + 1, TILE - 2, TILE - 2).stroke({
+              width: 1,
+              color: th.wallFace,
+              alpha: 0.15,
+            });
+            if (t === Tile.StairsDown) {
+              drawStairs(g, px + TILE / 2, py + TILE / 2);
+            } else if (t === Tile.StairsUp) {
+              // scenery spawn stair: dim swirl ("the way back collapsed")
+              g.circle(px + TILE / 2, py + TILE / 2, 16).fill(PAL.void);
+              g.circle(px + TILE / 2, py + TILE / 2, 9).stroke({
+                width: 2,
+                color: PAL.textDim,
+              });
+            }
+          }
+          // alcove dressing under the chest (alpha-keyed, above the floor)
+          if (nooks.has(i)) addCell("tile:nook", px, py, dressing);
+        }
+      }
+    }
+    return wrap;
   }
 
   private buildFog(): void {
@@ -751,25 +874,45 @@ export class ExploreScene implements Scene {
     for (const e of f.entities) {
       if (e.kind === "chest") {
         const view = new Container();
-        const g = new Graphics();
-        drawChest(g, 0, 0);
-        view.addChild(g);
+        const hoard = e.lootTableId === "boss_hoard";
+        const tex = spriteTextureFor(hoard ? "prop:hoardChest" : "prop:chest");
+        let sprite: Sprite | null = null;
+        if (tex) {
+          sprite = new Sprite({ texture: tex, anchor: 0.5 });
+          sprite.width = TILE - 4;
+          sprite.height = TILE - 4;
+          view.addChild(sprite);
+        } else {
+          const g = new Graphics();
+          drawChest(g, 0, 0);
+          view.addChild(g);
+        }
         view.position.set(tileCx(e.x), tileCy(e.y) + 4);
         layer.addChild(view);
-        this.chestViews.push({ e, view, opened: !e.opened });
+        this.chestViews.push({ e, view, opened: !e.opened, sprite, hoard });
       } else if (e.kind === "event") {
         const view = new Container();
-        view.addChild(new Graphics().circle(0, 0, 14).fill(PAL.panel));
-        const q = new Text({
-          text: "?",
-          style: display(22, { fill: th.accent, stroke: worldStroke(22) }),
-        });
-        q.anchor.set(0.5);
-        q.position.set(0, -2);
-        view.addChild(q);
+        const tex = spriteTextureFor("prop:eventSparkle");
+        let sprite: Sprite | null = null;
+        let q: Text | null = null;
+        if (tex) {
+          sprite = new Sprite({ texture: tex, anchor: 0.5 });
+          sprite.width = TILE - 6;
+          sprite.height = TILE - 6;
+          view.addChild(sprite);
+        } else {
+          view.addChild(new Graphics().circle(0, 0, 14).fill(PAL.panel));
+          q = new Text({
+            text: "?",
+            style: display(22, { fill: th.accent, stroke: worldStroke(22) }),
+          });
+          q.anchor.set(0.5);
+          q.position.set(0, -2);
+          view.addChild(q);
+        }
         view.position.set(tileCx(e.x), tileCy(e.y));
         layer.addChild(view);
-        this.eventViews.push({ e, view, q });
+        this.eventViews.push({ e, view, q, sprite });
       } else {
         const view = new Container();
         const isBoss = e.kind === "boss";
@@ -786,26 +929,38 @@ export class ExploreScene implements Scene {
               .fill({ color: packTierColor(e), alpha: 0.5 }),
           );
         }
-        const body = new Graphics();
         const look = ENEMIES[e.enemies[0]]?.look ?? {
           family: "vermin" as const,
           sizeGrade: "standard" as const,
           tier: 1 as const,
         };
-        drawEnemy(body, look);
-        // silhouette ≈ 34px tall (boss ≈ 2 tiles wide, dungeon.md §8.2)
-        body.scale.set(isBoss ? 0.62 : 0.36);
-        body.y = 4;
-        view.addChild(body);
-        const glyph = new Text({
-          text: e.enemies[0]?.[0] ?? "?",
-          style: mono(12, { stroke: worldStroke(12) }),
-        });
-        glyph.anchor.set(0.5);
-        glyph.position.set(0, 10);
+        const tokenTex = spriteTextureFor(`token:${look.family}`);
+        if (tokenTex) {
+          const token = new Sprite({ texture: tokenTex, anchor: 0.5 });
+          // roamer ≈ one cell; boss reads ≈ 2 tiles wide (dungeon.md §8.2)
+          const size = isBoss ? TILE * 1.8 : TILE - 6;
+          token.width = size;
+          token.height = size;
+          token.y = isBoss ? -6 : 2;
+          view.addChild(token);
+        } else {
+          const body = new Graphics();
+          drawEnemy(body, look);
+          // silhouette ≈ 34px tall (boss ≈ 2 tiles wide, dungeon.md §8.2)
+          body.scale.set(isBoss ? 0.62 : 0.36);
+          body.y = 4;
+          view.addChild(body);
+          const glyph = new Text({
+            text: e.enemies[0]?.[0] ?? "?",
+            style: mono(12, { stroke: worldStroke(12) }),
+          });
+          glyph.anchor.set(0.5);
+          glyph.position.set(0, 10);
+          view.addChild(glyph);
+        }
         const alert = new Graphics().circle(12, -34, 4).fill(PAL.danger);
         alert.visible = false;
-        view.addChild(glyph, alert);
+        view.addChild(alert);
         view.position.set(tileCx(e.x), tileCy(e.y));
         layer.addChild(view);
         this.packViews.push({ e, view, alert, glow, prevState: e.state });
@@ -821,6 +976,26 @@ export class ExploreScene implements Scene {
     for (const d of this.trailDots) d.destroy();
     this.trailDots = [];
 
+    const px = tileCx(this.floor.party.x);
+    const py = tileCy(this.floor.party.y);
+    this.trail = [
+      { x: px, y: py },
+      { x: px, y: py },
+      { x: px, y: py },
+    ];
+
+    const partyTex = spriteTextureFor("token:party");
+    if (partyTex) {
+      // generated four-cat cluster token — the whole party in one marker,
+      // so the lead ring + trailing dots stay procedural-only.
+      const token = new Sprite({ texture: partyTex, anchor: 0.5 });
+      token.width = TILE - 2;
+      token.height = TILE - 2;
+      this.partyView.addChild(token);
+      this.partyView.position.set(px, py);
+      return;
+    }
+
     const lead = run.marchingOrder[0] ?? run.cats[0].classId;
     const ring = new Graphics()
       .circle(0, 0, 18)
@@ -832,13 +1007,6 @@ export class ExploreScene implements Scene {
     this.partyView.addChild(ring, head);
 
     // 3 trailing dots in the other cats' body colors (ui-art §7)
-    const px = tileCx(this.floor.party.x);
-    const py = tileCy(this.floor.party.y);
-    this.trail = [
-      { x: px, y: py },
-      { x: px, y: py },
-      { x: px, y: py },
-    ];
     run.marchingOrder.slice(1, 4).forEach((cls) => {
       const dot = new Graphics().circle(0, 0, 4).fill(PAL[cls].body);
       dot.position.set(px, py);
@@ -859,7 +1027,14 @@ export class ExploreScene implements Scene {
       cv.view.visible = f.explored[idx(f.w, cv.e.x, cv.e.y)] === 1;
       if (cv.e.opened !== cv.opened) {
         cv.opened = cv.e.opened;
-        cv.view.tint = cv.e.opened ? PAL.textDim : 0xffffff;
+        // sprite chests swap to the open art; hoard (no open variant) and
+        // procedural chests keep the dim-tint treatment
+        const openTex =
+          cv.sprite && !cv.hoard && cv.e.opened
+            ? spriteTextureFor("prop:chestOpen")
+            : null;
+        if (cv.sprite && openTex) cv.sprite.texture = openTex;
+        else cv.view.tint = cv.e.opened ? PAL.textDim : 0xffffff;
       }
     }
     for (const ev of this.eventViews) {

@@ -9,7 +9,7 @@
  * Esc does nothing here — walking away is an explicit option, not a
  * keybind (events.md §3; ARCHITECTURE.md WP-12 acceptance).
  */
-import { Container, Graphics, Text } from "pixi.js";
+import { Container, FillGradient, Graphics, Text } from "pixi.js";
 import type {
   EnemyId,
   EventOption,
@@ -35,7 +35,12 @@ import { mulberry32 } from "../../core/rng";
 import { PAL } from "../palette";
 import { R, RADIUS, type Rect } from "../layout";
 import { display, ui } from "../textStyles";
-import { makeButton, makeHotkeyChip, makePanel } from "../widgets";
+import {
+  makeButton,
+  makeCoverSprite,
+  makeHotkeyChip,
+  makePanel,
+} from "../widgets";
 import { makeEventGlyph, type EventGlyphId } from "../draw/glyphs";
 import { layer, type GameCtx, type Scene } from "../sceneManager";
 import type { EventWinContext } from "../overlays/loot";
@@ -123,6 +128,8 @@ export class EventScene implements Scene {
   private dynamic: Container | null = null;
   private glyph: Container | null = null;
   private glyphBaseY = 0;
+  /** true when a generated scene illustration is up (text hugs the left) */
+  private illustrated = false;
   private t = 0;
 
   private ctx: GameCtx | null = null;
@@ -191,6 +198,7 @@ export class EventScene implements Scene {
       sel.event.title,
       EVENT_GLYPH[sel.event.id] ?? "strangeBox",
       run.floorNum,
+      `scene:event:${sel.event.id}`,
     );
     this.showPrompt();
   }
@@ -226,6 +234,7 @@ export class EventScene implements Scene {
     this.panel = null;
     this.dynamic = null;
     this.glyph = null;
+    this.illustrated = false;
     this.hotkeys = [];
     this.continueFn = null;
   }
@@ -236,9 +245,52 @@ export class EventScene implements Scene {
     title: string,
     glyphId: EventGlyphId,
     floorNum: number,
+    sceneId?: string,
   ): void {
     const panel = this.panel!;
-    const [px, py] = R.event.panel;
+    const [px, py, pw, ph] = R.event.panel;
+
+    // Generated illustration (scene:event:<id>): fills the panel, subject
+    // in the right third (the scene set's composition contract), clipped
+    // to the panel's rounded corners. A left→right + bottom-up gradient
+    // scrim keeps the title/body/options text readable over the art.
+    const illo = sceneId
+      ? makeCoverSprite(sceneId, pw, ph, {
+          align: "right",
+          radius: RADIUS.panel,
+        })
+      : null;
+    if (illo) {
+      const scrim = new Graphics();
+      const deep = (a: number) => `rgba(26, 22, 38, ${a})`; // PAL.bgDeep
+      scrim
+        .rect(0, 0, pw, ph)
+        .fill(
+          new FillGradient({
+            end: { x: 1, y: 0 },
+            colorStops: [
+              { offset: 0, color: deep(0.95) },
+              { offset: 0.45, color: deep(0.78) },
+              { offset: 0.72, color: deep(0.3) },
+              { offset: 1, color: deep(0.05) },
+            ],
+          }),
+        )
+        .rect(0, ph - 250, pw, 250)
+        .fill(
+          new FillGradient({
+            end: { x: 0, y: 1 },
+            colorStops: [
+              { offset: 0, color: deep(0) },
+              { offset: 1, color: deep(0.88) },
+            ],
+          }),
+        );
+      illo.addChild(scrim); // clipped by the cover mask with the art
+      panel.addChildAt(illo, 1); // above the panel bg, below `dynamic`
+      this.illustrated = true;
+    }
+
     const [tx, ty, tw] = R.event.title;
     const titleText = new Text({
       text: title,
@@ -251,13 +303,16 @@ export class EventScene implements Scene {
     titleText.position.set(tx - px, ty - py);
     panel.addChild(titleText);
 
-    const themeIndex = Math.min(2, Math.floor((floorNum - 1) / 2));
-    const glyph = makeEventGlyph(glyphId, themeIndex);
-    const [gx, gy, gw, gh] = R.event.glyph;
-    glyph.position.set(gx - px + gw / 2, gy - py + gh / 2);
-    this.glyphBaseY = glyph.y;
-    this.glyph = glyph;
-    panel.addChild(glyph);
+    // procedural glyph is the assetless stand-in for the illustration
+    if (!illo) {
+      const themeIndex = Math.min(2, Math.floor((floorNum - 1) / 2));
+      const glyph = makeEventGlyph(glyphId, themeIndex);
+      const [gx, gy, gw, gh] = R.event.glyph;
+      glyph.position.set(gx - px + gw / 2, gy - py + gh / 2);
+      this.glyphBaseY = glyph.y;
+      this.glyph = glyph;
+      panel.addChild(glyph);
+    }
   }
 
   /* ---- PROMPT --------------------------------------------------------- */
@@ -273,7 +328,12 @@ export class EventScene implements Scene {
     const [bx, by, bw] = R.event.body;
     const body = new Text({
       text: event.prompt,
-      style: ui(16, { wordWrap: true, wordWrapWidth: bw, lineHeight: 24 }),
+      // with an illustration up the prompt hugs the scrim-dark left column
+      style: ui(16, {
+        wordWrap: true,
+        wordWrapWidth: this.illustrated ? 420 : bw,
+        lineHeight: 24,
+      }),
     });
     body.position.set(bx - px, by - py);
     dyn.addChild(body);
@@ -392,7 +452,7 @@ export class EventScene implements Scene {
       style: ui(16, {
         fontStyle: "italic",
         wordWrap: true,
-        wordWrapWidth: bw,
+        wordWrapWidth: this.illustrated ? 420 : bw,
         lineHeight: 24,
       }),
     });

@@ -28,13 +28,20 @@ import { PAL } from "../palette";
 import { DESIGN_H, DESIGN_W, R } from "../layout";
 import { display, mono, ui } from "../textStyles";
 import { tween } from "../tween";
-import { makeBar, makeButton, makePanel, makePawRow } from "../widgets";
+import {
+  makeBar,
+  makeButton,
+  makePanel,
+  makePawRow,
+  makeSpriteIcon,
+} from "../widgets";
 import { drawCatPortrait } from "../draw/cats";
 import { layer, type GameCtx, type Overlay } from "../sceneManager";
 import {
   RARITY_COLOR,
   equipName,
   equipStatsText,
+  itemSpriteId,
   makePickupModal,
   type PickupModal,
 } from "./inventoryPanel";
@@ -201,11 +208,17 @@ export class LootOverlay implements Overlay {
     // equipment rows
     for (const e of p.grant.equips) {
       const row = new Container();
-      const icon = new Text({
-        text: equipIcon(e),
-        style: mono(18, { fill: RARITY_COLOR[e.rarity] }),
-      });
-      row.addChild(icon);
+      const art = makeSpriteIcon(itemSpriteId(e), 32);
+      if (art) {
+        art.position.set(14, 17);
+        row.addChild(art);
+      } else {
+        const icon = new Text({
+          text: equipIcon(e),
+          style: mono(18, { fill: RARITY_COLOR[e.rarity] }),
+        });
+        row.addChild(icon);
+      }
       const name = new Text({
         text: `${equipName(e)}  —  ${e.rarity} L${e.itemLevel}`,
         style: ui(16, { fill: RARITY_COLOR[e.rarity] }),
@@ -224,11 +237,17 @@ export class LootOverlay implements Overlay {
     // consumable rows
     for (const c of p.grant.consumables) {
       const row = new Container();
-      const icon = new Text({
-        text: CONSUMABLES[c.defId].icon,
-        style: mono(18),
-      });
-      row.addChild(icon);
+      const art = makeSpriteIcon(`item:${c.defId}`, 24);
+      if (art) {
+        art.position.set(12, 11);
+        row.addChild(art);
+      } else {
+        const icon = new Text({
+          text: CONSUMABLES[c.defId].icon,
+          style: mono(18),
+        });
+        row.addChild(icon);
+      }
       const name = new Text({
         text: `${CONSUMABLES[c.defId].name} ×${c.count}`,
         style: ui(16),

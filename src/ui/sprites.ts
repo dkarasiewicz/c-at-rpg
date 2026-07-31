@@ -1,19 +1,23 @@
 /**
  * Visual v2 — generated-sprite registry (docs/design/visual-v2.md).
  *
- * Loads `public/assets/gen/manifest.json` once at boot and resolves every
- * listed file through pixi `Assets.load`. The manifest contract (shared with
- * the asset package) is:
+ * Loads ALL FOUR asset manifests once at boot — the root
+ * `public/assets/gen/manifest.json` plus the `env/`, `items/` and `scenes/`
+ * sub-manifests — and resolves every listed file through pixi `Assets.load`
+ * into one id → texture registry. The manifest contract (shared with the
+ * asset packages) is, per directory:
  *
- *   { "version": 1, "sprites": { "<id>": { "file": "x.png", "w": 1024, "h": 1024 } } }
+ *   { "version": 1, "sprites": { "<id>": { "file": "x.png", "w": 512, "h": 512 } } }
  *
- * with ids `cat:bruno|pixel|mora|baguette`, `portrait:<same>`,
- * `enemy:<enemyId>`, `boss:<bossId>`, `title:hero`. Images are square PNGs on
- * flat #1a1626 (PAL.bgDeep) so they blend into scene backgrounds untouched.
+ * Id namespaces: root `cat:* portrait:* enemy:* boss:* title:hero`,
+ * env `tile:* prop:* token:*`, items `item:* equip:*`, scenes `scene:*`.
+ * Root/battle images are square PNGs on flat #1a1626 (PAL.bgDeep); env
+ * tiles are opaque 512² squares, props/tokens are alpha-keyed.
  *
- * EVERYTHING here is fail-soft: a missing manifest, a 404'd file or a
- * malformed entry just means "no sprite" — accessors return null and the
- * procedural draw/* renderers stay in charge. This module never throws.
+ * EVERYTHING here is fail-soft, each manifest independently: a missing
+ * manifest, a 404'd file or a malformed entry just means "no sprite" —
+ * accessors return null and the procedural draw/* renderers stay in
+ * charge. This module never throws.
  */
 import { Assets, Texture } from "pixi.js";
 import type { ClassId } from "../core/types";
@@ -34,17 +38,18 @@ const base = (): string => {
   return typeof b === "string" ? b : "/";
 };
 
+/** The four manifest directories, relative to `assets/gen/`. */
+const MANIFEST_DIRS = ["", "env/", "items/", "scenes/"] as const;
+
 /**
- * Fetch the manifest and load every referenced texture. Call once from
- * main.ts before the first scene mounts. Tolerates 404 / network failure /
- * bad JSON — resolves either way, never rejects.
+ * Fetch one directory's manifest and load every referenced texture into
+ * the shared registry. Tolerates 404 / network failure / bad JSON —
+ * resolves either way, never rejects.
  */
-export async function initSprites(): Promise<void> {
-  if (initStarted) return;
-  initStarted = true;
+async function loadManifestDir(dir: string): Promise<void> {
   let sprites: Record<string, ManifestSprite> = {};
   try {
-    const res = await fetch(`${base()}assets/gen/manifest.json`, {
+    const res = await fetch(`${base()}assets/gen/${dir}manifest.json`, {
       cache: "no-cache",
     });
     if (!res.ok) return;
@@ -62,19 +67,32 @@ export async function initSprites(): Promise<void> {
     }
     sprites = data.sprites as Record<string, ManifestSprite>;
   } catch {
-    return; // absent/unreachable manifest = fully procedural game
+    return; // absent/unreachable manifest = procedural fallback for this dir
   }
   await Promise.all(
     Object.entries(sprites).map(async ([id, s]) => {
       if (!s || typeof s.file !== "string" || s.file === "") return;
       try {
-        const tex = await Assets.load<Texture>(`${base()}assets/gen/${s.file}`);
+        const tex = await Assets.load<Texture>(
+          `${base()}assets/gen/${dir}${s.file}`,
+        );
         if (tex instanceof Texture) textures.set(id, tex);
       } catch {
         /* one bad file never blocks the rest */
       }
     }),
   );
+}
+
+/**
+ * Load all four manifests (root + env + items + scenes), each fail-soft
+ * independently. Call once from main.ts before the first scene mounts.
+ * Never rejects.
+ */
+export async function initSprites(): Promise<void> {
+  if (initStarted) return;
+  initStarted = true;
+  await Promise.all(MANIFEST_DIRS.map((d) => loadManifestDir(d)));
 }
 
 /** Is a generated texture available for this manifest id? */

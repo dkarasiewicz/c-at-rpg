@@ -40,8 +40,10 @@ Keyboard: **Enter** start · **S** enter a seed · **arrows/WASD** move · **1�
 - **Deterministic** — one seeded RNG (fnv1a + mulberry32) with documented streams;
   the same seed is the same run. Autosaves to localStorage; runs survive reloads.
 
-![Battle](docs/screenshots/battle.png)
-![Explore](docs/screenshots/explore.png)
+| | |
+|---|---|
+| ![Battle](docs/screenshots/battle.png) | ![Explore](docs/screenshots/explore.png) |
+| ![Event](docs/screenshots/event.png) | ![Inventory](docs/screenshots/inventory.png) |
 
 ## Art pipeline
 

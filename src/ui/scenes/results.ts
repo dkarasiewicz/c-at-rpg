@@ -14,7 +14,7 @@ import { newRun } from "../../core/run/runState";
 import { PAL } from "../palette";
 import { DESIGN_H, DESIGN_W, R } from "../layout";
 import { display, mono, ui } from "../textStyles";
-import { makeButton } from "../widgets";
+import { makeButton, makeCoverSprite } from "../widgets";
 import { drawCat } from "../draw/cats";
 import { tween } from "../tween";
 import { randomSeed } from "./title";
@@ -29,6 +29,15 @@ export interface ResultsParams {
 
 const CAT_ORDER = ["bruiser", "trickster", "hexer", "medic"] as const;
 const LINE_MS = 320; // count-up: one score line per beat
+
+/**
+ * The cat lineup flanks the center column (2 left, 2 right) instead of
+ * sitting under it — the old centered row at R.results.catsY overlapped
+ * the records line whenever the score table ran long. Feet at CATS_Y;
+ * a sit-pose cat spans ~92px upward from its feet.
+ */
+const CAT_XS = [180, 320, 960, 1100] as const;
+const CATS_Y = 560;
 
 export function createResultsScene(): Scene {
   const view = new Container();
@@ -96,6 +105,15 @@ export function createResultsScene(): Scene {
       view.addChild(
         new Graphics().rect(0, 0, DESIGN_W, DESIGN_H).fill(PAL.bgDeep),
       );
+      // generated outcome scene behind everything, dimmed; the count-up
+      // and records get an extra center scrim below
+      const backdrop = makeCoverSprite(
+        p.victory ? "scene:victory" : "scene:defeat",
+        DESIGN_W,
+        DESIGN_H,
+        { dim: 0.6 },
+      );
+      if (backdrop) view.addChild(backdrop);
       const banner = new Text({
         text: p.victory ? "NINE LIVES WELL SPENT" : "THE ALLEY REMEMBERS",
         style: display(40, { fill: p.victory ? PAL.gold : PAL.danger }),
@@ -119,6 +137,15 @@ export function createResultsScene(): Scene {
       /* ---- score table (count-up) ---------------------------------- */
       const [bx, by, bw] = R.results.statsBlock;
       const lineH = 24;
+      if (backdrop) {
+        // soft scrim behind the stats/records column for readability
+        const scrimH = (summary.lines.length + 1) * lineH + 110;
+        view.addChild(
+          new Graphics()
+            .roundRect(bx - 28, by - 16, bw + 56, scrimH, 8)
+            .fill({ color: PAL.bgDeep, alpha: 0.55 }),
+        );
+      }
       summary.lines.forEach((l, i) => {
         const label = new Text({
           text:
@@ -188,9 +215,8 @@ export function createResultsScene(): Scene {
         drawCat(g, CAT_ORDER[i], "sit", 1, dead);
         if (dead) c.alpha = 0.6;
         c.addChild(g);
-        const x = DESIGN_W / 2 + (i - 1.5) * R.results.catSpacing;
-        c.position.set(x, R.results.catsY);
-        cats.push({ c, baseY: R.results.catsY, phase: i * 0.9, dead });
+        c.position.set(CAT_XS[i] ?? DESIGN_W / 2, CATS_Y);
+        cats.push({ c, baseY: CATS_Y, phase: i * 0.9, dead });
         view.addChild(c);
       });
 

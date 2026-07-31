@@ -133,6 +133,12 @@ const RUN_SCENES: readonly SceneId[] = [
   // smokes poll the active scene id instead of guessing from pixels.
   (window as unknown as { __scene?: () => string }).__scene = () =>
     manager.current;
+  // Same idea for the active overlay (null when none) and the live run —
+  // lets smokes wait for the loot overlay / read party position instead of
+  // guessing from pixels.
+  (window as unknown as { __overlay?: () => string | null }).__overlay = () =>
+    manager.overlay;
+  (window as unknown as { __run?: () => unknown }).__run = () => ctx.run;
 
   // ?smoke=battle — dev/CI hook (like ?gallery=1): skip boot/title, start a
   // fresh run and drop straight into a non-boss battle so automated UI

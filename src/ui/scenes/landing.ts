@@ -32,14 +32,17 @@ import { tween } from "../tween";
 import {
   makeBar,
   makeButton,
+  makeCoverSprite,
   makePanel,
   makePawRow,
+  makeSpriteIcon,
   type Bar,
 } from "../widgets";
 import { drawCat, drawCatPortrait } from "../draw/cats";
 import {
   equipName,
   equipStatsText,
+  itemSpriteId,
   makeInventoryPanel,
   RARITY_COLOR,
   type InventoryPanelApi,
@@ -117,14 +120,23 @@ export class LandingScene implements Scene {
     view.addChild(
       new Graphics().rect(0, 0, DESIGN_W, DESIGN_H).fill(PAL.bgDeep),
     );
-    // stairwell flavor: steps descending into the dark
-    const steps = new Graphics();
-    for (let i = 0; i < 6; i++) {
-      steps
-        .rect(80 + i * 60, 200 + i * 56, 420 - i * 60, 16)
-        .fill({ color: PAL.panel, alpha: 0.5 - i * 0.06 });
+    // generated campfire scene, dimmed under the UI; procedural stairwell
+    // flavor stays as the assetless fallback
+    const backdrop = makeCoverSprite("scene:landing", DESIGN_W, DESIGN_H, {
+      dim: 0.55,
+    });
+    if (backdrop) {
+      view.addChild(backdrop);
+    } else {
+      // stairwell flavor: steps descending into the dark
+      const steps = new Graphics();
+      for (let i = 0; i < 6; i++) {
+        steps
+          .rect(80 + i * 60, 200 + i * 56, 420 - i * 60, 16)
+          .fill({ color: PAL.panel, alpha: 0.5 - i * 0.06 });
+      }
+      view.addChild(steps);
     }
-    view.addChild(steps);
 
     const title = new Text({
       text: "THE LANDING",
@@ -412,18 +424,42 @@ export class LandingScene implements Scene {
           .stroke({ width: 1, color: PAL.border }),
       );
 
-      const icon = new Text({
-        text:
-          slot.kind === "consumable"
-            ? CONSUMABLES[slot.defId].icon
-            : EQUIP_DEFS[slot.item.defId].icon,
-        style: mono(18, {
-          fill:
-            slot.kind === "equip" ? RARITY_COLOR[slot.item.rarity] : PAL.text,
-        }),
-      });
-      icon.position.set(12, 6);
-      row.addChild(icon);
+      const artId =
+        slot.kind === "consumable"
+          ? `item:${slot.defId}`
+          : itemSpriteId(slot.item);
+      const artSize = isEquipSlot ? 38 : 26;
+      const art = makeSpriteIcon(artId, artSize);
+      if (art) {
+        art.position.set(24, (h - 4) / 2);
+        row.addChild(art);
+        if (slot.kind === "equip") {
+          row.addChild(
+            new Graphics()
+              .roundRect(
+                24 - artSize / 2,
+                (h - 4 - artSize) / 2,
+                artSize,
+                artSize,
+                RADIUS.chip,
+              )
+              .stroke({ width: 2, color: RARITY_COLOR[slot.item.rarity] }),
+          );
+        }
+      } else {
+        const icon = new Text({
+          text:
+            slot.kind === "consumable"
+              ? CONSUMABLES[slot.defId].icon
+              : EQUIP_DEFS[slot.item.defId].icon,
+          style: mono(18, {
+            fill:
+              slot.kind === "equip" ? RARITY_COLOR[slot.item.rarity] : PAL.text,
+          }),
+        });
+        icon.position.set(12, 6);
+        row.addChild(icon);
+      }
 
       const name = new Text({
         text:
