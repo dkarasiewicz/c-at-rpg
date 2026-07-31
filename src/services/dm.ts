@@ -86,9 +86,17 @@ let probeResult: Promise<boolean> | null = null;
 let reachable = false;
 
 /**
- * Is a DM reachable? `GET /eve/v1/health` — a liveness route that makes no
+ * Is a DM reachable? `GET /eve/v1/info` — an inspection route that makes no
  * model call. Any non-2xx, non-JSON body, or timeout means "no DM", which is
  * indistinguishable (by design) from the player choosing not to use one.
+ *
+ * NOT `/eve/v1/health`, even though that is the documented liveness probe:
+ * eve serves it from the workflow runtime, OUTSIDE the eve channel's CORS
+ * middleware, so it answers 200 with no `Access-Control-Allow-Origin` header.
+ * A browser therefore cannot read it cross-origin, the probe fails, and the
+ * game silently decides the DM is offline — a failure that looks exactly like
+ * success from the server side and only ever reproduces in a real browser.
+ * `/eve/v1/info` is served by the channel and does carry the CORS headers.
  */
 export function probeDm(): Promise<boolean> {
   probeResult ??= (async () => {
@@ -96,7 +104,7 @@ export function probeDm(): Promise<boolean> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DM_PROBE_TIMEOUT_MS);
     try {
-      const res = await fetch(`${baseUrl}/eve/v1/health`, {
+      const res = await fetch(`${baseUrl}/eve/v1/info`, {
         method: "GET",
         signal: controller.signal,
       });

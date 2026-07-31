@@ -38,3 +38,4 @@ dbg.tmp.mjs
 # eve agent build artifacts (docs/DM-DEPLOY.md)
 .eve
 .output
+.env*

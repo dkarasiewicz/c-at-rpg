@@ -124,10 +124,20 @@ curl https://c-at-rpg-dm.vercel.app/eve/v1/info
 ```
 
 `/eve/v1/health` is the liveness probe (it does **not** make a model call — for
-a real generation probe, start a session and send a trivial message). The game's
-own reachability probe should hit `/eve/v1/health` and treat any non-2xx, any
-non-JSON body, and any timeout as "DM unavailable", exactly as
-`src/services/gm.ts#probeGm` treats `/api/gm/eventResolve` today.
+a real generation probe, start a session and send a trivial message).
+
+> **The browser probe must use `/eve/v1/info`, not `/eve/v1/health`.** eve
+> serves `health` from the workflow runtime, *outside* the eve channel's CORS
+> middleware, so it answers `200` with **no `Access-Control-Allow-Origin`
+> header**. `curl` sees a perfectly healthy endpoint; a browser cannot read the
+> response at all, so the probe fails and the game silently concludes the DM is
+> offline — the offline path is working as designed, which is precisely what
+> makes this invisible. `/eve/v1/info` is served by the channel, carries the
+> CORS headers, and also makes no model call. `src/services/dm.ts#probeDm` uses
+> it for exactly this reason; do not "simplify" it back to `health`.
+>
+> This class of bug only reproduces in a real browser against a real
+> deployment. Verify it that way.
 
 ## HTTP surface
 
