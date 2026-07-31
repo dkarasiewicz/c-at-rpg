@@ -12,9 +12,15 @@
  *                     5 Cat Pile check → 6 death/victory check
  *
  * RNG draw order per combat.md §3: per damaging action per target in rank
- * order — variance, then crit; then per-effect status chances (a chance of
- * exactly 1.0 draws NOTHING); flee draws one float. The AI draws only on
- * genuine ties (ai.ts).
+ * order — variance, then crit; then, in step 2 per force-moved target in rank
+ * order, the Off-Paw application chance followed by the tier-resistance roll;
+ * then per-effect status chances (a chance of exactly 1.0 draws NOTHING),
+ * each Off-Balance application chasing its own tier-resistance roll; flee
+ * draws one float. The AI draws only on genuine ties (ai.ts).
+ *
+ * The two Off-Paw gates are drawn ONLY when the application could actually
+ * land (target alive, not already Off-Balance, not Braced) — a wasted shove
+ * costs no entropy, which is what keeps replays identical.
  *
  * Trait hooks (classes.md) and all 8 Mewthical hooks (loot.md §4) fire at
  * their documented injection points; every hook is a single conditional in an
@@ -34,19 +40,28 @@ import { CONSUMABLES } from "../../content/consumables.js";
 import { roundHalfUp } from "../util.js";
 import {
   byId,
+  canUseFrom,
   cloneState,
   hasStatus,
   hypotheticalDistance,
   isAlive,
   living,
   nextEntryIndex,
+  OFF_BALANCE_MULT,
+  offBalanceResistOf,
   opposite,
   repositionWithin,
   swapRanks,
   traitTier,
   validTargets,
 } from "./state.js";
-import { applyStatus, removeStatus, turnStartStatusPhase } from "./status.js";
+import {
+  applyStatus,
+  braceAfterOffBalance,
+  BRACE_ON_CONSUME,
+  removeStatus,
+  turnStartStatusPhase,
+} from "./status.js";
 import {
   bossDataOf,
   canSummon,
@@ -117,6 +132,55 @@ function sweepWithPowers(
     from = events.length;
     processDeathsAndOutcome(s, events);
   }
+}
+
+/* ------------------------------------------------------------------ */
+/* Off-Paw application gates (combat.md §8 / balance-and-meta.md §1)    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Could an Off-Balance application land on `t` at all? False when the target
+ * is dead, already Off-Balance, or Braced. Callers MUST check this before
+ * drawing either gate roll — that is the determinism contract.
+ */
+function offBalanceLandable(t: Combatant): boolean {
+  return isAlive(t) && !hasStatus(t, "offBalance") && !hasStatus(t, "braced");
+}
+
+/**
+ * Tier-resistance gate: one `rng.float()` for a tier-2 (25%) or tier-3 (40%)
+ * enemy, no draw at all for cats and tier-1 mooks. Returns true when the
+ * application was shrugged off.
+ */
+function resistsOffBalance(
+  t: Combatant,
+  events: BattleEvent[],
+  rng: Rng,
+): boolean {
+  const resist = offBalanceResistOf(t);
+  if (resist <= 0) return false;
+  if (rng.float() >= resist) return false;
+  events.push({ t: "log", text: `${t.name} keeps its footing.` });
+  return true;
+}
+
+/**
+ * The full Off-Balance application path: landability check (no draws), the
+ * per-skill application chance (skipped entirely at exactly 1.0), then tier
+ * resistance, then the status itself. Returns true when Off-Balance landed.
+ */
+function tryOffBalance(
+  t: Combatant,
+  chance: number,
+  events: BattleEvent[],
+  rng: Rng,
+): boolean {
+  if (!offBalanceLandable(t)) return false;
+  if (chance < 1.0 && rng.float() >= chance) return false;
+  if (resistsOffBalance(t, events, rng)) return false;
+  if (!applyStatus(t, "offBalance")) return false;
+  events.push({ t: "statusApplied", id: t.id, status: "offBalance", value: 0 });
+  return true;
 }
 
 export function resolveAction(
@@ -391,8 +455,9 @@ function resolveSkill(
   rng: Rng,
   opts: SkillOpts,
 ): void {
-  // legality (driver bugs should explode, not corrupt state)
-  if (!skill.usableFrom.includes(actor.rank)) {
+  // legality (driver bugs should explode, not corrupt state). `usableFrom` is
+  // projected onto the actor's actual formation size — see canUseFrom.
+  if (!canUseFrom(s, actor, skill)) {
     throw new Error(`combat: ${skill.id} not usable from rank ${actor.rank}`);
   }
   if (skill.oncePerBattle && actor.usedOncePerBattle.includes(skill.id)) {
@@ -463,7 +528,7 @@ function resolveSkill(
           actor.stats.atk *
           variance *
           (crit ? 1.5 : 1.0) *
-          (offBal ? 1.5 : 1.0) *
+          (offBal ? OFF_BALANCE_MULT : 1.0) *
           (guard ? 0.5 : 1.0),
       );
       const final = Math.max(1, dmg - t.stats.def);
@@ -483,14 +548,7 @@ function resolveSkill(
         if (isBoss(t)) {
           chipPoise(t, 1, events);
         } else if (!t.traits.includes("heavy")) {
-          if (applyStatus(t, "offBalance")) {
-            events.push({
-              t: "statusApplied",
-              id: t.id,
-              status: "offBalance",
-              value: 0,
-            });
-          }
+          tryOffBalance(t, 1.0, events, rng);
         }
       }
       if (isBoss(t)) checkPhase(t, events);
@@ -613,29 +671,17 @@ function resolveSkill(
       if (res.distance >= 1) {
         anyForcedResult = true;
         if (!firstForcedId) firstForcedId = t.id;
-        // Rule 1 — Off-Paw: moved ≥1 clamped rank against its will.
-        if (applyStatus(t, "offBalance")) {
-          events.push({
-            t: "statusApplied",
-            id: t.id,
-            status: "offBalance",
-            value: 0,
-          });
-        }
+        // Rule 1 — Off-Paw: moved ≥1 clamped rank against its will. Two gates
+        // now stand between the shove and the debuff (see tryOffBalance):
+        // the skill's own application chance, then tier resistance.
+        tryOffBalance(t, skill.offBalanceChance ?? 1.0, events, rng);
         // Hook: Static-Charged Fluff — an enemy force-moving the wearer
         // becomes Off-Balance itself (heavy mover: chip 1 Poise).
         if (t.hooks.includes("moverOffBalance") && actor.side !== t.side) {
           if (isBoss(actor)) {
             chipPoise(actor, 1, events);
           } else if (!actor.traits.includes("heavy")) {
-            if (applyStatus(actor, "offBalance")) {
-              events.push({
-                t: "statusApplied",
-                id: actor.id,
-                status: "offBalance",
-                value: 0,
-              });
-            }
+            tryOffBalance(actor, 1.0, events, rng);
           }
         }
       }
@@ -659,6 +705,13 @@ function resolveSkill(
         // A chance of EXACTLY 1.0 draws no roll (GDD §4 ruling).
         const hit = chance >= 1.0 ? true : rng.float() < chance;
         if (!hit) continue;
+        // An Off-Balance carried by `applies` (Whisker Feint, Stand powers)
+        // faces the same tier gate as the Off-Paw rule, drawn right after
+        // this effect's own chance roll — but only when it could land.
+        if (app.status === "offBalance") {
+          if (!offBalanceLandable(r)) continue;
+          if (resistsOffBalance(r, events, rng)) continue;
+        }
         const value =
           app.status === "provoked"
             ? s.combatants.indexOf(actor)
@@ -694,6 +747,11 @@ function resolveSkill(
       for (const st of skill.cleanses) {
         if (cleanseOneOf(t, st)) {
           events.push({ t: "cleansed", id: t.id, status: st });
+          // Cleansing Off-Balance is a CONSUMPTION like a Cat Pile: the
+          // target got its paws back under it and is Braced (§8).
+          if (st === "offBalance") {
+            braceAfterOffBalance(t, BRACE_ON_CONSUME, events);
+          }
         }
       }
     }
@@ -795,10 +853,11 @@ function executeCatPile(s: BattleState, events: BattleEvent[]): void {
       source: "catPile",
     });
   }
-  // survivors scramble back to their feet
+  // survivors scramble back to their feet — and stay on them (Braced, §8)
   for (const t of targets) {
     if (t.hp > 0 && removeStatus(t, "offBalance")) {
       events.push({ t: "statusExpired", id: t.id, status: "offBalance" });
+      braceAfterOffBalance(t, BRACE_ON_CONSUME, events);
     }
   }
 }

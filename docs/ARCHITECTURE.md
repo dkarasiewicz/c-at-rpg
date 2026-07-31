@@ -80,11 +80,20 @@ src/
       inventory.ts            # [90] 16 slots, stacks of 5, add/remove/merge, equip/unequip (hp adjust), sell values, grief loot, MOULT downgrade
       shop.ts                 # [60] Peddler stock roll (shop stream), prices, Warm Lap cost, sell-at-quarter
 
+    meta/                     # Cat Town — the between-runs layer (balance-and-meta.md §4). Pure; knows nothing about pixi or a scene.
+      types.ts                # [90] MetaProfile / RunSummary / Payout / UnlockDef / RunOverlay + THE id convention: every unlock is '<namespace>:<localId>'
+      unlocks.ts              # [180] the 6 PLACES, the authored UnlockDefs, and an OPEN registry (registerUnlocks/unlockCatalog); every pure fn takes an explicit catalog
+      payout.ts               # [50] computePayout(RunSummary) → Payout. Banked win OR lose; a loss is scaled, never zero
+      profile.ts              # [200] emptyProfile/migrateMeta(v1→v2)/bankRun/earnShinies/purchase/unlockState/prereqsMet/affordableUnlocks/newlyAffordable — all pure, all returning new objects
+      overlay.ts              # [110] applyUnlocks(meta) → RunOverlay; eligibleClasses / startingRoster. Unknown namespaces fold into overlay.pool[ns]
+      startRun.ts             # [70] startRun(seed, overlay) = newRun(seed, …, {partyCapacity, roster}) + wallet/gear fold-in. THE one call Cat Town makes
+      index.ts                # [10] barrel
+
     run/
-      runState.ts             # [120] newRun(seed), generateCurrentFloorMap/enterFloorMap/floorConfig, descend (catnap heal + map gen), applyBattleResult(run, result, nodeId) write-back, fired-event & unique bookkeeping
+      runState.ts             # [200] newRun(seed, customParty?, {partyCapacity, roster}), the ROSTER model (STARTING_PARTY_SIZE=2, DEFAULT/MAX_PARTY_CAPACITY=3/4, fieldedCats/benchedCats/canRecruit/recruitCat, RECRUIT_FLOOR=3), generateCurrentFloorMap/enterFloorMap/floorConfig, descend (catnap heal + recruit + map gen), applyBattleResult write-back, fired-event & unique bookkeeping
       party.ts                # [90] effectiveStats(cat) = base+growth+equipment+tempMods, skill list by level, XP → level-ups (delta-HP rule), trait tier
       score.ts                # [40] score table (gameloop.md §7), results summary struct
-      save.ts                 # [110] SaveFile/MetaFile (de)serialize (the run minus its regenerable floorMap), v1/v2→v3 migration, localStorage adapter, version gate
+      save.ts                 # [140] SaveFile/MetaFile (de)serialize (the run minus its regenerable floorMap), v1/v2→v3 run migration, localStorage adapter, version gate. The META half is storage ONLY — shape, migration and every spending rule live in core/meta/profile.ts
 
   content/
     classes.ts                # [120] CLASSES: 4 CatClass defs verbatim from classes.md (bases, growth rows, unlocks, traits, barks, palettes)
@@ -95,7 +104,7 @@ src/
     consumables.ts            # [90] CONSUMABLES: 10 defs with battle Skill payloads (cost 0, chance 1.0) + explore fields + prices
     lootTables.ts             # [70] consumable weight table (Σ=100), rarity weights by floor band, chest/fight/boss draw tables, §5d bundles, starting kit
     events.ts                 # [300] EVENTS: the 10 shipped GameEvents verbatim from events.md §4 (ids fixed: 'rat'→'ratThug')
-    floors.ts                 # [40] FLOORS: canonical 6-floor table from GDD §6 incl. the per-floor run-map budget (columns/rows/weights/guaranteed), XP_TO_LEVEL, LEVEL_CAP
+    floors.ts                 # [90] FLOORS: canonical 6-floor table from GDD §6 incl. the per-floor run-map budget (columns/rows/weights/guaranteed) and threat budget, XP_TO_LEVEL, LEVEL_CAP, plus ENEMY_CURVE/floorCurve/curvedEnemyStats — THE difficulty dial (balance-and-meta.md §3); bosses are excluded from it
 
   ui/
     palette.ts                # [70] PAL + THEMES consts verbatim from ui-art.md §2
@@ -109,9 +118,11 @@ src/
       cats.ts                 # [180] drawCat recipe (96×96), 4 class variants, mini-portrait, KO greyscale (ui-art §4)
       enemies.ts              # [200] 4 family recipes, size grades, props, tier chevrons, boss extras (ui-art §5)
       glyphs.ts               # [60] event glyphs (yarnBall/fishBones/pawShrine/strangeBox), stairs swirl, chest, misc pictograms
+      spriteFrame.ts          # [90] the sprite-framing contract: SUBJECT_TOP/FOOT/SPAN, subjectScale/subjectFeetOffset (scale on the CHARACTER, not the texture frame), UNIT_HEIGHT by grade, makeBustSprite. No per-sprite metadata at runtime — the constants are baked into the art by scripts/trim-sprites.mjs
     scenes/
-      boot.ts                 # [40] black screen, paw logo, click-to-start
-      title.ts                # [130] logo, rooftop cats, New Run / Continue / Records, seed entry
+      boot.ts                 # [40] black screen, paw logo, click-to-start (the pointer-unlock gate: any click or key)
+      title.ts                # [130] logo, rooftop cats, New Run → Cat Town / Continue / Records, seed entry
+      catTown.ts              # [700] THE HUB: painted street, six place markers on the objects they name, the recruited cats bobbing on the floor, THE TIN, the payout receipt when you come home, place panels with buy. Reads core/meta only
       floorgen.ts             # [30] one-frame "Descending… Floor N" interstitial; calls core floor gen
       runMap.ts               # [900] THE floor screen: painted backdrop, node medallions + state overlays, inked routes, party marker, route choice, node → scene dispatch, party strip
       battle.ts               # [320] battle scene: engine driving loop, event-queue animator, targeting flow, unit containers, floaters, log line
@@ -140,8 +151,16 @@ tests/
   loot.spec.ts                # roll order, value formulas, inventory invariants
   events.spec.ts              # draw order, clamp-at-1, fired bookkeeping
   run.spec.ts                 # level-up deltas, save round-trip, score math
-  integration.spec.ts         # scripted mini-run: gen → battle → loot → event → descend, headless, deterministic
+  integration.spec.ts         # scripted mini-run: gen → battle → loot → event → descend, headless, deterministic; asserts the FSM incl. title → catTown → … → results → catTown
   tabletop.spec.ts            # verdict lint (closed union, budget, floor caps, affordability), transcript, cap-table parity with agent/ and api/
+  meta.spec.ts                # Cat Town: payout win/lose, history cap, spending + prereqs, idempotent double-buy, the open registry and unknown-namespace fold, v1→v2 migration + hand-edit repair + round-trip, "an unlock bought later never mutates a run in progress"
+  balance.spec.ts             # the Off-Balance rework: ×1.3, the two gates and their roll ORDER, braced durations, tier resistance
+  (+ content-classes / content-enemies / content-loot / progression / progress-ui / artstyle / powers / gm)
+
+scripts/
+  sim.ts                      # THE balance harness (`npm run sim`) — real engine, AI both sides, per-floor win/clear/rounds/OB uptime/Cat Pile/Lives/damage share. Flags: --floors --trials --chain --seed --party --roster --skills --json
+  trim-sprites.mjs            # asset normalisation: classify aura vs subject pixels, re-frame so the SUBJECT spans [0.30, 0.90] of the frame, attenuate the baked aura. Idempotent
+  gen-node-medallions.mjs / key-node-medallions.mjs / seed-pool.ts
 
 agent/                        # the persistent DM (Vercel eve) — NEVER in the browser bundle
   agent.ts                    # defineAgent({ model: 'anthropic/claude-haiku-4.5', sessionTimeoutMs: 7d })
@@ -178,7 +197,8 @@ export type SkillId  = string;    // camelCase, e.g. 'bodySlam'
 export type EnemyId  = string;    // camelCase, e.g. 'ratThug', 'vacuumKing'
 export type ItemId   = string;    // consumable OR equip def id, camelCase e.g. 'tunaSnack'
 export type StatusId = 'scratched' | 'frazzled' | 'offBalance'
-                     | 'guarded' | 'provoked' | 'mending';
+                     | 'guarded' | 'provoked' | 'mending'
+                     | 'braced';       // blocks offBalance re-application (balance-and-meta.md §1)
 export type TraitId  = 'heavy'                      // immune to forced movement
                      | 'immovableLoaf' | 'opportunist'
                      | 'stringTheory' | 'purrEngine';
@@ -666,10 +686,19 @@ export declare const LEVEL_CAP: number;             // 8
 
 One `SceneManager` (in `ui/sceneManager.ts`) owns the pixi stage. States mirror
 the FSM of run-map-and-dm.md §5 (which supersedes gameloop.md §1): scenes
-`boot · title · partyCreator · floorgen · runMap · battle · event · landing ·
-results`, overlays `loot · pause` (max one overlay, never stacked). There is no
-`explore` state, and **rest and treasure are not states** — they resolve inside
-the run-map scene.
+`boot · title · catTown · partyCreator · floorgen · runMap · battle · event ·
+landing · results`, overlays `loot · pause` (max one overlay, never stacked).
+There is no `explore` state, and **rest and treasure are not states** — they
+resolve inside the run-map scene.
+
+**`catTown` is the loop's hinge** (balance-and-meta.md §4): `title → catTown →
+floorgen → …` on the way down and `results → catTown` on the way back, so a run
+both starts and ends in the hub — that is where the payout is banked and where
+unlocks are bought. Esc must never pause in `catTown` (there is no run to
+pause), and `catTown → results` is illegal. The party creator is still reached
+from the title and builds its own run, so it does **not** yet consume the town's
+overlay; `catTown → partyCreator` is deliberately absent rather than shipping a
+path that silently drops unlocks.
 
 ```ts
 // ui/sceneManager.ts (contract — UI-layer type, not in core/types.ts)
@@ -677,7 +706,7 @@ export interface GameCtx {
   run: RunState | null;            // THE shared mutable state; scenes communicate only through it
   scenes: SceneManager;
   save(): void;                    // core/run/save.ts wrapper — called at the 5 autosave points
-  meta: MetaFile;
+  meta: MetaProfile;               // the Cat Town profile (core/meta), widened from MetaFile
 }
 
 export interface Scene {
@@ -705,8 +734,8 @@ Rules (restated as code behavior):
   subtree gets `interactiveChildren = false`. The pixi ticker keeps running
   (overlay animations, ambient idle in `landing`).
 - `pause` cannot open over `loot`; Esc closes `loot` first. Esc opens `pause`
-  from every scene except `boot`/`results`; during `battle` only in the input
-  phase (the scene gates it).
+  from every scene except `boot`/`results`/`catTown` (`PAUSE_BLOCKED`); during
+  `battle` only in the input phase (the scene gates it).
 - Transition legality is a static table in `sceneManager.ts`; illegal `goto`
   throws in dev, no-ops in prod.
 

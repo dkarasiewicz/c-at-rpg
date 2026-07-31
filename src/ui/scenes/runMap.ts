@@ -898,6 +898,17 @@ export class RunMapScene implements Scene {
       paws.view.position.set(w - SPACE.md - 72, 44);
       view.addChild(paws.view);
 
+      // A run FIELDS a subset of the four slots (balance-and-meta.md §2).
+      // Undimmed, the strip shows four healthy cats while two of them are on
+      // the bench — the party looks twice the size it fights at.
+      if (cat.lives > 0 && !run.marchingOrder.includes(cat.classId)) {
+        view.alpha = 0.55;
+        const benched = label("BENCHED", { dim: true, size: TYPE.tiny });
+        benched.anchor.set(1, 0);
+        benched.position.set(w - SPACE.md, SPACE.sm);
+        view.addChild(benched);
+      }
+
       strip.addChild(view);
       this.cards.push({ catIndex: i, view, hp, hpText, paws });
     });

@@ -1232,19 +1232,19 @@ export function makeChargeMark(): ChargeMark {
 
 /**
  * Threatened cat-rank slots flooded PAL.danger alpha 0.25 (ui-art §8).
- * `ranks` are CAT ranks; drawn in battlefield/world coordinates.
+ * Takes SLOT CENTRES in world x, not ranks: rank positions are computed per
+ * battle from the headcounts (layout.ts `combat.formation`), so only the scene
+ * knows where rank 3 actually is.
  */
-export function makeRankFlood(ranks: number[]): Graphics {
+export function makeRankFlood(xs: number[]): Graphics {
   const g = new Graphics();
   const groundY = R.combat.groundY;
-  for (const r of ranks) {
-    const x = R.combat.catSlots[r];
-    if (x === undefined) continue;
-    g.roundRect(x - 44, groundY - 108, 88, 116, 10).fill({
+  for (const x of xs) {
+    g.roundRect(x - 56, groundY - 176, 112, 188, 12).fill({
       color: PAL.danger,
-      alpha: 0.25,
+      alpha: 0.22,
     });
-    g.ellipse(x, groundY, 44, 12).fill({ color: PAL.danger, alpha: 0.25 });
+    g.ellipse(x, groundY, 54, 14).fill({ color: PAL.danger, alpha: 0.25 });
   }
   return g;
 }

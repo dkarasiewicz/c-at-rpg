@@ -1,13 +1,16 @@
 # c(at)rpg
 
-*A cRPG of considerable fluffiness.* Four stray cats descend through six seeded
-dungeon floors, fight turn-based JRPG battles, hoard shinies, and make questionable
-dialog choices. Each floor is a **run map** — a painted node graph where picking the
-route *is* the gameplay — and at any encounter you can stop pressing buttons and just
-**type what the party does**. Every cat — and every enemy — is bound to a **Stand**: a
-spectral patron looming behind them that embodies their power, announced in the battle
-log with all the drama it deserves («THE DUMPSTER KING» descends!). Cats ×
-bizarre-adventure shonen energy, built with **PixiJS v8 + TypeScript**.
+*A cRPG of considerable fluffiness.* A clowder of stray cats descends through six
+seeded dungeon floors, fights turn-based JRPG battles, hoards shinies, and makes
+questionable dialog choices. A run **starts with two cats** and earns the rest: a
+third joins mid-run, a fourth only once **Cat Town** — the hub you come home to
+between runs — has bought the bowl. Each floor is a **run map** — a painted node
+graph where picking the route *is* the gameplay — and at any encounter you can stop
+pressing buttons and just **type what the party does**. Every cat — and every enemy —
+is bound to a **Stand**: a spectral patron looming behind them that embodies their
+power, announced in the battle log with all the drama it deserves («THE DUMPSTER
+KING» descends!). Cats × bizarre-adventure shonen energy, built with
+**PixiJS v8 + TypeScript**.
 
 ![Title](docs/screenshots/title.png)
 
@@ -15,25 +18,40 @@ bizarre-adventure shonen energy, built with **PixiJS v8 + TypeScript**.
 
 ```bash
 npm install
-npm run dev     # http://localhost:8080
+npm run dev     # http://localhost:8080 (next free port if it is taken)
 ```
 
-Keyboard: **Enter** start / confirm · **S** enter a seed · **1–3 / arrows** pick a
-route on the run map · **1–6** skills · **T** say what you do · **R** flee ·
-**P** The Den · **Esc** pause.
+Keyboard: **Enter** start / confirm · **S** enter a seed · **1–6** pick a place in
+Cat Town · **1–3 / arrows** pick a route on the run map · **1–6** skills ·
+**T** say what you do · **R** flee · **P** The Den · **Esc** pause.
 
 ## The game
 
 - **The party** — Bruno the Bruiser and «THE DUMPSTER KING» (tank, shove offense),
   Pixel the Trickster and «BOX AMBUSH» (crit striker), Mora the Hexer and
   «STRING THEORY» (pulls, hexes, stuns), Baguette the Medic and «PURR ENGINE»
-  (heals, revives). Shared party level 1–8, capstone Stand attacks at 4.
-- **Combat — "Claws & Ranks"** — 4v5 single-file ranks. Any forced move inflicts
-  **Off-Balance** (+50% damage taken), and damage resolves *before* movement, so
-  shoves are a teammate-combo engine. Knock every enemy Off-Balance at once and the
-  party unleashes a **Cat Pile** — a synchronized Stand barrage. Heavy bosses trade
-  movement for a **Poise** meter — chip it to open them up. KO'd cats spend from a
-  pool of **Nine Lives**.
+  (heals, revives). Shared party level 1–8, capstone Stand attacks at 4. You field
+  **two** at the start, three by floor 3, four only with the Cat Town slot — and
+  ranks, Cat Pile, rank-gated skills and the AI all work at every size (a skill's
+  `usableFrom` is a *position in the line*, projected onto the bodies actually
+  standing there, so a two-cat party never loses half its kit).
+- **Combat — "Claws & Ranks"** — single-file ranks, up to 4 v 5. Any forced move can
+  inflict **Off-Balance** (+30% damage taken), and damage resolves *before* movement,
+  so shoves are a teammate-combo engine. It is a *combo*, not a tax: cheap shoves
+  land it 60–75% of the time and only the expensive setup skills are guaranteed,
+  tier-2/3 enemies shrug it off 25/40% of the time, and anything that just shook it
+  off is **Braced** — immune for a full round, which kills perma-shove locks. Knock
+  every enemy Off-Balance at once and the party unleashes a **Cat Pile** — a
+  synchronized Stand barrage. Heavy bosses trade movement for a **Poise** meter —
+  chip it to open them up. KO'd cats spend from a pool of **Nine Lives**.
+- **Cat Town** — the hub between runs. Shinies are banked **win or lose** (a failed
+  run still pays), and spent at six places on a painted street: the bowls, the stoop,
+  the fence, the cart, the notice board, the storm drain. Every unlock adds to the
+  *pool of possibilities* rather than handing out flat power — a fourth party slot,
+  new classes and Stands, starting gear, shop upgrades, later biomes, new encounter
+  types. Unlock ids are `namespace:localId`, and any namespace the engine does not
+  know becomes a content pool automatically, so a Stand or item the DM generated
+  reaches a run without an engine change.
 - **The run map** — each of the 6 floors is a small directed graph: entry on the
   left, boss or stairs on the right, 2–3 outgoing routes from wherever you stand.
   Nodes are `fight` / `elite` / `event` / `shop` / `rest` / `treasure` / `boss`, each
@@ -63,17 +81,28 @@ route on the run map · **1–6** skills · **T** say what you do · **R** flee 
 - **Events** — short scenarios with gated choices: risk a cat, spend shinies, or
   walk away. Rewards and punishments both delivered.
 - **Deterministic** — one seeded RNG (fnv1a + mulberry32) with documented streams;
-  the same seed is the same map *and* the same battles. The map is never saved — it
-  regenerates from `(runSeed, floor)` — and traversal draws no randomness at all.
-  Autosaves to localStorage; runs survive reloads, and saves from two schema
-  versions ago (back when this was a tile maze) still load.
+  the same seed is the same map *and* the same battles. Every roll a battle can draw
+  is written down in one ordered table (`combat.md` §3.2), including the rule that
+  keeps the new Off-Balance gates safe: *a gate is never drawn when the application
+  could not have landed anyway* — a shove into a corpse, a re-shove of something
+  already Off-Balance, and a push at a Braced target all cost zero entropy. The map
+  is never saved — it regenerates from `(runSeed, floor)` — and traversal draws no
+  randomness at all. Autosaves to localStorage; runs survive reloads, saves from two
+  schema versions ago (back when this was a tile maze) still load, and a v1
+  records-only Cat Town profile migrates forward into the town.
+- **Tuned against a simulator, not vibes** — `npm run sim` is a headless harness that
+  drives the *real* engine (`createBattle` / `startRound` / `resolveAction`, real
+  content, real seeded RNG) with an AI on both sides, one trial per floor being a
+  three-fight walk with HP persisting. It reports win/clear rate, rounds, Off-Balance
+  uptime, Cat Piles per battle, Lives burned and damage share per cat. Every number
+  in `docs/design/balance-and-meta.md` came out of it.
 
 | | |
 |---|---|
+| ![Cat Town](docs/screenshots/cattown.png) | ![The run map](docs/screenshots/runmap.png) |
 | ![Battle](docs/screenshots/battle.png) | ![The Landing](docs/screenshots/landing.png) |
 | ![The Den](docs/screenshots/progress.png) | ![Event](docs/screenshots/event.png) |
-| ![The run map](docs/screenshots/runmap.png) | ![Say what you do](docs/screenshots/tabletop.png) |
-| ![Results](docs/screenshots/results.png) | ![Sell to the Peddler](docs/screenshots/inventory.png) |
+| ![Say what you do](docs/screenshots/tabletop.png) | ![Results](docs/screenshots/results.png) |
 
 ## Art & UI
 
@@ -151,6 +180,7 @@ npm test            # vitest — engine + content + integration + GM suites
 npm run typecheck   # tsc --noEmit (strict; src only)
 npm run lint        # eslint, incl. layering rule: src/core imports no pixi
 npm run build       # production build
+npm run sim         # headless balance harness (see --floors/--trials/--party/--roster)
 npx tsc -p api/tsconfig.json   # typecheck the GM serverless functions
 npm run typecheck:agent        # typecheck the DM agent
 npx eve info                   # compile-check the agent (tools, skills, subagents)
@@ -160,7 +190,7 @@ The codebase is strictly layered (see `docs/ARCHITECTURE.md`):
 
 | Layer | What lives there |
 |---|---|
-| `src/core` | Pure deterministic engines: combat, run-map generation and traversal, loot, events, run state. No pixi, no `Math.random`. |
+| `src/core` | Pure deterministic engines: combat, run-map generation and traversal, loot, events, run state, and the Cat Town meta layer (`core/meta`: payout, profile, unlock catalog, run overlay). No pixi, no `Math.random`. |
 | `src/content` | Data-only tables: classes, skills, enemies, bosses, items, events, floors. |
 | `src/ui` | PixiJS scenes and widgets. Renders engine event logs; computes no outcomes. |
 | `src/services` | Network clients (GM, DM) and the pure verdict-lint half. No pixi. |

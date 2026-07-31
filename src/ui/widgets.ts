@@ -45,6 +45,7 @@ import {
 import { tween } from "./tween.js";
 import { drawCatPortrait, drawPaw } from "./draw/cats.js";
 import { drawEnemy } from "./draw/enemies.js";
+import { makeBustSprite } from "./draw/spriteFrame.js";
 import { enemyTexture, portraitTexture, spriteTextureFor } from "./sprites.js";
 
 /** Status chip glyphs + fills (ui-art §2). */
@@ -56,6 +57,8 @@ export const STATUS_STYLE: Record<StatusId, { glyph: string; color: number }> =
     guarded: { glyph: "O", color: PAL.stGuarded },
     provoked: { glyph: ">", color: PAL.stProvoked },
     mending: { glyph: "+", color: PAL.stMending },
+    // balance-and-meta.md §1: post-Off-Balance immunity window
+    braced: { glyph: "=", color: PAL.stGuarded },
   };
 
 /* ---------------------------------------------------------------------- */
@@ -668,11 +671,12 @@ export function enemyAvatar(
 ): Container {
   const content = new Container();
   const tex = enemyTexture(speciesId);
-  if (tex && tex.width > 0 && tex.height > 0) {
-    const sp = new Sprite({ texture: tex, anchor: 0.5 });
-    sp.scale.set(size / Math.min(tex.width, tex.height));
-    if (opts.dead === true) sp.tint = mix(PAL.textDim, PAL.void, 0.1);
-    content.addChild(sp);
+  // head-and-shoulders crop, not the whole aura-padded battle frame — fitting
+  // the frame is what made turn-strip chips read as purple smudges
+  const bust = makeBustSprite(tex, size);
+  if (bust) {
+    if (opts.dead === true) bust.tint = mix(PAL.textDim, PAL.void, 0.1);
+    content.addChild(bust);
   } else {
     const look = ENEMIES[speciesId]?.look;
     if (look) {

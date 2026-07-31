@@ -106,6 +106,15 @@ import {
 } from "../widgets.js";
 import { drawCat } from "../draw/cats.js";
 import { drawEnemy } from "../draw/enemies.js";
+import {
+  CAT_BRUISER_HEIGHT,
+  CAT_HEIGHT,
+  gradeForLook,
+  subjectFeetOffset,
+  subjectScale,
+  UNIT_HEIGHT,
+  type SizeGrade,
+} from "../draw/spriteFrame.js";
 import { catTexture, enemyTexture } from "../sprites.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 import type { EventWinContext, LootOverlayParams } from "../overlays/loot.js";
@@ -192,9 +201,21 @@ interface UnitView {
   headY: number;
 }
 
-const slotX = (side: "cat" | "enemy", rank: number): number =>
-  (side === "cat" ? R.combat.catSlots[rank] : R.combat.enemySlots[rank]) ??
-  DESIGN_W / 2;
+/**
+ * Where rank 1 of each side stands, recomputed per battle from the actual
+ * headcounts and the biggest enemy on the field so the whole formation stays
+ * centred on x=640 at 2v1 and at 4v5 alike. Module-scope because `slotX` is
+ * called from a dozen animation callbacks; `layOutFormation` is the only
+ * writer and runs once, at mount.
+ */
+const front = { cat: 556, enemy: 722 };
+
+const slotX = (side: "cat" | "enemy", rank: number): number => {
+  const f = R.combat.formation;
+  return side === "cat"
+    ? front.cat - (rank - 1) * f.catPitch
+    : front.enemy + (rank - 1) * f.enemyPitch;
+};
 
 const HEAD_Y = -104; // status rows / floaters spawn height above the feet
 /** The stage's warm key colour — the bounce light behind every unit. */
@@ -203,28 +224,47 @@ const TILT = (8 * Math.PI) / 180;
 const ATTACK_TILT = 0.09; // slight lean into the lunge (rad)
 const BREATH_AMP = 0.015; // ±1.5% idle breathing scale
 
-/** Sprite target height (px, feet-aligned), matched to procedural sizes. */
-const GRADE_H: Record<string, number> = {
-  minion: 86,
-  standard: 102,
-  elite: 128,
-  boss: 168,
-};
-
-/** Presentation size grade — cats read as one consistent "standard" tier. */
-const gradeOf = (c: Combatant): string =>
+/**
+ * Presentation size grade — cats read as one consistent tier a notch above a
+ * standard enemy; everyone else is graded by content (`look.sizeGrade`).
+ */
+const gradeOf = (c: Combatant): SizeGrade | "cat" =>
   c.side === "cat"
     ? "cat"
-    : (ENEMIES[c.speciesId ?? ""]?.look.sizeGrade ?? "standard");
+    : gradeForLook(ENEMIES[c.speciesId ?? ""]?.look.sizeGrade ?? "standard");
 
 /**
- * Apparent height every unit of a grade is normalised to, whatever the art
- * source (painted sprite or procedural recipe). Normalising here is what
- * stops a painted crow reading twice the size of a procedural rat.
+ * Apparent CHARACTER height every unit of a grade is normalised to, whatever
+ * the art source (painted sprite or procedural recipe) and whatever fraction
+ * of its frame that source's Stand aura happens to occupy. This is what stops
+ * a rat reading the same height as a cat (draw/spriteFrame.ts).
  */
 const spriteHeightFor = (c: Combatant): number => {
-  if (c.side === "cat") return c.classId === "bruiser" ? 124 : 112;
-  return GRADE_H[gradeOf(c)] ?? 102;
+  if (c.side === "cat")
+    return c.classId === "bruiser" ? CAT_BRUISER_HEIGHT : CAT_HEIGHT;
+  const g = gradeOf(c);
+  return g === "cat" ? CAT_HEIGHT : UNIT_HEIGHT[g];
+};
+
+/**
+ * Centre the two formations on the stage for THIS battle's headcounts. Fixed
+ * rank tables were tuned for 4 cats vs 5 enemies; a 2-cat opening or a lone
+ * boss left half the stage empty and pushed the fight off-centre.
+ */
+const layOutFormation = (combatants: readonly Combatant[]): void => {
+  const f = R.combat.formation;
+  const cats = combatants.filter((c) => c.side === "cat");
+  const foes = combatants.filter((c) => c.side === "enemy");
+  const nc = Math.max(1, cats.length);
+  const ne = Math.max(1, foes.length);
+  const biggest = foes.reduce((m, c) => Math.max(m, spriteHeightFor(c)), 0);
+  // a boss needs a wider no-man's-land than a rat does
+  const gap = f.gapBase + (biggest || UNIT_HEIGHT.medium) * f.gapPerEnemyHeight;
+  const wCats = (nc - 1) * f.catPitch;
+  const wFoes = (ne - 1) * f.enemyPitch;
+  const left = DESIGN_W / 2 - (wCats + gap + wFoes) / 2;
+  front.cat = left + wCats;
+  front.enemy = front.cat + gap;
 };
 
 /* ---------------------------------------------------------------------- */
@@ -436,11 +476,11 @@ export function createBattleScene(): Scene {
     const body = new Container();
     const h = spriteHeightFor(c);
     const grade = gradeOf(c);
-    // anchors scale WITH the art: a 168px boss must not wear its status
-    // chips across its chest the way a 102px minion's sit above its ears
+    // anchors scale WITH the art: a 292px boss must not wear its status
+    // chips across its chest the way a 146px minion's sit above its ears
     const headY = -(h + 12);
     const isBossUnit = grade === "boss";
-    const isBig = isBossUnit || grade === "elite";
+    const isBig = isBossUnit || grade === "large";
 
     /* -- grounding: soft contact shadow on the floor plane -------------- */
     const shadow = makeContactShadow(h * 0.92, isBossUnit ? 1.5 : 1);
@@ -463,13 +503,14 @@ export function createBattleScene(): Scene {
 
     /* -- bounce light: lifts dark art off a dark backdrop ---------------- */
     // one warm key colour for everyone so it reads as stage lighting rather
-    // than a per-unit magic aura; enemies get a touch more because their art
-    // is the darkest thing on screen
+    // than a per-unit magic aura. Kept deliberately weak: the painted Stand
+    // aura is already the widest, softest shape on the unit, and the CAT is
+    // what has to read first.
     body.addChild(
       makeUnitGlow(
         h,
         KEY_LIGHT,
-        isBossUnit ? 1.7 : isBig ? 1.2 : c.side === "cat" ? 0.7 : 1,
+        isBossUnit ? 1.1 : isBig ? 0.8 : c.side === "cat" ? 0.45 : 0.65,
       ),
     );
 
@@ -483,7 +524,11 @@ export function createBattleScene(): Scene {
     const makeArt = (): Graphics | Sprite => {
       if (tex && tex.height > 0) {
         const sp = new Sprite({ texture: tex, anchor: { x: 0.5, y: 1 } });
-        sp.scale.set(h / tex.height); // normalised apparent height per grade
+        // scale on the CHARACTER, not the frame — the frame is mostly aura —
+        // then drop the sprite so the character's feet, not the bottom of its
+        // aura, sit on the ground line (draw/spriteFrame.ts).
+        sp.scale.set(subjectScale(tex.height, h));
+        sp.position.y = subjectFeetOffset(h);
         return sp;
       }
       const g = new Graphics();
@@ -504,16 +549,17 @@ export function createBattleScene(): Scene {
       return g;
     };
 
-    body.addChild(
-      makeRim(makeArt, isBossUnit ? 4 : 2.5, isBossUnit ? 0.55 : 0.4),
-    );
+    // the rim thickness tracks the art size, or a boss would wear a hairline
+    body.addChild(makeRim(makeArt, Math.max(2.5, h / 46), 0.42));
     const gfx = makeArt();
     body.addChild(gfx);
     root.addChild(body);
 
-    // HP bar 64×8 below feet (+ mini energy pips for cats)
-    const hpBar = bar(isBig ? 84 : 64, 8, { kind: "hp" });
-    hpBar.view.position.set(isBig ? -42 : -32, 9);
+    // HP bar below the feet, widened with the unit so a boss's bar is not a
+    // stub under a 292px silhouette
+    const barW = isBossUnit ? 112 : isBig ? 92 : 76;
+    const hpBar = bar(barW, 8, { kind: "hp" });
+    hpBar.view.position.set(-barW / 2, 9);
     hpBar.set(c.hp, c.stats.hp, false);
     root.addChild(hpBar.view);
     let energy: { set(n: number): void } | undefined;
@@ -625,6 +671,8 @@ export function createBattleScene(): Scene {
     bgC.addChild(stage.back);
     worldC.addChild(stage.ground);
 
+    layOutFormation(bs.combatants);
+
     // rank marks: a recessed floor plate + numeral per slot
     const slots = new Graphics();
     const numerals = new Container();
@@ -643,8 +691,15 @@ export function createBattleScene(): Scene {
       n.position.set(x, R.combat.groundY + 30);
       numerals.addChild(n);
     };
-    for (let r = 1; r <= 4; r++) addSlot("cat", r);
-    for (let r = 1; r <= 5; r++) addSlot("enemy", r);
+    // only OCCUPIED ranks get a plate — an empty "5" numeral on the floor of a
+    // two-enemy fight reads as a missing unit
+    const ranksOn = (side: "cat" | "enemy"): number =>
+      bs?.combatants.reduce(
+        (m, c) => (c.side === side ? Math.max(m, c.rank) : m),
+        0,
+      ) ?? 0;
+    for (let r = 1; r <= ranksOn("cat"); r++) addSlot("cat", r);
+    for (let r = 1; r <= ranksOn("enemy"); r++) addSlot("enemy", r);
     worldC.addChild(slots, numerals);
 
     // active-unit slot highlight (gold pulsing ellipse)
@@ -724,6 +779,12 @@ export function createBattleScene(): Scene {
       hudC.addChild(chip.view);
       tabletopChip = chip.view;
       tabletop = createTabletopBar({
+        // The default rect is vertically centred, which in a BATTLE lands the
+        // card squarely across every combatant's head — you are asked what
+        // you do while unable to see the board. Ride it up under the [T] chip
+        // instead: the vault ceiling above the units is empty, so the typing
+        // beat now leaves the whole field visible.
+        rect: [(DESIGN_W - 760) / 2, 96, 760, 212],
         title: "WHAT DO YOU DO?",
         placeholder: "Pixel throws the lantern at the oil slick…",
         onSubmit: (text) => submitImprovisation(text),
@@ -1453,6 +1514,7 @@ export function createBattleScene(): Scene {
             guarded: PAL.stGuarded,
             provoked: PAL.stProvoked,
             mending: PAL.stMending,
+            braced: PAL.stGuarded,
           };
           floater(u.root.x, u.root.y + u.headY, tag, colors[e.status], 22);
         }
@@ -1686,7 +1748,7 @@ export function createBattleScene(): Scene {
           u.charge = makeChargeMark();
           u.charge.view.position.set(0, u.headY - 40);
           u.root.addChild(u.charge.view);
-          u.flood = makeRankFlood(e.ranks);
+          u.flood = makeRankFlood(e.ranks.map((r) => slotX("cat", r)));
           worldC.addChild(u.flood);
         }
         pushLog(e.text);
@@ -2056,6 +2118,25 @@ export function createBattleScene(): Scene {
         // driver bug — nothing to fight; bail to explore next frame
         delay(0, () => ctx?.scenes.goto("runMap"));
         return;
+      }
+      // DEV-only staging hook (sibling of main.ts's `?smoke=battle`): let a
+      // screenshot harness dictate the enemy line-up, so stage composition can
+      // be checked at 1 boss and at 5 minions without playing a whole floor.
+      // Stripped from production builds by the import.meta.env.DEV guard.
+      if (import.meta.env?.DEV === true) {
+        const q = new URLSearchParams(window.location.search);
+        const foes = q.get("foes");
+        if (foes !== null && foes !== "") {
+          params = { ...params, enemies: foes.split(",") as EnemyId[] };
+        }
+        // `?party=4` fields a full clowder even though a run now STARTS with
+        // two (balance-and-meta.md §2), so the widest formation is testable.
+        const n = Number(q.get("party"));
+        if (Number.isFinite(n) && n >= 1) {
+          ctx.run.marchingOrder = ctx.run.cats
+            .map((c) => c.classId)
+            .slice(0, n);
+        }
       }
       isBoss = params.isBoss ?? params.encounterIndex === 0;
 

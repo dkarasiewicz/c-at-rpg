@@ -77,6 +77,7 @@ import {
   hypotheticalDistance,
   isAlive,
   living,
+  OFF_BALANCE_MULT,
   opposite,
   repositionWithin,
 } from "./state.js";
@@ -111,6 +112,10 @@ export const STATUS_COST: Record<StatusId, number> = {
   guarded: 4,
   provoked: 3,
   mending: 4,
+  // Braced blocks an Off-Balance for a full round — priced just under
+  // inflicting one, since denying the combo is worth about as much as
+  // landing it (stand-powers.md budget lint).
+  braced: 4,
 };
 
 /** Multi-target effects cost double. */
@@ -522,7 +527,7 @@ function executeEffect(
         const dmg = roundHalfUp(
           (e.pct / 100) *
             owner.stats.atk *
-            (offBal ? 1.5 : 1.0) *
+            (offBal ? OFF_BALANCE_MULT : 1.0) *
             (guard ? 0.5 : 1.0),
         );
         const final = Math.max(1, dmg - t.stats.def);
@@ -585,6 +590,10 @@ function executeEffect(
             forced: ch.c.id === t.id,
           });
         }
+        // Stand powers respect Braced (applyStatus enforces it centrally)
+        // but skip the per-skill chance and the tier-resistance roll: a power
+        // is already rationed by charges and priced by the budget lint, and
+        // drawing here would change the stand-powers.md RNG contract.
         if (res.distance >= 1 && applyStatus(t, "offBalance")) {
           events.push({
             t: "statusApplied",

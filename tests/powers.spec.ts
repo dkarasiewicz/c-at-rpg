@@ -421,29 +421,30 @@ describe("onForcedMove — STRING THEORY echo", () => {
       "cat:hexer": CAT_POWERS.hexer!,
     });
     setQueue(bs, ["cat:hexer"]);
-    const rng = new ScriptedRng([1, 0.5]); // variance, crit — power draws nothing
+    // variance, crit, Yank's 0.6 Off-Paw gate — the power itself draws nothing
+    const rng = new ScriptedRng([1, 0.5, 0.3]);
     const r = resolveAction(
       bs,
       { type: "skill", skillId: "yankOfYarn", targetId: "e1:ratThug" },
       rng,
     );
     bs = r.state;
-    expect(rng.used).toBe(2);
+    expect(rng.used).toBe(3);
     expect(standLogs(r.events, "STRING THEORY")).toHaveLength(1);
     // energy: regen 4→6, cost 3 → 3, refund +1 → 4
     expect(byId(bs, "cat:hexer").energy).toBe(4);
     expect(r.events).toContainEqual({ t: "energy", id: "cat:hexer", delta: 1 });
     // yank: 60% × 11 ×1.0 = 6.6→7 − 1 = 6 (18→12); pulled to rank 1, Off-Balance;
-    // echo: 30% × 11 = 3.3 × 1.5 offBal = 4.95→5 − 1 = 4 (12→8)
+    // echo: 30% × 11 = 3.3 × 1.3 offBal = 4.29→4 − 1 = 3 (12→9)
     expect(r.events).toContainEqual({
       t: "damage",
       id: "e1:ratThug",
-      amount: 4,
+      amount: 3,
       crit: false,
       offBal: true,
       source: "power:stringTheory",
     });
-    expect(byId(bs, "e1:ratThug").hp).toBe(8);
+    expect(byId(bs, "e1:ratThug").hp).toBe(9);
     expect(byId(bs, "e1:ratThug").rank).toBe(1);
   });
 

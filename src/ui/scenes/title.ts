@@ -19,7 +19,6 @@
 import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { ClassId, RunState } from "../../core/types.js";
 import { loadRun } from "../../core/run/save.js";
-import { newRun } from "../../core/run/runState.js";
 import { PAL } from "../palette.js";
 import { DESIGN_H, DESIGN_W, R, SPACE } from "../layout.js";
 import { TYPE, display } from "../textStyles.js";
@@ -88,14 +87,15 @@ export function createTitleScene(): Scene {
     }
   };
 
-  const startRun = (): void => {
+  /**
+   * A run no longer starts on the title: it starts in CAT TOWN, which owns
+   * the clowder, the tin and the unlocks a fresh run is built from
+   * (balance-and-meta.md §4). The typed seed rides along in the params.
+   */
+  const goToTown = (): void => {
     if (!ctx || entering) return;
-    const seed = seedBuffer.trim() === "" ? randomSeed() : seedBuffer.trim();
-    // restore the stock Strays BEFORE newRun — a previous custom-party run
-    // may have left its kit overlay on the content tables
-    applyPartyContent(null);
-    ctx.run = newRun(seed);
-    ctx.scenes.goto("floorgen");
+    const seed = seedBuffer.trim();
+    ctx.scenes.goto("catTown", seed === "" ? {} : { seed });
   };
 
   const continueRun = (): void => {
@@ -177,7 +177,7 @@ export function createTitleScene(): Scene {
         return true; // capture everything while typing a seed
       }
       if (key === "enter") {
-        startRun();
+        goToTown();
         return true;
       }
       // [C] = Create your party (always available; the creator itself falls
@@ -338,9 +338,9 @@ export function createTitleScene(): Scene {
       primary?: boolean;
     }[] = [
       {
-        label: "New Run",
+        label: "To Cat Town",
         hotkey: "Enter",
-        onTap: startRun,
+        onTap: goToTown,
         primary: true,
       },
     ];

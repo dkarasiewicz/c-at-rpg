@@ -139,8 +139,10 @@ describe("combat.md §13 worked example", () => {
       2, 1, 2, 1, 2, 0, 1,
       // Pixel Claw Swipe: variance idx 1 (×1.0), crit roll 0.07 < 0.15
       1, 0.07,
-      // Mora Yank of Yarn: variance idx 2 (×1.1), no crit
-      2, 0.5,
+      // Mora Yank of Yarn: variance idx 2 (×1.1), no crit,
+      // then the NEW Off-Paw gate — Yank's offBalanceChance 0.6, roll 0.31
+      // lands it. The Crow is tier 1, so no tier-resistance roll follows.
+      2, 0.5, 0.31,
       // Crow Peck: variance idx 0 (×0.9), no crit
       0, 0.5,
       // Rat A Shiv: variance idx 2 (×1.1), no crit
@@ -243,6 +245,7 @@ describe("combat.md §13 worked example", () => {
 
     // 5. Bruno: Body Slam the Off-Balance Crow — 12 × 1.5 = 18, dead;
     //    push moot; rats slide to ranks 1-2. EN 6−4=2.
+    //    12.0 × 1.0 × Off-Balance 1.3 = 15.6 → 16 (was 18 at ×1.5).
     run(
       resolveAction(
         bs,
@@ -252,7 +255,7 @@ describe("combat.md §13 worked example", () => {
     );
     expect(damages(log).at(-1)).toMatchObject({
       id: "e2:crowShaman",
-      amount: 18,
+      amount: 16,
       crit: false,
       offBal: true,
     });
@@ -281,11 +284,11 @@ describe("combat.md §13 worked example", () => {
 
     // Round exhausted; every scripted roll consumed, none extra.
     expect(nextActor(bs)).toBeNull();
-    expect(rng.used).toBe(19);
+    expect(rng.used).toBe(20);
     expect(bs.outcome).toBe("ongoing");
 
     // The full damage sequence of the round.
-    expect(damages(log).map((d) => d.amount)).toEqual([17, 7, 4, 5, 18, 3]);
+    expect(damages(log).map((d) => d.amount)).toEqual([17, 7, 4, 5, 16, 3]);
 
     // Round-end phase (runs inside the next startRound): nothing to sweep,
     // Baguette keeps Guarded until her own turn, latch resets.
@@ -308,7 +311,8 @@ describe("damage pipeline and Off-Paw", () => {
   it("damage resolves before movement — a shove never buffs its own damage", () => {
     const bs = makeBattle(["ratThug", "ratThug"]);
     setQueue(bs, ["cat:bruiser", "cat:trickster"]);
-    const rng = new ScriptedRng([1, 0.9]);
+    // variance, crit, then Body Slam's 0.7 Off-Paw gate (0.3 < 0.7 lands).
+    const rng = new ScriptedRng([1, 0.9, 0.3]);
     const r1 = resolveAction(
       bs,
       { type: "skill", skillId: "bodySlam", targetId: "e0:ratThug" },
@@ -320,13 +324,13 @@ describe("damage pipeline and Off-Paw", () => {
     expect(rat.rank).toBe(2); // pushed (clamped from +2 to the back rank)
     expect(hasStatus(rat, "offBalance")).toBe(true);
 
-    // the teammate acting later cashes the +50%
+    // the teammate acting later cashes the +30%
     const r2 = resolveAction(
       r1.state,
       { type: "skill", skillId: "clawSwipe", targetId: "e0:ratThug" },
       new ScriptedRng([1, 0.9]),
     );
-    expect(damages(r2.events)[0]).toMatchObject({ amount: 17, offBal: true }); // 12×1.5=18 −1
+    expect(damages(r2.events)[0]).toMatchObject({ amount: 15, offBal: true }); // 12×1.3=15.6→16 −1
   });
 
   it("a clamped-to-0 push moves nothing and applies no Off-Balance", () => {
@@ -372,10 +376,12 @@ describe("Cat Pile", () => {
   function armPile(): { bs: BattleState; log: BattleEvent[] } {
     const bs = makeBattle(["ratThug", "ratThug"]);
     setQueue(bs, ["cat:trickster", "cat:bruiser"]);
+    // per target: variance + crit (rank order), THEN per target the 0.75
+    // Off-Paw gate in step 2 — both land at 0.3.
     const r = resolveAction(
       bs,
       { type: "skill", skillId: "tripWire" },
-      new ScriptedRng([1, 0.9, 1, 0.9]),
+      new ScriptedRng([1, 0.9, 1, 0.9, 0.3, 0.3]),
     );
     return { bs: r.state, log: [...r.events] };
   }
@@ -960,11 +966,12 @@ describe("class traits", () => {
     expect(hasStatus(bruno1, "guarded")).toBe(true); // tier 2 bonus
     expect(bruno1.traitLatchUsed).toBe(true);
 
-    // second shove goes through (guarded halves it first, then he moves)
+    // second shove goes through (guarded halves it first, then he moves);
+    // Ram's 0.7 gate rolls only now, because the declined shove never moved.
     const r2 = resolveAction(
       r1.state,
       { type: "skill", skillId: "ram", targetId: "cat:bruiser" },
-      new ScriptedRng([1, 0.9]),
+      new ScriptedRng([1, 0.9, 0.3]),
     );
     const bruno2 = byId(r2.state, "cat:bruiser");
     expect(bruno2.rank).toBe(2);
@@ -1001,7 +1008,7 @@ describe("class traits", () => {
     const r = resolveAction(
       bs,
       { type: "skill", skillId: "yankOfYarn", targetId: "e1:ratThug" },
-      new ScriptedRng([1, 0.9]),
+      new ScriptedRng([1, 0.9, 0.3]), // + Yank's 0.6 Off-Paw gate
     );
     expect(r.events).toContainEqual({
       t: "traitTriggered",
@@ -1123,10 +1130,13 @@ describe("Mewthical hooks", () => {
       hooks: { bruiser: ["moverOffBalance"] },
     });
     setQueue(bs, ["e0:roombaScout"]);
+    // variance, crit, Ram's 0.7 gate on Bruno (cats never resist), then the
+    // hook's own application on the Scout — chance 1.0 draws nothing, but the
+    // Scout is TIER 2, so its 25% resistance rolls (0.9 ≥ 0.25 → it lands).
     const r = resolveAction(
       bs,
       { type: "skill", skillId: "ram", targetId: "cat:bruiser" },
-      new ScriptedRng([1, 0.9]),
+      new ScriptedRng([1, 0.9, 0.3, 0.9]),
     );
     expect(byId(r.state, "cat:bruiser").rank).toBe(2); // still shoved
     expect(hasStatus(byId(r.state, "e0:roombaScout"), "offBalance")).toBe(true);
@@ -1182,7 +1192,7 @@ describe("engine behavior", () => {
     );
     applyStatus(byId(bs, "e0:ratThug"), "offBalance");
     expect(previewDamage(bs, "clawSwipe", "cat:trickster", "e0:ratThug")).toBe(
-      17,
+      15, // 12 × 1.3 = 15.6 → 16, − DEF 1
     );
   });
 

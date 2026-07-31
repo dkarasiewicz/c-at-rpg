@@ -22,6 +22,7 @@ import {
 } from "./ui/sceneManager.js";
 import { createBootScene } from "./ui/scenes/boot.js";
 import { createTitleScene } from "./ui/scenes/title.js";
+import { createCatTownScene } from "./ui/scenes/catTown.js";
 import { createPartyCreatorScene } from "./ui/scenes/partyCreator.js";
 import { createFloorgenScene } from "./ui/scenes/floorgen.js";
 import { createResultsScene } from "./ui/scenes/results.js";
@@ -89,6 +90,7 @@ const RUN_SCENES: readonly SceneId[] = [
   const scenes: SceneFactories = {
     boot: createBootScene,
     title: createTitleScene,
+    catTown: createCatTownScene,
     partyCreator: createPartyCreatorScene,
     floorgen: createFloorgenScene,
     runMap: createRunMapScene,

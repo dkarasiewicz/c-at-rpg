@@ -136,6 +136,7 @@ const STATUSES: StatusId[] = [
   "guarded",
   "provoked",
   "mending",
+  "braced",
 ];
 
 function label(text: string, x: number, y: number): Text {

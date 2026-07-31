@@ -19,7 +19,7 @@ system (`classes.md`, `run-map-and-dm.md`, `loot.md`, `events.md`, `gameloop.md`
 
 ## 1. Pitch
 
-A party of 4 named stray cats (Bruiser / Trickster / Hexer / Medic) descends through
+A party of up to 4 named stray cats (Bruiser / Trickster / Hexer / Medic) descends through
 six seeded dungeon floors in a desktop browser. Each floor is a **run map** — a small
 painted node graph, entry on the left, boss or stairs on the right — and every step is
 a choice between 2–3 routes whose encounters are advertised by their icons. They
@@ -56,13 +56,13 @@ Design pillars (the whole game in four lines):
 | Thing | Value |
 |---|---|
 | Run length | **6 floors**, bosses on floors **3 and 6** |
-| Party | Fixed 4 cats: Bruno (Bruiser), Pixel (Trickster), Mora (Hexer), Baguette (Medic) |
+| Party | Up to 4 cats from a fixed roster — Bruno (Bruiser), Pixel (Trickster), Mora (Hexer), Baguette (Medic). A run **starts with two** (Bruno + one, drawn from the run seed), recruits a third mid-run, and only fields a fourth if Cat Town unlocked the slot (balance-and-meta.md §2/§4). Ranks, Cat Pile, targeting and the AI all work at 2, 3 and 4 |
 | Combat formation | Cats ranks 1–4 vs enemies ranks 1–5, single file, no gaps |
 | Energy (cats) | 0–10, battle starts at 4, +2 regen at own turn start |
 | Lives | 9 paw pips per cat; 0 Lives = gone for the run |
 | Party level | 1–8, one shared XP pool, XP table `[0,30,70,130,210,310,430,570]` |
 | Stats | `hp atk def spd crt enMax` — six, nothing else |
-| Statuses | Scratched, Frazzled, Off-Balance, Guarded, Provoked, Mending — six, nothing else |
+| Statuses | Scratched, Frazzled, Off-Balance, Guarded, Provoked, Mending, Braced — seven, nothing else |
 | Currency | Shinies ✦, party-wide, cap 999, reset each run |
 | Equipment | 2 slots per cat (class weapon + universal trinket), rarities stray/sleek/pedigree/mewthical |
 | Inventory | 16 shared slots, consumables stack to 5 |
@@ -118,15 +118,19 @@ forward. Round-based initiative (`spd + rngInt(0,2)`, queue frozen per round, sh
 as a timeline ribbon). No accuracy rolls; damage = `max(1, round(power/100·atk ×
 variance × crit1.5 × offBal1.5 × guard0.5) − def)`. Cats run on Energy (start 4,
 +2/turn, skills cost 2–6, Claw Swipe banks +1); enemies run on per-skill cooldowns.
-Six statuses, exact tick/stack rules per combat.md §6. Per turn a cat picks one of:
+Seven statuses, exact tick/stack rules per combat.md §6. Per turn a cat picks one of:
 Skill, Claw Swipe, Move (swap), Guard (+2 energy), Item, Scatter! (flee).
 
-The signature twist, **Off-Paw**: any combatant force-moved ≥1 clamped rank becomes
-**Off-Balance** (+50% damage taken) until round end — and damage resolves *before*
-movement, so shoves are gifts to teammates, never to yourself. When every living
+The signature twist, **Off-Paw**: any combatant force-moved ≥1 clamped rank *may*
+become **Off-Balance** (+30% damage taken) until round end — and damage resolves
+*before* movement, so shoves are gifts to teammates, never to yourself. Three gates
+price the combo (combat.md §8): **Braced** (a target that just shook Off-Balance off
+is immune for a full round, so nothing can be perma-shoved), the per-skill
+`offBalanceChance` (0.6–0.75 on cheap shoves, 1.0 on the expensive setup skills), and
+tier resistance (T2 25%, T3 40%). When every living
 enemy is Off-Balance, the **Cat Pile** prompt fires (once/round): all cats dogpile
 for `floor(0.30 × Σ atk)` typeless damage each, consuming the marks — or decline and
-keep the +50% windows ("pile or pick"). Bosses are data + five flags: `heavy` (never
+keep the +30% windows ("pile or pick"); survivors get up **Braced**. Bosses are data + five flags: `heavy` (never
 moves, but forced-move attempts chip visible **Poise**; at 0 → Off-Balance window,
 windup cancel, Cat Pile access), double turn, 50% phase switch, telegraphed 2-slot
 nuke, summons. Death is the **Nine Lives** rule: KO'd cats stand up at 1 HP after a
@@ -245,17 +249,29 @@ the map. Traversal itself consumes **zero** RNG. Same seed = same map, and the m
 not saved — it regenerates from `(runSeed, floorNum)`, and the save carries only
 `currentNodeId` + `visitedNodeIds`.
 
-**Canonical 6-floor table.** Columns/rows are the authored map budget; the pools,
-threat budgets and bosses are unchanged from the tile crawl:
+**Canonical 6-floor table.** Columns/rows are the authored map budget. Threat
+budgets were **retuned around the two-cat opening** and enemy stats now come off an
+explicit per-floor curve (`ENEMY_CURVE`, content/floors.ts) instead of being
+hand-typed — one table retunes the whole run (balance-and-meta.md §3):
 
-| Floor | Name | Columns | Rows/col | Pool | Threat budget | Boss |
-|---|---|---|---|---|---|---|
-| 1 | The Cellar | 4–5 | 2–3 | T1 | 3–4 | — |
-| 2 | The Drains | 5–6 | 2–3 | T1 | 4–5 | — |
-| 3 | The Appliance Graveyard | 4–5 | 2–3 | T1 ∪ T2 | 5–6 | **Vacuum King** |
-| 4 | The Undergarden | 6–7 | 2–4 | T2 | 6–8 | — |
-| 5 | The Cold Pantry | 6–7 | 2–4 | T2 ∪ T3 | 8–10 | — |
-| 6 | The Hollow Throne | 5–6 | 2–3 | T3 | 10–12 | **The Dogfather** |
+| Floor | Name | Columns | Rows/col | Pool | Threat budget | Enemy curve (hp × / atk × / def+ / spd+ / crt+) | Boss |
+|---|---|---|---|---|---|---|---|
+| 1 | The Cellar | 4–5 | 2–3 | T1 | 2–4 | 1.00 / 1.00 / 0 / 0 / 0 | — |
+| 2 | The Drains | 5–6 | 2–3 | T1 | 4–5 | 1.06 / 1.06 / 0 / 0 / 0 | — |
+| 3 | The Appliance Graveyard | 4–5 | 2–3 | T1 ∪ T2 | 5–7 | 1.14 / 1.16 / 0 / 0 / 3 | **Vacuum King** |
+| 4 | The Undergarden | 6–7 | 2–4 | T2 | 6–7 | 1.20 / 1.20 / 1 / 0 / 3 | — |
+| 5 | The Cold Pantry | 6–7 | 2–4 | T2 ∪ T3 | 6–8 | 1.24 / 1.24 / 1 / 1 / 5 | — |
+| 6 | The Hollow Throne | 5–6 | 2–3 | T3 | 7–9 | 1.28 / 1.26 / 1 / 1 / 5 | **The Dogfather** |
+
+**Bosses are never curved** — their blocks are authored against the §11 flag set.
+Mechanics arrive on a curve too: floor 1 teaches basic attacks, ranks and one shove;
+floor 2 Off-Balance combos and the first elite; floor 3 boss Poise; floor 4 back-rank
+threats; floor 5 resource attrition; floor 6 everything plus the Dogfather.
+
+**Every number above is simulated, not felt.** `npm run sim` runs N seeded battles
+per floor through the real engine with the AI playing both sides and reports win
+rate, rounds, damage share per cat, Off-Balance uptime, Cat Pile frequency and Lives
+lost. Tune against that table.
 
 Node-type mix is a per-floor weight table (`fight` dominant, `elite` unlocking on
 floor 2 and rising to 16% by floor 6), with `shop` and `rest` guaranteed at least

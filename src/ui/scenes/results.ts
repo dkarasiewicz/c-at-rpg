@@ -5,8 +5,11 @@
  * state), records line with NEW BEST flair, and Again (same seed) / New
  * Seed / Title.
  *
- * On entry (both outcomes): the autosave is DELETED, and MetaFile records
- * update + persist (gameloop.md §9).
+ * On entry (both outcomes): the autosave is DELETED, and the run is BANKED
+ * into the Cat Town profile — `bankRun` folds the payout, the lifetime
+ * records and the run history in one write, win or lose (balance-and-meta.md
+ * §4: a losing run must still pay out). The banked total is shown as its own
+ * line and the primary action carries it home to Cat Town.
  *
  * REFERENCE IMPLEMENTATION for the shared UI chrome kit (widgets.ts): every
  * piece of chrome on this screen comes from the kit — `sceneBackdrop`,
@@ -16,8 +19,14 @@
  */
 import { Container, Graphics, Text } from "pixi.js";
 import { computeScore, type ScoreSummary } from "../../core/run/score.js";
-import { deleteSave, recordRunEnd, saveMeta } from "../../core/run/save.js";
-import { newRun } from "../../core/run/runState.js";
+import { deleteSave, saveMeta } from "../../core/run/save.js";
+import {
+  applyUnlocks,
+  bankRun,
+  newlyAffordable,
+  startRun,
+} from "../../core/meta/index.js";
+import type { Payout, UnlockId } from "../../core/meta/types.js";
 import { CLASSES } from "../../content/classes.js";
 import { PAL } from "../palette.js";
 import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
@@ -62,6 +71,10 @@ export function createResultsScene(): Scene {
   let ctx: GameCtx | null = null;
   let summary: ScoreSummary | null = null;
   let seed = "";
+  // banked at mount, carried to Cat Town by the primary action
+  let payout: Payout | null = null;
+  let highlight: UnlockId[] = [];
+  let victory = false;
 
   // count-up state
   let t = 0;
@@ -77,8 +90,19 @@ export function createResultsScene(): Scene {
 
   const again = (sameSeed: boolean): void => {
     if (!ctx) return;
-    ctx.run = newRun(sameSeed ? seed : randomSeed());
+    // straight back down, with whatever the town has already unlocked
+    ctx.run = startRun(sameSeed ? seed : randomSeed(), applyUnlocks(ctx.meta));
     ctx.scenes.goto("floorgen");
+  };
+
+  const toTown = (): void => {
+    if (!ctx) return;
+    ctx.run = null;
+    ctx.scenes.goto("catTown", {
+      ...(payout ? { payout } : {}),
+      victory,
+      highlight,
+    });
   };
 
   const toTitle = (): void => {
@@ -116,11 +140,24 @@ export function createResultsScene(): Scene {
       summary = computeScore(run.score, p.victory, livesRemaining);
       const prevBest = ctx.meta.records.bestScore;
       isNewBest = summary.total > prevBest;
-      ctx.meta = recordRunEnd(ctx.meta, {
+      victory = p.victory;
+      // ONE write: payout banked (win or lose), records ticked, run recorded
+      const before = ctx.meta;
+      const banked = bankRun(before, {
+        seed,
         victory: p.victory,
+        floorsReached: run.score.floorsReached,
+        floorsCleared: run.score.floorsCleared,
+        enemiesDefeated: run.score.enemiesDefeated,
+        bossesDefeated: run.score.bossesDefeated,
+        catPiles: run.score.catPiles,
+        shiniesCarried: run.inventory.shinies,
         score: summary.total,
         playTimeMs: run.playTimeMs,
       });
+      ctx.meta = banked.meta;
+      payout = banked.payout;
+      highlight = newlyAffordable(before, banked.meta);
       saveMeta(ctx.meta);
       deleteSave();
 
@@ -281,7 +318,8 @@ export function createResultsScene(): Scene {
       /* ---- records line -------------------------------------------- */
       const rec = ctx.meta;
       const records = label(
-        `best ${rec.records.bestScore} · victories ` +
+        `+${payout?.total ?? 0} ✦ banked · ${rec.shinies} ✦ in the tin · ` +
+          `best ${rec.records.bestScore} · victories ` +
           `${rec.counters.victories} · runs ${rec.counters.runs}`,
         { dim: true, center: true },
       );
@@ -296,15 +334,16 @@ export function createResultsScene(): Scene {
         primary?: boolean;
       }[] = [
         {
-          label: "Again",
+          label: "Back to Cat Town",
           hotkey: "Enter",
-          onTap: () => again(true),
+          onTap: toTown,
           primary: true,
         },
+        { label: "Again", hotkey: "A", onTap: () => again(true) },
         { label: "New Seed", hotkey: "N", onTap: () => again(false) },
         { label: "Title", hotkey: "T", onTap: toTitle },
       ];
-      const bwid = 220;
+      const bwid = 250;
       const gap = SPACE.lg;
       const x0 =
         DESIGN_W / 2 - (bwid * defs.length + gap * (defs.length - 1)) / 2;
@@ -360,7 +399,11 @@ export function createResultsScene(): Scene {
     onKey(key) {
       if (key === "enter") {
         if (!countDone) finishCountUp();
-        else again(true);
+        else toTown();
+        return true;
+      }
+      if (key === "a") {
+        again(true);
         return true;
       }
       if (key === "n") {

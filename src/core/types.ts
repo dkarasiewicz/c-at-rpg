@@ -33,7 +33,14 @@ export type EnemyId = string;
 /** consumable OR equip def id, camelCase e.g. 'tunaSnack' */
 export type ItemId = string;
 export type StatusId =
-  "scratched" | "frazzled" | "offBalance" | "guarded" | "provoked" | "mending";
+  | "scratched"
+  | "frazzled"
+  | "offBalance"
+  | "guarded"
+  | "provoked"
+  | "mending"
+  /** anti-lock counterpart of offBalance (combat.md §6/§8, balance-and-meta §1) */
+  | "braced";
 export type TraitId =
   | "heavy" // immune to forced movement
   | "immovableLoaf"
@@ -91,6 +98,13 @@ export interface Skill {
   kind: "damage" | "heal" | "utility";
   /** + push back N, − pull forward N (forced) */
   moveTarget?: number;
+  /**
+   * Probability (0..1) that a successful forced move of this skill actually
+   * lands Off-Balance (combat.md §8 Rule 1). Default 1.0; EXACTLY 1.0 draws
+   * NO rng roll. Cheap single-target shoves sit at 0.6–0.75, expensive setup
+   * skills keep 1.0 (docs/design/balance-and-meta.md §1).
+   */
+  offBalanceChance?: number;
   /** + retreat, − advance (voluntary, no Off-Balance) */
   moveSelf?: number;
   applies?: StatusApplication[];
@@ -214,6 +228,13 @@ export interface BattleSetup {
   /** 0 = boss */
   encounterIndex: number;
   canFlee: boolean;
+  /**
+   * 1..6 — the floor this fight happens on. Enemy stat blocks are scaled by
+   * `ENEMY_CURVE[floor-1]` (content/floors.ts; combat.md §3.1). Omitted ⇒ 1
+   * (the identity row), so a caller that predates the curve is unchanged.
+   * Bosses are authored per fight and are never curved.
+   */
+  floor?: number;
 }
 
 export type BattleAction =
@@ -713,9 +734,19 @@ export interface SaveFile {
   floorDelta?: unknown;
 }
 
-/** localStorage 'catrpg.meta.v1' — records only, no unlocks */
+/**
+ * Meta-file schema versions (core/meta/profile.ts META_VERSION = 2).
+ * v1 = lifetime records only; v2 = Cat Town (wallet, unlocks, history).
+ */
+export type MetaVersion = 1 | 2;
+
+/**
+ * localStorage 'catrpg.meta.v1' — the lifetime record half. Cat Town's
+ * fields (wallet / unlocked ids / run history) live on `MetaProfile`, which
+ * extends this in core/meta/types.ts (balance-and-meta.md §4).
+ */
 export interface MetaFile {
-  version: 1;
+  version: MetaVersion;
   counters: { runs: number; victories: number };
   records: { bestScore: number; fastestVictoryMs: number | null };
 }

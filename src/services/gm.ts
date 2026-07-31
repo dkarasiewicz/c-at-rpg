@@ -419,13 +419,21 @@ export function getCachedResonance(
  * awaited by battle setup (zero latency added); a transport failure simply
  * clears the in-flight mark so the NEXT battle retries. The compiled rule
  * applies from the next battle featuring the pair (stand-powers.md L3).
+ *
+ * Gated on the reachability probe, like every other GM call. Without this it
+ * was the ONE request that went out to a deployment known to be absent, so an
+ * offline player got a red 404 in the console on every battle that paired two
+ * Stand powers. The probe is resolved once per session and cached, so when a
+ * GM *is* up this costs nothing and the request goes out exactly as before.
  */
 export function prefetchResonance(a: PowerScript, b: PowerScript): void {
   const pairKey = resonancePairKey(a.id, b.id, a.version);
   if (resonanceVerdicts.has(pairKey) || resonanceInFlight.has(pairKey)) return;
   resonanceInFlight.add(pairKey);
-  void requestGmResonance({ pairKey, powers: [a, b] })
-    .then((res) => {
+  void probeGm()
+    .then(async (up) => {
+      if (!up) return;
+      const res = await requestGmResonance({ pairKey, powers: [a, b] });
       if (res && res.pairKey === pairKey) resonanceVerdicts.set(pairKey, res);
     })
     .finally(() => {

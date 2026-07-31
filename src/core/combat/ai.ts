@@ -21,6 +21,7 @@ import type {
 } from "../types.js";
 import { SKILLS } from "../../content/skills.js";
 import {
+  canUseFrom,
   hasStatus,
   isAlive,
   previewDamage,
@@ -45,7 +46,7 @@ export function takeEnemyTurn(
     .filter((sk): sk is Skill => {
       if (!sk) return false;
       if ((self.cooldowns[sk.id] ?? 0) > 1) return false; // post-tick readiness
-      if (!sk.usableFrom.includes(self.rank)) return false;
+      if (!canUseFrom(state, self, sk)) return false;
       if (bdata?.summon && sk.id === bdata.summon.skillId) {
         return canSummon(state, self);
       }
@@ -70,7 +71,8 @@ export function takeEnemyTurn(
       if (
         sk.moveTarget &&
         !t.traits.includes("heavy") &&
-        !hasStatus(t, "offBalance")
+        !hasStatus(t, "offBalance") &&
+        !hasStatus(t, "braced") // a braced cat cannot be destabilised again
       ) {
         score += 15; // enemies combo you back
       }

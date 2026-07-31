@@ -12,6 +12,7 @@ import type { BattleSetup, BattleState, Combatant } from "../types.js";
 import type { PoweredBattleState } from "./powerTypes.js";
 import { initPowersState } from "./powers.js";
 import { ENEMIES } from "../../content/enemies.js";
+import { curvedEnemyStats } from "../../content/floors.js";
 import { clamp } from "../util.js";
 
 export function createBattle(setup: BattleSetup): BattleState {
@@ -39,17 +40,25 @@ export function createBattle(setup: BattleSetup): BattleState {
     });
   });
 
+  // Enemy stat blocks are authored once and scaled by the floor curve
+  // (content/floors.ts ENEMY_CURVE; balance-and-meta.md §3). Bosses are
+  // hand-tuned against the §11 flag set and are deliberately NOT curved.
+  const floorNum = setup.floor ?? 1;
+
   setup.enemies.forEach((enemyId, i) => {
     const def = ENEMIES[enemyId];
     if (!def) throw new Error(`combat: unknown enemy '${enemyId}'`);
+    const stats = def.boss
+      ? { ...def.stats }
+      : curvedEnemyStats(def.stats, floorNum);
     const c: Combatant = {
       id: `e${i}:${enemyId}`,
       name: def.name,
       side: "enemy",
       speciesId: enemyId,
       rank: i + 1,
-      stats: { ...def.stats },
-      hp: def.stats.hp,
+      stats,
+      hp: stats.hp,
       energy: 0,
       skills: def.boss ? [...def.boss.phases[0].skills] : [...def.skills],
       cooldowns: Object.fromEntries(def.skills.map((id) => [id, 0])),

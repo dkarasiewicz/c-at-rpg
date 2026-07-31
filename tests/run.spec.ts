@@ -42,6 +42,7 @@ import {
   markEventFired,
   newRun,
   PARTY_ORDER,
+  STARTING_PARTY_SIZE,
 } from "../src/core/run/runState.js";
 import { computeScore, VICTORY_BONUS } from "../src/core/run/score.js";
 import {
@@ -115,8 +116,14 @@ describe("newRun", () => {
   it("starts at level 1, 0 XP, 9 Lives each, full HP, default order", () => {
     expect(run.level).toBe(1);
     expect(run.xp).toBe(0);
-    expect(run.marchingOrder).toEqual(PARTY_ORDER);
+    // All four SLOTS exist in cats[] (types.ts §2.9 fixed order), but the run
+    // only FIELDS two of them — Bruno plus one drawn from the roster stream
+    // (balance-and-meta.md §2). The rest are benched until recruited.
     expect(run.cats.map((c) => c.classId)).toEqual(PARTY_ORDER);
+    expect(run.marchingOrder).toHaveLength(STARTING_PARTY_SIZE);
+    expect(run.marchingOrder[0]).toBe("bruiser");
+    expect(PARTY_ORDER).toContain(run.marchingOrder[1]);
+    expect(new Set(run.marchingOrder).size).toBe(2);
     expect(run.cats.every((c) => c.lives === 9)).toBe(true);
     // full HP = class base hp (stray weapons add atk only)
     expect(run.cats.map((c) => c.hp)).toEqual([40, 28, 24, 26]);
@@ -299,7 +306,12 @@ describe("applyBattleResult", () => {
   });
 
   it("0-Lives death: marching order compresses, gear becomes grief loot", () => {
-    const run = newRun(SEED);
+    // fielded explicitly so the compression assertion does not ride on the
+    // seeded starting-pair draw
+    const run = newRun(SEED, undefined, {
+      roster: ["bruiser", "trickster", "hexer", "medic"],
+      partyCapacity: 4,
+    });
     const result = battleResult(run, {
       cats: run.cats.map((c) =>
         c.classId === "medic"

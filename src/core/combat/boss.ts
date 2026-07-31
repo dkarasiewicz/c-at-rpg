@@ -14,7 +14,7 @@ import type {
 } from "../types.js";
 import { ENEMIES } from "../../content/enemies.js";
 import { living } from "./state.js";
-import { applyStatus } from "./status.js";
+import { applyStatus, removeStatus } from "./status.js";
 
 export function bossDataOf(c: Combatant): BossData | undefined {
   return c.speciesId ? ENEMIES[c.speciesId]?.boss : undefined;
@@ -38,6 +38,10 @@ export function chipPoise(
   events.push({ t: "poiseChip", id: boss.id, left: boss.poise });
   if (boss.poise === 0) {
     events.push({ t: "poiseBreak", id: boss.id });
+    // §11.1 is untouched by the Braced rule: a Poise break ALWAYS opens the
+    // window. It is the one bypass — the boss's own Braced (earned when a
+    // previous break's Off-Balance expired) is stripped first.
+    removeStatus(boss, "braced");
     if (applyStatus(boss, "offBalance")) {
       events.push({
         t: "statusApplied",

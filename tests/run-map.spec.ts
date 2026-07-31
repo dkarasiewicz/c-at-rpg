@@ -350,13 +350,16 @@ describe("authored node budget (content/floors.ts)", () => {
       "The Cold Pantry",
       "The Hollow Throne",
     ]);
+    // Retuned around the two-cat opening (balance-and-meta.md §2/§3):
+    // every floor sheds roughly one body, and ENEMY_CURVE supplies the
+    // pressure that pack size used to.
     expect(FLOORS.map((f) => [f.budgetLo, f.budgetHi])).toEqual([
-      [3, 4],
+      [2, 4],
       [4, 5],
-      [5, 6],
+      [5, 7],
+      [6, 7],
       [6, 8],
-      [8, 10],
-      [10, 12],
+      [7, 9],
     ]);
     expect(FLOORS[2].boss).toEqual({
       bossId: "vacuumKing",

@@ -262,10 +262,15 @@ describe("newRun customParty (additive)", () => {
     // CLASSES table via party.ts, powers from CAT_POWERS keyed by class
     const party = mapKitsToCustomParty(fakeParty());
     applyPartyContent(party);
-    const run = newRun("DDDDDDDD", party);
+    // Fields all four kits: the point here is that every generated
+    // PowerScript survives the lint, not the §2 starting roster size.
+    const run = newRun("DDDDDDDD", party, {
+      roster: ["bruiser", "trickster", "hexer", "medic"],
+      partyCapacity: 4,
+    });
     const setup: PoweredBattleSetup = {
-      cats: run.marchingOrder.map((classId, i) => {
-        const cat = run.cats[i];
+      cats: run.marchingOrder.map((classId) => {
+        const cat = run.cats.find((c) => c.classId === classId)!;
         const stats = effectiveStats(cat, run.level);
         return {
           classId,

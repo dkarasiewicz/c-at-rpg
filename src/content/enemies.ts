@@ -9,6 +9,22 @@
  */
 import type { EnemyDef, EnemyId } from "../core/types.js";
 
+/**
+ * How often an enemy of each tier SHRUGS OFF an Off-Balance application
+ * (docs/design/balance-and-meta.md §1 "tier resistance"). Tougher things are
+ * harder to knock off their feet, so the combo engine has to be aimed rather
+ * than sprayed. Cats never resist; bosses never reach this table at all (they
+ * are `heavy`, and a Poise break is their only Off-Balance source, §11.1).
+ *
+ * Drawn by `core/combat/resolve.ts` as one `rng.float()`, and ONLY when the
+ * application could otherwise land — see the combat.md §3 stream table.
+ */
+export const OFF_BALANCE_RESIST_BY_TIER: Record<1 | 2 | 3, number> = {
+  1: 0,
+  2: 0.25,
+  3: 0.4,
+};
+
 export const ENEMIES: Record<EnemyId, EnemyDef> = {
   /* ---------------------------------------------------------------- T1 -- */
   ratThug: {

@@ -14,7 +14,8 @@
     "typecheck:agent": "tsc -p agent/tsconfig.json",
     "dm:dev": "eve dev",
     "dm:build": "eve build",
-    "dm:deploy": "eve deploy"
+    "dm:deploy": "eve deploy",
+    "sim": "tsx scripts/sim.ts"
   },
   "engines": {
     "node": ">=24"

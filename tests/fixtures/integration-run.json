@@ -6,7 +6,7 @@
     "cats": [
       {
         "classId": "bruiser",
-        "hp": 48,
+        "hp": 23,
         "lives": 9,
         "weapon": {
           "uid": 1,
@@ -75,11 +75,9 @@
     ],
     "marchingOrder": [
       "bruiser",
-      "trickster",
-      "hexer",
       "medic"
     ],
-    "xp": 120,
+    "xp": 110,
     "level": 3,
     "inventory": {
       "shinies": 65,

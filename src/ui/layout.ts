@@ -35,17 +35,26 @@ export const R = {
     ribbon: [160, 8, 960, 60] as Rect, // initiative timeline (frozen per round)
     roundChip: [24, 16, 120, 32] as Rect, // "ROUND 3" UI-14 bold
     fleeChip: [1136, 16, 120, 32] as Rect, // "R Scatter!" chip; hidden in boss fights
-    battlefield: [0, 84, 1280, 440] as Rect, // world layer; ground line y = 460
-    groundY: 460,
-    // rank slot centers on the ground line (x positions; unit feet sit here):
-    catSlots: { 1: 544, 2: 440, 3: 336, 4: 232 } as Record<number, number>,
-    enemySlots: {
-      1: 736,
-      2: 840,
-      3: 944,
-      4: 1048,
-      5: 1152,
-    } as Record<number, number>,
+    battlefield: [0, 72, 1280, 404] as Rect, // world layer; ground line y = 476
+    // Ground line sits low and the ranks spread wide: characters are scaled on
+    // their BODY (draw/spriteFrame.ts), so a cat is ~186px and a boss ~292px
+    // tall and needs the room.
+    groundY: 476,
+    /**
+     * Rank x positions are COMPUTED, not tabulated: the party is 2-4 cats
+     * (balance-and-meta.md §2) against 1-5 enemies, and a fixed table left the
+     * stage lopsided at every size but 4v5. `scenes/battle.ts` centres the
+     * whole formation on x=640 from these numbers. Pitch is a little narrower
+     * than a body so ranks overlap into a formation instead of floating apart;
+     * the centre gap opens up for a big enemy so a boss never shares pixels
+     * with the front cat.
+     */
+    formation: {
+      catPitch: 132,
+      enemyPitch: 120,
+      gapBase: 92,
+      gapPerEnemyHeight: 0.46,
+    },
     logLine: [16, 540, 1248, 26] as Rect, // latest event, MONO-14
     logScrollback: [16, 300, 560, 236] as Rect, // click or L opens; last 40 events
     skillBar: [16, 576, 824, 128] as Rect, // 6 slots

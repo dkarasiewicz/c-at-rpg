@@ -17,7 +17,34 @@ import type {
 } from "../types.js";
 import { SKILLS } from "../../content/skills.js";
 import { CONSUMABLES } from "../../content/consumables.js";
+import { ENEMIES, OFF_BALANCE_RESIST_BY_TIER } from "../../content/enemies.js";
 import { roundHalfUp, clamp } from "../util.js";
+
+/* ------------------------------------------------------------------ */
+/* balance constants (combat.md §3 / §8)                               */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Off-Balance damage taken multiplier. ×1.5 → ×1.3 per
+ * docs/design/balance-and-meta.md §1: crit × Off-Balance drops from ×2.25 to
+ * ×1.95, still a spike worth building toward but no longer a free +50% round
+ * for the price of one cheap shove.
+ */
+export const OFF_BALANCE_MULT = 1.3;
+
+/**
+ * Chance a combatant SHRUGS OFF an Off-Balance application (balance-and-meta
+ * §1 "tier resistance"). Cats and tier-1 enemies never resist and never draw;
+ * tier 2 resists 25%, tier 3 40%. Bosses never reach this path — they are
+ * `heavy`, so their only Off-Balance source is a Poise break (§11.1), which
+ * bypasses both this roll and Braced.
+ */
+export function offBalanceResistOf(c: Combatant): number {
+  if (c.side !== "enemy" || !c.speciesId) return 0;
+  const def = ENEMIES[c.speciesId];
+  if (!def || def.boss) return 0;
+  return OFF_BALANCE_RESIST_BY_TIER[def.tier] ?? 0;
+}
 
 /* ------------------------------------------------------------------ */
 /* basic queries                                                       */
@@ -44,6 +71,52 @@ export const opposite = (side: "cat" | "enemy"): "cat" | "enemy" =>
 /** Highest rank a side's formation can ever reach (bound-space, not occupancy). */
 export const maxRankOf = (side: "cat" | "enemy"): number =>
   side === "cat" ? 4 : 5;
+
+/* ------------------------------------------------------------------ */
+/* rank projection — variable party size (combat.md §1.1)              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * `usableFrom` PROJECTED onto a formation that is smaller than the canonical
+ * one: every declared rank is clamped to the number of living bodies on that
+ * side, `r -> min(r, n)`.
+ *
+ * `usableFrom` describes a POSITION IN THE LINE, not an absolute coordinate:
+ * ranks [3,4] mean "from the back line". A four-cat party has a back line at
+ * ranks 3-4; a two-cat party's back line is rank 2; a lone survivor is its own
+ * back line. Without this, starting the run with two cats (balance-and-meta
+ * §2) would silently disable Soothing Purr, Nine Lives Nudge, Pounce and Yank
+ * of Yarn — the Medic could never heal and the Hexer could never pull.
+ *
+ * The rule is monotone and a strict no-op at full occupancy, so nothing about
+ * a 4-cat / 5-enemy fight changes. Rank DENIAL survives it: at n=2, [3,4]
+ * projects to {2} only, so a Medic shoved to the front still loses her kit.
+ * On the enemy side it only ever bites at n=1, where it stops a lone
+ * back-liner (Laser Ghost) from being permanently unable to act.
+ */
+export function projectedUsableFrom(
+  skill: Skill,
+  livingOnSide: number,
+): number[] {
+  const n = Math.max(1, livingOnSide);
+  const out: number[] = [];
+  for (const r of skill.usableFrom) {
+    const p = Math.min(r, n);
+    if (!out.includes(p)) out.push(p);
+  }
+  return out;
+}
+
+/** Can `user` legally act with `skill` from where it is standing right now? */
+export function canUseFrom(
+  state: BattleState,
+  user: Combatant,
+  skill: Skill,
+): boolean {
+  return projectedUsableFrom(skill, living(state, user.side).length).includes(
+    user.rank,
+  );
+}
 
 export function statusesOf(c: Combatant, id: StatusId): StatusInstance[] {
   return c.statuses.filter((s) => s.id === id);
@@ -256,7 +329,7 @@ export function previewDamage(
   const target = byId(state, targetId);
   const skill = lookupSkill(skillId);
   const base = (skill.power / 100) * user.stats.atk;
-  const offBal = hasStatus(target, "offBalance") ? 1.5 : 1.0;
+  const offBal = hasStatus(target, "offBalance") ? OFF_BALANCE_MULT : 1.0;
   const guard = hasStatus(target, "guarded") ? 0.5 : 1.0;
   const dmg = roundHalfUp(base * 1.0 * offBal * guard);
   return Math.max(1, dmg - target.stats.def);
@@ -315,7 +388,7 @@ export function legalActions(state: BattleState): LegalActions {
     } else if (effEnergy < sk.cost) {
       ok = false;
       reason = "not enough energy";
-    } else if (!sk.usableFrom.includes(actor.rank)) {
+    } else if (!canUseFrom(state, actor, sk)) {
       ok = false;
       reason = "wrong rank";
     } else if (targets.length === 0) {

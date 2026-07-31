@@ -411,6 +411,11 @@ export class LandingScene implements Scene {
     const cat = run.cats[catIndex];
     const cls = CLASSES[cat.classId];
     const dead = cat.lives <= 0;
+    // A run now FIELDS a subset of the four slots (balance-and-meta.md §2):
+    // `marchingOrder` is the roster, everyone else is on the bench levelling
+    // quietly. Without this the panel shows four healthy cats while two of
+    // them are not in the fight — which reads as a four-cat party.
+    const benched = !dead && !run.marchingOrder.includes(cat.classId);
     const h = 64;
     const viewC = new Container();
     viewC.position.set(x, y);
@@ -447,6 +452,12 @@ export class LandingScene implements Scene {
       gone.anchor.set(1, 0);
       gone.position.set(w - SPACE.md, SPACE.sm);
       viewC.addChild(gone);
+    } else if (benched) {
+      viewC.alpha = 0.62;
+      const tag = label("BENCHED", { dim: true, size: TYPE.tiny });
+      tag.anchor.set(1, 0);
+      tag.position.set(w - SPACE.md, SPACE.sm + 1);
+      viewC.addChild(tag);
     }
 
     const badgeHost = new Container();

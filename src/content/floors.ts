@@ -5,7 +5,16 @@
  * The tile-maze columns (`w`/`h`/`roomAttempts`/`roamers`/`chests`/`events`)
  * are GONE with the maze itself; each floor now carries the AUTHORED run-map
  * budget instead (docs/design/run-map-and-dm.md §2: "density is authored, not
- * emergent"). Names, enemy pools, threat budgets and bosses are unchanged.
+ * emergent"). Names, enemy pools and bosses are unchanged.
+ *
+ * THREAT BUDGETS were retuned around the two-cat opening
+ * (balance-and-meta.md §2). Shipped values, old value in brackets:
+ * 2-4 (3-4), 4-5 (4-5), 5-7 (5-6), 6-7 (6-8), 6-8 (8-10), 7-9 (10-12).
+ * Floors 1-2 are tense because there are only two cats, not because the
+ * packs are huge; the later floors shed BODIES rather than budget — a
+ * tier-3 enemy costs 3-4 threat against a tier-1's 1-2, so floor 6's 7-9
+ * buys ~2 monsters where floor 3's 5-7 buys ~4. `ENEMY_CURVE` (below)
+ * supplies the pressure that pack size used to.
  *
  * Budget shape (`FloorMapBudget`, core/types.ts §2.7):
  *   columnsLo/Hi  how many columns the floor's graph runs, 4..7 (the entry
@@ -23,17 +32,83 @@
  *
  * XP_TO_LEVEL / LEVEL_CAP per classes.md §8.
  */
-import type { EnemyId, FloorConfig } from "../core/types.js";
+import type { EnemyId, FloorConfig, Stats } from "../core/types.js";
 
 const T1: EnemyId[] = ["ratThug", "sewerBat", "dustBunny", "crowShaman"];
 const T2: EnemyId[] = ["roombaScout", "sprinklerImp", "yarnGolem"];
 const T3: EnemyId[] = ["porcelainHound", "laserGhost", "trashPanda"];
 
+/* ------------------------------------------------------------------------ */
+/* Enemy stat growth curve (balance-and-meta.md §3)                          */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * One row of the per-floor enemy scaling curve. HP and ATK scale
+ * MULTIPLICATIVELY (they are the two numbers the whole fight length hangs
+ * on); DEF/SPD/CRT are flat ADDS, because a multiplier on a 0-2 stat is
+ * noise. Applied by `core/combat/setup.ts` to `ENEMIES[id].stats` at battle
+ * construction, rounded half up, clamped at ≥1 HP / ≥1 SPD / ≥0 elsewhere.
+ */
+export interface FloorCurveRow {
+  hpMult: number;
+  atkMult: number;
+  defAdd: number;
+  spdAdd: number;
+  crtAdd: number;
+}
+
+/**
+ * THE difficulty dial. Enemy stat blocks in `content/enemies.ts` are authored
+ * once, at their tier's introduction strength (= floor 1 identity row); this
+ * table is what makes a Rat Thug on floor 3 worth fighting and a Porcelain
+ * Hound on floor 6 genuinely frightening. Retuning the whole run means
+ * editing these six rows and nothing else — which is the point
+ * (balance-and-meta.md §3: "an explicit curve rather than hand-typed
+ * numbers").
+ *
+ * Bosses are EXCLUDED (setup.ts skips any `EnemyDef.boss`): their stat blocks
+ * are authored per fight against the §11 flag set, and curving them would
+ * silently rescale Poise-break pacing and the 50% phase threshold.
+ *
+ * Shape of the curve: floors 1-2 sit at or just above identity because the
+ * party is only two cats there (§2); the ramp steepens from floor 3, where
+ * the third cat and the first boss arrive together; floor 6 is the only row
+ * that adds crit on top, so the Hollow Throne's trash can actually spike.
+ */
+export const ENEMY_CURVE: readonly FloorCurveRow[] = [
+  { hpMult: 1.0, atkMult: 1.0, defAdd: 0, spdAdd: 0, crtAdd: 0 }, // 1
+  { hpMult: 1.06, atkMult: 1.06, defAdd: 0, spdAdd: 0, crtAdd: 0 }, // 2
+  { hpMult: 1.14, atkMult: 1.16, defAdd: 0, spdAdd: 0, crtAdd: 3 }, // 3
+  { hpMult: 1.2, atkMult: 1.2, defAdd: 1, spdAdd: 0, crtAdd: 3 }, // 4
+  { hpMult: 1.24, atkMult: 1.24, defAdd: 1, spdAdd: 1, crtAdd: 5 }, // 5
+  { hpMult: 1.28, atkMult: 1.26, defAdd: 1, spdAdd: 1, crtAdd: 5 }, // 6
+];
+
+/** The curve row for a 1-based floor number; out-of-range clamps to the ends. */
+export function floorCurve(floorNum: number): FloorCurveRow {
+  const i = Math.min(ENEMY_CURVE.length - 1, Math.max(0, floorNum - 1));
+  return ENEMY_CURVE[i];
+}
+
+/** Apply `floorCurve(floorNum)` to a raw enemy stat block (pure). */
+export function curvedEnemyStats(base: Stats, floorNum: number): Stats {
+  const c = floorCurve(floorNum);
+  const r = (v: number): number => Math.floor(v + 0.5); // round half up
+  return {
+    hp: Math.max(1, r(base.hp * c.hpMult)),
+    atk: Math.max(0, r(base.atk * c.atkMult)),
+    def: Math.max(0, base.def + c.defAdd),
+    spd: Math.max(1, base.spd + c.spdAdd),
+    crt: Math.max(0, base.crt + c.crtAdd),
+    enMax: base.enMax,
+  };
+}
+
 export const FLOORS: FloorConfig[] = [
   {
     name: "The Cellar",
     pool: [...T1],
-    budgetLo: 3,
+    budgetLo: 2,
     budgetHi: 4,
     map: {
       columnsLo: 4,
@@ -69,7 +144,7 @@ export const FLOORS: FloorConfig[] = [
     name: "The Appliance Graveyard",
     pool: [...T1, ...T2],
     budgetLo: 5,
-    budgetHi: 6,
+    budgetHi: 7,
     boss: { bossId: "vacuumKing", encounter: ["vacuumKing"] },
     map: {
       columnsLo: 4,
@@ -91,7 +166,7 @@ export const FLOORS: FloorConfig[] = [
     name: "The Undergarden",
     pool: [...T2],
     budgetLo: 6,
-    budgetHi: 8,
+    budgetHi: 7,
     map: {
       columnsLo: 6,
       columnsHi: 7,
@@ -111,8 +186,8 @@ export const FLOORS: FloorConfig[] = [
   {
     name: "The Cold Pantry",
     pool: [...T2, ...T3],
-    budgetLo: 8,
-    budgetHi: 10,
+    budgetLo: 6,
+    budgetHi: 8,
     map: {
       columnsLo: 6,
       columnsHi: 7,
@@ -132,8 +207,8 @@ export const FLOORS: FloorConfig[] = [
   {
     name: "The Hollow Throne",
     pool: [...T3],
-    budgetLo: 10,
-    budgetHi: 12,
+    budgetLo: 7,
+    budgetHi: 9,
     boss: { bossId: "dogfather", encounter: ["dogfather", "porcelainHound"] },
     map: {
       columnsLo: 5,

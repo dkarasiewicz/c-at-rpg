@@ -11,7 +11,8 @@
  * unit-testable headless.
  */
 import type { Container } from "pixi.js";
-import type { MetaFile, RunState } from "../core/types.js";
+import type { RunState } from "../core/types.js";
+import type { MetaProfile } from "../core/meta/types.js";
 
 /* ---------------------------------------------------------------------- */
 /* Contract types (ARCHITECTURE.md §3.1 — UI-layer, not in core/types.ts)  */
@@ -20,6 +21,7 @@ import type { MetaFile, RunState } from "../core/types.js";
 export type SceneId =
   | "boot"
   | "title"
+  | "catTown"
   | "partyCreator"
   | "floorgen"
   | "runMap"
@@ -36,7 +38,12 @@ export interface GameCtx {
   scenes: SceneManager;
   /** core/run/save.ts wrapper — called at the 5 autosave points. */
   save(): void;
-  meta: MetaFile;
+  /**
+   * The persistent Cat Town profile (balance-and-meta.md §4): lifetime
+   * records, the banked wallet, owned unlock ids and run history. Scenes
+   * mutate it through core/meta and persist with `saveMeta`.
+   */
+  meta: MetaProfile;
 }
 
 export interface Scene {
@@ -97,8 +104,14 @@ export function layer(root: Container, name: LayerName): Container {
 
 /**
  * goto legality: `TRANSITIONS[from]` lists every legal target.
- *  - title → floorgen (New Run) | runMap (Continue restores mid-floor) |
+ *  - title → catTown (Descend — the hub is the way into a run now,
+ *    balance-and-meta.md §4) | floorgen (Continue-less direct start, kept
+ *    for the ?smoke= hooks) | runMap (Continue restores mid-floor) |
  *    partyCreator ([C] Create your party)
+ *  - catTown → floorgen (Begin the descent) | title (back out). The hub is
+ *    where the payout lands and where unlocks are bought, so every run
+ *    starts and ends here. (The party creator is reached from the title —
+ *    it builds its own run and does not consume the town's overlay yet.)
  *  - partyCreator → floorgen (accept / GM-offline fallback) | title (Esc)
  *  - runMap → battle (fight/elite/boss node) / event (event node) /
  *    landing (shop node, and the stairwell once the floor is cleared), or
@@ -108,29 +121,32 @@ export function layer(root: Container, name: LayerName): Container {
  *  - event → runMap | battle (ambush fight) | results (abandon)
  *  - landing → runMap (a shop node hands the route back) | floorgen
  *    (Descend) | results (abandon)
- *  - results → floorgen (Again / New Seed) | title
+ *  - results → catTown (the payout is banked and carried home — the
+ *    primary) | floorgen (Again / New Seed, straight back down) | title
  * LOOT and PAUSE are overlays, not states. Rest and treasure nodes resolve
  * INSIDE runMap (an in-scene catnap panel / the loot overlay), so they are
  * not states either.
  */
 export const TRANSITIONS: Record<SceneId, readonly SceneId[]> = {
   boot: ["title"],
-  title: ["floorgen", "runMap", "partyCreator"],
+  title: ["catTown", "floorgen", "runMap", "partyCreator"],
+  catTown: ["floorgen", "title"],
   partyCreator: ["floorgen", "title"],
   floorgen: ["runMap"],
   runMap: ["battle", "event", "landing", "results"],
   battle: ["runMap", "results"],
   event: ["runMap", "battle", "results"],
   landing: ["runMap", "floorgen", "results"],
-  results: ["floorgen", "title"],
+  results: ["catTown", "floorgen", "title"],
 };
 
-/** Esc opens pause from every scene except these (§3.1; partyCreator has
- *  no run — its Esc navigates back to the title instead). */
+/** Esc opens pause from every scene except these (§3.1; partyCreator and
+ *  catTown have no run — their Esc navigates instead of pausing). */
 export const PAUSE_BLOCKED: readonly SceneId[] = [
   "boot",
   "results",
   "partyCreator",
+  "catTown",
 ];
 
 /* ---------------------------------------------------------------------- */

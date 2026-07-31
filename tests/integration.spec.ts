@@ -2,8 +2,10 @@
  * WP-09 — shell/integration gate tests.
  *
  * Part 1: SceneManager contract (ARCHITECTURE.md §3): the gameloop.md §1
- * FSM transition table, overlay rules (max one, pause never over loot,
- * Esc closes first), ticker gating / freeze semantics, and key routing.
+ * FSM transition table — now with CAT TOWN between the title and the run
+ * (balance-and-meta.md §4: title → Cat Town → run → results → Cat Town) —
+ * overlay rules (max one, pause never over loot, Esc closes first), ticker
+ * gating / freeze semantics, and key routing.
  * Headless: sceneManager.ts imports pixi types only.
  *
  * Part 2: shell-level determinism — the title → floorgen → runMap handoff
@@ -188,11 +190,12 @@ function makeHarness() {
 /* ------------------------------------------------------------------ */
 
 describe("SceneManager FSM", () => {
-  it("walks the canonical happy path boot → … → results → title", () => {
+  it("walks the canonical happy path boot → town → … → results → town", () => {
     const { manager } = makeHarness();
     const path: SceneId[] = [
       "boot",
       "title",
+      "catTown", // the hub owns the run start now (balance-and-meta.md §4)
       "floorgen",
       "runMap",
       "battle", // a fight node
@@ -205,6 +208,11 @@ describe("SceneManager FSM", () => {
       "runMap",
       "landing", // the stairwell, floor cleared
       "floorgen",
+      "runMap",
+      "battle",
+      "results",
+      "catTown", // …and the payout is carried home to the hub
+      "floorgen", // straight back down from the town
       "runMap",
       "battle",
       "results",
@@ -221,6 +229,8 @@ describe("SceneManager FSM", () => {
     manager.goto("boot");
     expect(() => manager.goto("battle")).toThrow(/illegal transition/);
     manager.goto("title");
+    manager.goto("catTown");
+    expect(() => manager.goto("results")).toThrow(/illegal transition/);
     manager.goto("floorgen");
     manager.goto("runMap");
     expect(() => manager.goto("title")).toThrow(/illegal transition/);
@@ -265,7 +275,11 @@ describe("SceneManager FSM", () => {
 
   it("transition table matches the gameloop.md §1 FSM", () => {
     expect(TRANSITIONS.boot).toEqual(["title"]);
-    expect(TRANSITIONS.title).toContain("floorgen"); // New Run
+    // CAT TOWN sits between the title and every run (balance-and-meta.md §4)
+    expect(TRANSITIONS.title).toContain("catTown"); // the way into a run
+    expect(TRANSITIONS.catTown).toEqual(["floorgen", "title"]);
+    expect(TRANSITIONS.results).toContain("catTown"); // the payout comes home
+    expect(TRANSITIONS.title).toContain("floorgen"); // ?smoke= direct start
     expect(TRANSITIONS.title).toContain("runMap"); // Continue
     expect(TRANSITIONS.floorgen).toEqual(["runMap"]);
     expect(TRANSITIONS.battle).toContain("results"); // defeat / floor-6 win
@@ -280,13 +294,13 @@ describe("SceneManager FSM", () => {
     ]);
     expect(TRANSITIONS.landing).toContain("floorgen"); // Descend
     expect(TRANSITIONS.landing).toContain("runMap"); // a shop NODE returns
-    expect(TRANSITIONS.results).toEqual(["floorgen", "title"]);
+    expect(TRANSITIONS.results).toEqual(["catTown", "floorgen", "title"]);
     // party creator (GM custom parties): title ⇄ creator, accept/fallback
     // always lands in floorgen — a run start is never blocked
     expect(TRANSITIONS.title).toContain("partyCreator");
     expect(TRANSITIONS.partyCreator).toEqual(["floorgen", "title"]);
     // LOOT/PAUSE are overlays, not states:
-    expect(Object.keys(TRANSITIONS)).toHaveLength(9);
+    expect(Object.keys(TRANSITIONS)).toHaveLength(10);
   });
 });
 
@@ -357,6 +371,9 @@ describe("SceneManager key routing", () => {
     manager.handleKey("esc");
     expect(manager.overlay).toBeNull(); // boot blocked
     manager.goto("title");
+    manager.goto("catTown");
+    manager.handleKey("esc");
+    expect(manager.overlay).toBeNull(); // the hub has no run to pause
     manager.goto("floorgen");
     manager.goto("runMap");
     manager.handleKey("esc");
@@ -366,8 +383,13 @@ describe("SceneManager key routing", () => {
     manager.goto("results");
     manager.handleKey("esc");
     expect(manager.overlay).toBeNull(); // results blocked
-    // partyCreator has no run — its Esc navigates, never pauses
-    expect(PAUSE_BLOCKED).toEqual(["boot", "results", "partyCreator"]);
+    // partyCreator and catTown have no run — their Esc navigates, never pauses
+    expect(PAUSE_BLOCKED).toEqual([
+      "boot",
+      "results",
+      "partyCreator",
+      "catTown",
+    ]);
   });
 
   it("routes keys overlay-first and swallows them beneath an overlay", () => {

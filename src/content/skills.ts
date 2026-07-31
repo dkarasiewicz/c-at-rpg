@@ -11,6 +11,25 @@
  *    (`maxSuction` pulls cats forward; `theBigBark` is the telegraphed
  *    2-slot 200-power row nuke, combat.md §11.4).
  *
+ * OFF-BALANCE APPLICATION CHANCE (`offBalanceChance`, balance-and-meta.md §1):
+ * a forced move no longer guarantees the stagger. The knob prices the combo,
+ * so energy buys reliability rather than just damage — and it is symmetric,
+ * enemy shoves pay the same tax against cats:
+ *
+ *   0.60  scruffToss (3), yankOfYarn (3)        — the cheapest shoves
+ *   0.70  bodySlam (4); ram / bite / lidBash / grizzledCuff (enemy mooks)
+ *   0.75  maxSuction (boss row, every turn in phase 2)
+ *   0.80  tripWire (4, row), snarlOfThreads (4, row) — the Cat Pile enablers
+ *         keep the best odds short of a guarantee, because arming a pile is
+ *         the one thing Off-Balance is still supposed to be FOR
+ *   1.00  dumpsterDunk (6), trashCompactor (7), fullUnravel (8),
+ *         junkyardToss (boss, cooldown 2), whiskerFeint (pure setup, via
+ *         `applies`) — the expensive setup skills keep their guarantee, which
+ *         is the whole reason to pay for them.
+ *
+ * A chance of EXACTLY 1.0 draws no roll; tier-2/3 enemies still get their
+ * separate resistance roll on top (content/enemies.ts).
+ *
  * Cats are gated by `cost` (energy); enemies by `cooldown` (0 = every turn).
  * Consumable battle payloads live on their `ConsumableDef.battleSkill`
  * (content/consumables.ts), per ARCHITECTURE.md §1's file responsibilities.
@@ -48,6 +67,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 120,
     kind: "damage",
     moveTarget: 2,
+    offBalanceChance: 0.7,
   },
   hiss: {
     id: "hiss",
@@ -75,6 +95,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 150,
     kind: "damage",
     moveTarget: 3,
+    offBalanceChance: 1.0,
   },
 
   /* ---------------------------------------------------------------------- */
@@ -101,6 +122,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 60,
     kind: "damage",
     moveTarget: 1,
+    offBalanceChance: 0.8,
   },
   boxAmbush: {
     id: "boxAmbush",
@@ -130,6 +152,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 60,
     kind: "damage",
     moveTarget: -2,
+    offBalanceChance: 0.6,
   },
   hairballHex: {
     id: "hairballHex",
@@ -221,6 +244,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 80,
     kind: "damage",
     moveTarget: -2,
+    offBalanceChance: 0.6,
   },
   // L6: party protection. Hiss taunts; this one actually armours the front.
   binLidBulwark: {
@@ -249,6 +273,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 110,
     kind: "damage",
     moveTarget: 2,
+    offBalanceChance: 1.0,
   },
 
   /* ---- Trickster — Pixel, «BOX AMBUSH» ---------------------------------- */
@@ -312,6 +337,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 40,
     kind: "damage",
     moveTarget: -1,
+    offBalanceChance: 0.8,
   },
   // L6: the guaranteed bleed (chance 1.0 draws no roll) — almost no up-front
   // damage, enormous over three rounds. The patience skill.
@@ -342,6 +368,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 70,
     kind: "damage",
     moveTarget: -1,
+    offBalanceChance: 1.0,
     applies: [{ status: "frazzled", chance: 0.6 }],
   },
 
@@ -486,6 +513,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 100,
     kind: "damage",
     moveTarget: 1,
+    offBalanceChance: 0.7,
   },
   // sprinklerImp — "row-hitting spray, cooldown 2".
   spray: {
@@ -540,6 +568,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 110,
     kind: "damage",
     moveTarget: 1,
+    offBalanceChance: 0.7,
   },
   // laserGhost — back-line glass cannon: reaches every cat rank.
   laserZap: {
@@ -565,6 +594,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 110,
     kind: "damage",
     moveTarget: 1,
+    offBalanceChance: 0.7,
     aiWeight: 12,
   },
   // …and a plain rummage-and-throw filler.
@@ -608,6 +638,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 110,
     kind: "damage",
     moveTarget: 1,
+    offBalanceChance: 0.7,
   },
 
   /* ---------------------------------------------------------------------- */
@@ -653,6 +684,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 40,
     kind: "damage",
     moveTarget: -1,
+    offBalanceChance: 0.75,
     aiWeight: 20,
   },
 
@@ -683,6 +715,7 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 90,
     kind: "damage",
     moveTarget: 2,
+    offBalanceChance: 1.0,
     aiWeight: 15,
   },
   // Telegraphed 2-slot windup nuke (combat.md §11.4): row, power 200,

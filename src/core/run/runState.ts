@@ -30,6 +30,7 @@ import { EQUIP_DEFS } from "../../content/equipment.js";
 import { FLOORS } from "../../content/floors.js";
 import { STARTING_KIT } from "../../content/lootTables.js";
 import { generateFloorMap } from "../map/generate.js";
+import { hash, mulberry32 } from "../rng.js";
 import {
   addConsumables,
   addShinies,
@@ -46,13 +47,108 @@ import {
   XP_CAP,
 } from "./party.js";
 
-/** Fixed party order (types.ts §2.9) — also the default marching order. */
+/**
+ * Fixed party SLOT order (types.ts §2.9). Every classId-keyed system still
+ * indexes off this — it is the shape of `RunState.cats`, which always carries
+ * all four slots. What changed (balance-and-meta.md §2) is that a run no
+ * longer FIELDS all four: `marchingOrder` is the recruited roster, and cats
+ * outside it are on the bench, waiting to be recruited.
+ */
 export const PARTY_ORDER: readonly ClassId[] = [
   "bruiser",
   "trickster",
   "hexer",
   "medic",
 ];
+
+/* ------------------------------------------------------------------ */
+/* Variable party size (docs/design/balance-and-meta.md §2)            */
+/* ------------------------------------------------------------------ */
+
+/** A run starts with TWO cats. The clowder is earned, not issued. */
+export const STARTING_PARTY_SIZE = 2;
+
+/**
+ * How many cats a run may field at most. Three by default — the third joins
+ * mid-run. The FOURTH slot is a Cat Town meta unlock (§4): the hub passes
+ * `partyCapacity: 4` into `newRun` and everything downstream follows, because
+ * the roster is read from run state and nothing hardcodes a party size.
+ */
+export const DEFAULT_PARTY_CAPACITY = 3;
+export const MAX_PARTY_CAPACITY = 4;
+
+/** The floor whose descent hands the party its third cat (see `descend`). */
+export const RECRUIT_FLOOR = 3;
+
+/** Bruno is always the first cat; the run rolls its second from these. */
+const SECOND_CAT_POOL: readonly ClassId[] = ["trickster", "hexer", "medic"];
+
+/** This run's ceiling on fielded cats (absent ⇒ the default three). */
+export function partyCapacity(run: RunState): number {
+  return clampInt(
+    run.partyCapacity ?? DEFAULT_PARTY_CAPACITY,
+    STARTING_PARTY_SIZE,
+    MAX_PARTY_CAPACITY,
+  );
+}
+
+const clampInt = (v: number, lo: number, hi: number): number =>
+  Math.max(lo, Math.min(hi, Math.round(v)));
+
+/** The cats actually in the formation, front→back (== `marchingOrder`). */
+export function fieldedCats(run: RunState): CatRunState[] {
+  const out: CatRunState[] = [];
+  for (const classId of run.marchingOrder) {
+    const cat = run.cats.find((c) => c.classId === classId);
+    if (cat && cat.lives > 0) out.push(cat);
+  }
+  return out;
+}
+
+/**
+ * Cats this run could still recruit: alive, not already fielded, in slot
+ * order. Empty once the roster is full or everyone has been taken.
+ */
+export function benchedCats(run: RunState): CatRunState[] {
+  return run.cats.filter(
+    (c) => c.lives > 0 && !run.marchingOrder.includes(c.classId),
+  );
+}
+
+/** Is there both room in the formation and somebody left to fill it? */
+export function canRecruit(run: RunState): boolean {
+  return (
+    fieldedCats(run).length < partyCapacity(run) && benchedCats(run).length > 0
+  );
+}
+
+/**
+ * THE recruit API — the seam a recruit encounter (or Cat Town) calls.
+ * Adds one benched cat to the back of the marching order. `classId` picks a
+ * specific cat; omitted takes the first on the bench. Returns the same run
+ * untouched with `recruited: null` when the roster is full, the cat is
+ * unknown/dead, or it is already fielded, so callers can fire and forget.
+ *
+ * The recruit joins at FULL HP for the party's current level: a cat that
+ * shows up on floor 3 is a floor-3 cat, not a level-1 one — `RunState.cats`
+ * has been levelling all four slots the whole time (`applyLevelUps`).
+ */
+export function recruitCat(
+  run: RunState,
+  classId?: ClassId,
+): { run: RunState; recruited: ClassId | null } {
+  if (!canRecruit(run)) return { run, recruited: null };
+  const bench = benchedCats(run);
+  const pick = classId ? bench.find((c) => c.classId === classId) : bench[0];
+  if (!pick) return { run, recruited: null };
+  const cats = run.cats.map((c) =>
+    c.classId === pick.classId ? { ...c, hp: maxHp(c, run.level) } : c,
+  );
+  return {
+    run: { ...run, cats, marchingOrder: [...run.marchingOrder, pick.classId] },
+    recruited: pick.classId,
+  };
+}
 
 /* ------------------------------------------------------------------ */
 /* Custom party (GM party creator — docs/design/gm-system.md)          */
@@ -99,6 +195,11 @@ declare module "../types" {
   interface RunState {
     /** GM-generated custom party (party creator); absent = default Strays. */
     customParty?: CustomCatKit[];
+    /**
+     * Ceiling on FIELDED cats for this run (balance-and-meta.md §2/§4).
+     * Absent ⇒ `DEFAULT_PARTY_CAPACITY` (3). Cat Town raises it to 4.
+     */
+    partyCapacity?: number;
   }
 }
 
@@ -124,22 +225,32 @@ function weaponDefFor(classId: ClassId): EquipDef {
 }
 
 /**
- * A fresh run (gameloop RUN_INIT): fixed party [bruiser, trickster, hexer,
- * medic] at level 1, 9 Lives and full HP each, wearing their Stray L1 class
- * weapons (`atk +2`, fixed — no rolls, loot.md §6); starting kit 20 ✦ +
- * 2 Tuna Snacks + 1 Cardboard Box; default marching order. The run map is
- * NOT generated yet — FLOORGEN calls `generateCurrentFloorMap` (floorNum
- * starts at 1, floorsReached counts it as entered).
+ * A fresh run (gameloop RUN_INIT). All four ClassId slots exist in `cats` at
+ * level 1, 9 Lives and full HP each, wearing their Stray L1 class weapons
+ * (`atk +2`, fixed — no rolls, loot.md §6); starting kit 20 ✦ + 2 Tuna Snacks
+ * + 1 Cardboard Box. The run map is NOT generated yet — FLOORGEN calls
+ * `generateCurrentFloorMap` (floorNum starts at 1, floorsReached counts it as
+ * entered).
  *
- * `customParty` (optional, additive — default behavior is unchanged): a
- * party-creator run records its GM-generated kits on the RunState. NOTE the
- * caller must have overlaid the kits onto the content tables BEFORE calling
- * (ui/scenes/partyCreator.ts applyPartyContent) so starting HP derives from
- * the custom base stats; cats still occupy the four fixed ClassId slots.
+ * WHAT IS FIELDED IS TWO CATS (balance-and-meta.md §2): Bruno plus one drawn
+ * from the run seed, so the opening is fragile and the run earns its clowder.
+ * The rest sit on the bench until `recruitCat` takes them. The draw runs off
+ * its own `hash(runSeed, 'roster')` stream — never the map or battle streams
+ * — so adding it cannot shift any other seeded sequence.
+ *
+ * `customParty` (optional, additive): a party-creator run records its
+ * GM-generated kits. NOTE the caller must have overlaid the kits onto the
+ * content tables BEFORE calling (ui/scenes/partyCreator.ts applyPartyContent)
+ * so starting HP derives from the custom base stats; kits still occupy the
+ * four fixed ClassId slots, and the run still fields only two of them.
+ *
+ * `opts.partyCapacity` is Cat Town's hook (§4); `opts.roster` lets a caller
+ * (tests, the hub, a debug menu) name the exact starting formation.
  */
 export function newRun(
   runSeed: string,
   customParty?: CustomCatKit[],
+  opts?: { partyCapacity?: number; roster?: readonly ClassId[] },
 ): RunState {
   let inventory = emptyInventory();
   inventory = addShinies(inventory, STARTING_KIT.shinies);
@@ -171,11 +282,21 @@ export function newRun(
   const score = zeroScore();
   score.floorsReached = 1;
 
+  // The starting formation: Bruno, then one of the other three drawn from the
+  // roster stream. An explicit `opts.roster` overrides the draw entirely.
+  const second =
+    SECOND_CAT_POOL[
+      mulberry32(hash(runSeed, "roster")).int(0, SECOND_CAT_POOL.length - 1)
+    ];
+  const marchingOrder: ClassId[] = opts?.roster
+    ? opts.roster.filter((id) => PARTY_ORDER.includes(id)).slice()
+    : ["bruiser", second];
+
   return {
     runSeed,
     floorNum: 1,
     cats,
-    marchingOrder: PARTY_ORDER.slice(),
+    marchingOrder,
     xp: 0,
     level: 1,
     inventory,
@@ -188,6 +309,9 @@ export function newRun(
     visitedNodeIds: [],
     playTimeMs: 0,
     ...(customParty && customParty.length > 0 ? { customParty } : {}),
+    ...(opts?.partyCapacity !== undefined
+      ? { partyCapacity: opts.partyCapacity }
+      : {}),
   };
 }
 
@@ -224,7 +348,10 @@ export function enterFloorMap(run: RunState, map: FloorMap): RunState {
   };
 }
 
-/** Living cats (lives > 0), fixed party order. */
+/**
+ * Living cats (lives > 0) in slot order — INCLUDING the bench. For the cats
+ * that actually fight, use `fieldedCats`.
+ */
 export function livingCats(run: RunState): CatRunState[] {
   return run.cats.filter((c) => c.lives > 0);
 }
@@ -258,9 +385,15 @@ export function catnapHeal(
  *  2. free catnap heal `floor(0.25 × maxHP)` per living cat,
  *  3. floorNum+1, floorsReached+1, floor-scoped fired-event ids reset,
  *  4. the new floor's run map generates from the seed and the party is
- *     placed on its entry node (traversal state resets with the floor).
+ *     placed on its entry node (traversal state resets with the floor),
+ *  5. arriving on `RECRUIT_FLOOR` with room in the formation, a benched cat
+ *     joins (balance-and-meta.md §2's mid-run recruit).
  * `energyNextBattle` grants persist — they are consumed by the next battle
  * setup, whenever that happens.
+ *
+ * The floor-3 recruit is the FLOOR of what the run gets, not the ceiling: a
+ * recruit encounter or Cat Town can call `recruitCat` at any time, and this
+ * step then finds the roster already full and does nothing.
  */
 export function descend(run: RunState): RunState {
   if (run.floorNum >= FLOOR_COUNT) {
@@ -269,16 +402,21 @@ export function descend(run: RunState): RunState {
   const expired = run.cats.map((c) => expireFloorMods(c, run.level));
   const { cats } = catnapHeal(expired, run.level);
   const score = { ...run.score, floorsReached: run.score.floorsReached + 1 };
-  return generateCurrentFloorMap({
+  const floorNum = run.floorNum + 1;
+  let next: RunState = {
     ...run,
     cats,
     score,
-    floorNum: run.floorNum + 1,
+    floorNum,
     floorFiredEventIds: [],
     floorMap: null,
     currentNodeId: null,
     visitedNodeIds: [],
-  });
+  };
+  if (floorNum >= RECRUIT_FLOOR && canRecruit(next)) {
+    next = recruitCat(next).run;
+  }
+  return generateCurrentFloorMap(next);
 }
 
 /* ------------------------------------------------------------------ */

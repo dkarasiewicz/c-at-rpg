@@ -127,6 +127,57 @@ No DM reachable ⇒ the typed-action input is hidden, encounters run on authored
 content, and the game is fully playable. This is a hard rule, not a
 nice-to-have: the game must never block on the network.
 
+## 4b. The DM is present, not summoned
+
+Two requirements that turn the DM from a feature into a character.
+
+### Typed actions everywhere — exploration, events, fights
+
+The "what do you do?" affordance must exist in **all three** contexts, with the
+same voice and the same bounds:
+
+| context | what typing means |
+|---|---|
+| **exploration** (the run map) | scout ahead, talk among yourselves, try something with a node before committing, ask the DM about the floor. May reveal intel, cost time, or spring something. |
+| **events** | the free-text option alongside the authored choices (already shipped). |
+| **fights** | improvise an action; the encounter subagent adjudicates it into a bounded effect and it costs the turn (already shipped). |
+
+Exploration is the missing one. It is also the most natural place to talk,
+because nothing is under time pressure — so it should feel like the table
+between fights, not a command prompt.
+
+### The DM interferes on its own
+
+The DM must occasionally act **unprompted**, or it is a vending machine. It
+interjects at authored beats:
+
+- arriving at a node, descending a floor, entering a boss lair;
+- after a spike — a KO, a Cat Pile, a crit that ends a fight, a near-death;
+- when the run state is dramatic (one life left, broke, a cat benched).
+
+An interjection may be pure narration, or — within the same bounded, linted
+effect vocabulary — a small twist: an offer, a complication, a gift, a warning.
+It draws on run-long session memory, so it can call back to what the party did
+three floors ago.
+
+**Constraints (non-negotiable):**
+
+- **Rate-limited and never blocking.** The game never waits on the DM. An
+  interjection arrives asynchronously and is rendered when it lands, or never.
+- **Rarity is the point.** Frequent interjections become wallpaper; target a
+  handful per run, weighted toward dramatic beats.
+- **Player can always answer** — an interjection is an invitation to type back,
+  not a cutscene.
+- **Offline ⇒ silent.** No DM, no interjections, and the game reads as complete.
+
+### Auto-generated content, persisted
+
+Content the DM generates during play — items, events, enemy flavour, Stand
+interactions — is validated, budget-linted, and written to the shared pool with
+its style version, so it is reused by later runs and other players (§4,
+`gm-system.md`). Generation happens outside the resolution loop and its results
+are recorded in the run log, so determinism and replay are preserved.
+
 ## 5. Build order
 
 1. **Run map core** — graph generator on its own RNG stream, node/edge types,

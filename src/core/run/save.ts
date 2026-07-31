@@ -5,7 +5,9 @@
  * `(runSeed, floorNum)` on its own RNG stream, and everything mutable about
  * a floor is already two plain fields on the RunState (`currentNodeId`,
  * `visitedNodeIds`). No delta, no bitsets — the tile maze took those with it
- * (run-map-and-dm.md §2). MetaFile keeps lifetime records only — no unlocks.
+ * (run-map-and-dm.md §2). The META slot is Cat Town's profile: lifetime
+ * records PLUS the banked wallet, the owned unlock ids and the run history
+ * (balance-and-meta.md §4) — shape and rules in core/meta, storage here.
  *
  * This is the ONLY file in the repo allowed to touch localStorage, behind a
  * tiny adapter so tests inject a stub (ARCHITECTURE.md §0 rule 5).
@@ -14,7 +16,9 @@
  * freshly generated run map at the same floor rather than being thrown away.
  */
 import type { MetaFile, RunState, SaveFile, SaveVersion } from "../types.js";
+import type { MetaProfile } from "../meta/types.js";
 import { generateFloorMap } from "../map/generate.js";
+import { META_VERSION, emptyProfile, migrateMeta } from "../meta/profile.js";
 import { enterFloorMap, floorConfig } from "./runState.js";
 
 export const SAVE_KEY = "catrpg.save.v1";
@@ -179,27 +183,36 @@ export function deleteSave(
 }
 
 /* ------------------------------------------------------------------ */
-/* MetaFile — lifetime records, no unlocks                             */
+/* MetaFile — the Cat Town profile (balance-and-meta.md §4)            */
 /* ------------------------------------------------------------------ */
+//
+// The persistence half only: the SHAPE, the migration and every rule about
+// spending live in core/meta (profile.ts). This file owns storage, nothing
+// else — meta v2 (wallet, unlocked ids, run history) reaches disk through
+// exactly these four functions.
 
-export function emptyMeta(): MetaFile {
-  return {
-    version: 1,
-    counters: { runs: 0, victories: 0 },
-    records: { bestScore: 0, fastestVictoryMs: null },
-  };
+/** Meta schema this build writes. v1 = records only, v2 = Cat Town. */
+export { META_VERSION } from "../meta/profile.js";
+
+/** A fresh profile: no records, empty tin, nothing unlocked. */
+export function emptyMeta(): MetaProfile {
+  return emptyProfile();
 }
 
+/**
+ * Load the profile, migrating a v1 (records-only) blob forward. Unparseable
+ * or unknown-version payloads fall back to a fresh profile — the same
+ * silent-discard rule the run save uses.
+ */
 export function loadMeta(
   storage: StorageAdapter = localStorageAdapter,
-): MetaFile {
+): MetaProfile {
   const raw = storage.get(META_KEY);
-  if (raw === null) return emptyMeta();
+  if (raw === null) return emptyProfile();
   try {
-    const meta = JSON.parse(raw) as MetaFile;
-    return meta.version === 1 ? meta : emptyMeta();
+    return migrateMeta(JSON.parse(raw)) ?? emptyProfile();
   } catch {
-    return emptyMeta();
+    return emptyProfile();
   }
 }
 
@@ -211,16 +224,20 @@ export function saveMeta(
 }
 
 /**
- * Fold a finished run into the records (written on every RESULTS entry):
- * runs+1, victories on victory, best score, fastest victory time.
+ * Fold a finished run into the LIFETIME RECORDS: runs+1, victories on
+ * victory, best score, fastest victory time. The shinies payout, the run
+ * history and everything else Cat Town cares about go through
+ * `bankRun` (core/meta/profile.ts) — which does this fold too, so a caller
+ * that banks must not also call this.
  */
 export function recordRunEnd(
-  meta: MetaFile,
+  meta: MetaProfile,
   end: { victory: boolean; score: number; playTimeMs: number },
-): MetaFile {
+): MetaProfile {
   const fastest = meta.records.fastestVictoryMs;
   return {
-    version: 1,
+    ...meta,
+    version: META_VERSION,
     counters: {
       runs: meta.counters.runs + 1,
       victories: meta.counters.victories + (end.victory ? 1 : 0),

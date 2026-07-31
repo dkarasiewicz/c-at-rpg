@@ -33,6 +33,8 @@ Combat is a side-view formation fight on a single axis:
 
 - **Cats** occupy ranks 1–4 (rank 1 = frontmost), exactly one cat per rank.
   Party order at battle start comes from the dungeon-side marching order.
+  **The party is 2, 3 or 4 cats** — a run starts with two and earns the rest
+  (`balance-and-meta.md` §2) — so ranks 3 and 4 are often empty. See §1.1.
 - **Enemies** occupy ranks 1–5, one per rank, 1–5 enemies per encounter.
   Encounter data is a plain front-to-back array, e.g. `['rat','rat','crowShaman']`.
 - **No empty gaps, ever**: when a combatant dies or is KO'd it is removed and
@@ -44,6 +46,31 @@ Combat is a side-view formation fight on a single axis:
 - Every skill declares which ranks it can be **used from** and which ranks it
   can **hit**. Position is both a constraint (can my cat act?) and a weapon
   (can I shove the enemy out of *its* usable ranks?).
+
+### 1.1 Rank projection — parties of 2, 3 and 4
+
+A run starts with **two** cats and earns the rest (`balance-and-meta.md` §2),
+so ranks 3 and 4 frequently do not exist. `usableFrom` describes a POSITION IN
+THE LINE, not an absolute coordinate, and is therefore projected onto the
+formation actually on the field:
+
+```
+usableFromEffective = unique(usableFrom.map(r => min(r, livingOnThatSide)))
+```
+
+Ranks [3,4] mean "from the back line": a four-cat party's back line is ranks
+3-4, a two-cat party's is rank 2, and a lone survivor is its own back line.
+Without this, a two-cat party's Medic could never cast Soothing Purr or Nine
+Lives Nudge and the Hexer could never pull — most of two kits would be dead
+data.
+
+The rule is monotone and an exact no-op at full occupancy, so nothing about a
+4-cat / 5-enemy fight changes. Crucially it does **not** weaken rank denial:
+at two cats, [3,4] projects to {2} *only*, so a Medic shoved to the front
+still loses her kit. On the enemy side it only ever bites at one living
+enemy, where it stops a lone back-liner (Laser Ghost) from being permanently
+unable to act. `target.ranks` is **not** projected — occupancy already filters
+it, and it is a deliberate design lever.
 
 ### Data model (combatants)
 
@@ -115,7 +142,7 @@ Off-Paw combo system (§8) a planning game instead of a guessing game.
 1. base     = skill.power / 100 * user.atk
 2. variance = 0.9 + 0.1 * rngInt(0, 2)           // exactly 0.9, 1.0, or 1.1
 3. crit     = (rngFloat() < user.crt / 100) ? 1.5 : 1.0
-4. offBal   = target has Off-Balance ? 1.5 : 1.0
+4. offBal   = target has Off-Balance ? 1.3 : 1.0
 5. guard    = target has Guarded     ? 0.5 : 1.0
 6. dmg      = round(base * variance * crit * offBal * guard)   // round half up
 7. final    = max(1, dmg - target.def)
@@ -123,18 +150,58 @@ Off-Paw combo system (§8) a planning game instead of a guessing game.
 
 There is **no accuracy roll** — attacks always land (misses feel bad in a
 4-actor party; defense is expressed through `def`, Guarded, and positioning).
-Maximum stacked multiplier is 1.1 × 1.5 × 1.5 = 2.475, a bounded burst ceiling.
+Maximum stacked multiplier is 1.1 × 1.5 × 1.3 = 2.145, a bounded burst ceiling.
+(Off-Balance was ×1.5 through v1; `balance-and-meta.md` §1 cut it to ×1.3
+because crit × Off-Balance at ×2.25 made one cheap shove the correct opening
+move in every single fight. Crit × Off-Balance is now ×1.95.)
 
 **Healing:** `heal = round(skill.power / 100 * user.atk)` — no variance, no
 crit, capped at max HP.
 
 **Cat Pile** (§8) uses its own flat formula and skips this pipeline entirely.
 
+### 3.1 Enemy stat curve
+
+Enemy stat blocks in `content/enemies.ts` are authored ONCE, as a reference
+block, and scaled per floor by `ENEMY_CURVE` (`content/floors.ts`), applied in
+`createBattle` from `BattleSetup.floor`:
+
+```
+hp  = roundHalfUp(base.hp  * row.hpMult)     // min 1
+atk = roundHalfUp(base.atk * row.atkMult)    // min 0
+def = base.def + row.defAdd                  // min 0
+spd = base.spd + row.spdAdd                  // min 1
+crt = base.crt + row.crtAdd                  // min 0
+```
+
+**Bosses are never curved** — their blocks are authored against the §11 flag
+set, and scaling them would silently move Poise-break pacing and the 50%
+phase threshold. Retuning the whole run means editing six rows and nothing
+else (`balance-and-meta.md` §3).
+
+### 3.2 RNG stream and roll order (HARD CONTRACT)
+
 All RNG comes from **one seeded stream per battle**, derived as
 `mulberry32(hash(runSeed, floor, encounterIndex))`. Rolls are always drawn in
-a documented order (initiative draws at round start; per damaging action per
-target in rank order: variance, then crit, then per-effect status chances;
-then AI tie-breaks; flee), so replays with the same seed are identical.
+this exact order, so replays with the same seed are identical:
+
+| # | When | Draw | Skipped entirely when |
+|---|---|---|---|
+| 1 | Round start | initiative, one `int(0,2)` per queue entry — cats rank 1→4, then enemies rank 1→5 | never |
+| 2 | Damage step, per target in rank order | variance `int(0,2)` | the skill deals no damage |
+| 3 | Damage step, per target in rank order | crit `float()` | the skill deals no damage |
+| 4 | **Forced-movement step, per moved target in rank order** | **Off-Paw application chance `float()` vs `skill.offBalanceChance`** | **chance is EXACTLY 1.0, or the target is dead / already Off-Balance / Braced** |
+| 5 | **Immediately after 4, same target** | **tier-resistance `float()`** | **the target's resistance is 0 (cats, tier-1 mooks, bosses), or 4 already failed** |
+| 6 | `applies` step, per effect per recipient | status chance `float()` | chance is EXACTLY 1.0 |
+| 7 | **Immediately after 6, when the status is `offBalance`** | **tier-resistance `float()`** | **as row 5** |
+| 8 | Power consults | `chance` predicate `float()` | no power, no charges, earlier predicate failed |
+| 9 | AI | tie-break `int(0, n-1)` | the tie resolved deterministically by target rank |
+| 10 | Flee | one `float()` | not fleeing |
+
+Rows 4, 5 and 7 are the draws added by the Off-Balance rework. The rule that
+makes them safe: **a gate is never drawn when the application could not have
+landed anyway.** A shove into a Braced target, a re-shove of something already
+Off-Balance, and a push onto a corpse all cost zero entropy.
 
 ---
 
@@ -160,6 +227,7 @@ interface Skill {
   power: number;              // 0 = no damage/heal component
   kind: 'damage' | 'heal' | 'utility';
   moveTarget?: number;        // + pushes back N, - pulls forward N (forced)
+  offBalanceChance?: number;  // 0..1, default 1.0 — the §8 Off-Paw gate
   moveSelf?: number;          // + retreats N, - advances N (voluntary)
   applies?: { status: StatusId; chance: number; value?: number }[]; // chance 0..1
   energyGain?: number;        // bonus energy to user on use (basic attacks)
@@ -191,11 +259,11 @@ the reference set).
 | Skill | Class | Cost | From | Targets | Power | Effects |
 |---|---|---|---|---|---|---|
 | **Claw Swipe** | all | 0 | [1,2] | enemy [1,2], single | 100 | `energyGain: 1`. Bread-and-butter that banks energy. |
-| **Body Slam** | Bruiser | 4 | [1,2] | enemy [1,2], single | 120 | `moveTarget: +2` — damage, then hurl them backward (Off-Balance for allies to exploit). |
+| **Body Slam** | Bruiser | 4 | [1,2] | enemy [1,2], single | 120 | `moveTarget: +2`, `offBalanceChance: 0.7` — damage, then hurl them backward. |
 | **Hiss** | Bruiser | 2 | [1,2] | self | 0 | Applies **Guarded** to self and **Provoked** (chance 1.0) to all enemies until round end. |
 | **Pounce** | Trickster | 3 | [3,4] | enemy [1,2], single | 150 | `moveSelf: -2` (leap to the front line). High burst, scrambles your own formation. |
-| **Trip Wire** | Trickster | 4 | [2,3] | enemy [1,2], **row** | 60 | `moveTarget: +1` on each — the row-shove that sets up Cat Pile (§8). |
-| **Yank of Yarn** | Hexer | 3 | [3,4] | enemy [2,3,4], single | 60 | `moveTarget: -2` — drag a back-liner up front, out of its usable ranks, Off-Balanced. |
+| **Trip Wire** | Trickster | 4 | [2,3] | enemy [1,2], **row** | 60 | `moveTarget: +1`, `offBalanceChance: 0.8` on each — the row-shove that sets up Cat Pile (§8). |
+| **Yank of Yarn** | Hexer | 3 | [3,4] | enemy [2,3,4], single | 60 | `moveTarget: -2`, `offBalanceChance: 0.6` — drag a back-liner up front, out of its usable ranks. |
 | **Hairball Hex** | Hexer | 3 | [2,3,4] | enemy [1,2,3], single | 40 | Applies **Scratched** (value 3, chance 0.9). |
 | **Soothing Purr** | Medic | 4 | [3,4] | ally any rank, single | 120 (heal) | Also removes one Scratched application. |
 | **Nine Lives Nudge** | Medic | 6 | [3,4] | KO'd ally, single | 0 | Revive at 30% max HP, placed in rank 4 (others shift forward). Once per battle. Does **not** cost the target a Life (§12). |
@@ -226,25 +294,55 @@ every turn), tracked per skill, decremented at that enemy's turn start.
 
 ---
 
-## 6. Status Effects (6)
+## 6. Status Effects (7)
 
 | Status | Effect | Tick timing | Duration | Stacking |
 |---|---|---|---|---|
 | **Scratched** (bleed) | Take `value` damage (ignores DEF and Guarded, min 1) | Start of victim's turn, before energy regen | 3 rounds | Values **add** (cap 3 applications, so cap value 9); reapplying resets duration to 3 |
 | **Frazzled** (stun) | Skip your next turn entirely (no regen, no action), then removed | On the victim's turn slot | 1 turn | Cannot be applied while already present (no stunlock). On a double-turn boss, consumes only **one** queue slot. |
-| **Off-Balance** | Take +50% damage (multiplier in §3) | passive | Until **round-end phase** of the current round, or consumed by Cat Pile | No stacking; reapplying does nothing |
+| **Off-Balance** | Take +30% damage (multiplier in §3) | passive | Until **round-end phase** of the current round, or consumed by Cat Pile | No stacking; reapplying does nothing; **blocked outright by Braced** |
+| **Braced** | Immune to Off-Balance application | passive | 1-2 rounds — see §6.1 | Longer duration wins; no second event |
 | **Guarded** | Take −50% damage | passive | Until the start of the owner's next turn | No stacking |
 | **Provoked** | Single-target damage skills must target the provoker, if the provoker is in a valid rank; otherwise unrestricted | passive (checked by AI/targeting) | Until round-end phase | Newest provoker wins |
 | **Mending** (regen) | Heal `value` HP | Start of owner's turn | 2 rounds | Duration refreshes, value replaced by the higher |
 
 KO clears all statuses on the KO'd combatant.
 
+### 6.1 Braced — the anti-lock rule
+
+**Whenever Off-Balance leaves a living combatant, that combatant becomes
+Braced and cannot be made Off-Balance again for one full round.** It got its
+paws back under it, and it is watching you now.
+
+| Off-Balance left because… | Braced duration | Covers |
+|---|---|---|
+| it expired in the round-end phase | 1 | the whole of the next round |
+| a Cat Pile consumed it, mid-round | 2 | the rest of this round **and** the next |
+| a cleanse removed it (Knead the Knots) | 2 | the rest of this round **and** the next |
+
+Durations tick in the round-end phase (§7) *before* that phase grants any new
+Braced, so a fresh one is never ticked on the round it was earned.
+
+Why it exists: without it, a party holding two cheap shoves keeps one target
+Off-Balance permanently and the "who do we destabilise **this** round"
+decision disappears. With it, Off-Balance is available on a given target
+roughly every other round, and choosing the target becomes the interesting
+move (`balance-and-meta.md` §1).
+
+**The one bypass is a boss Poise break** (§11.1), which strips Braced before
+applying its own Off-Balance. The Poise rhythm is therefore unchanged:
+break → window → expiry → Braced → the next break strips it again.
+
 ---
 
 ## 7. Round-End Phase (exact order)
 
-1. Decrement all durations measured in rounds, removing expired statuses.
-2. Remove all Off-Balance and Provoked from all combatants.
+1. Decrement all durations measured in rounds (Scratched, Mending, **Braced**),
+   removing expired statuses.
+2. Remove all Off-Balance and Provoked from all combatants. **Every living
+   combatant that lost an Off-Balance here gains Braced (duration 1)** — after
+   step 1's decrement, so the fresh Braced survives the whole next round
+   (§6.1).
 3. Reset the once-per-round Cat Pile latch (§8).
 4. Check victory / defeat (§12).
 
@@ -255,12 +353,35 @@ turn start, §5. Listed to make the omission explicit.)
 
 ## 8. The Signature Twist: "Off-Paw" — forced movement IS the combo system
 
-> **Rule 1 — Off-Paw:** any combatant moved 1+ ranks against its will becomes
-> **Off-Balance** (takes +50% damage) until the end of the round.
+> **Rule 1 — Off-Paw:** any combatant moved 1+ ranks against its will *may*
+> become **Off-Balance** (takes +30% damage) until the end of the round. Three
+> gates stand between the shove and the debuff, checked in this order:
+>
+> 1. **Braced** (§6.1) — a target that shook off Off-Balance within the last
+>    round is immune. No roll, no entropy spent.
+> 2. **Per-skill application chance** — `skill.offBalanceChance`, default 1.0.
+>    Cheap single-target shoves sit at 0.6-0.75; the expensive setup skills
+>    keep their guarantee, and that is exactly what their energy buys.
+> 3. **Tier resistance** — tier-2 enemies shrug it off 25% of the time,
+>    tier-3 40%. Cats and tier-1 mooks never resist. Bosses never reach this
+>    path at all: they are `heavy`, so a Poise break (§11.1) is their only
+>    Off-Balance source and it bypasses gates 1 and 3.
+
+| Skill | Cost | Chance |
+|---|---|---|
+| Scruff Toss, Yank of Yarn | 3 | 0.60 |
+| Body Slam; enemy Ram / Bite / Lid Bash / Grizzled Cuff | 4 / — | 0.70 |
+| boss MAX SUCTION | — | 0.75 |
+| Trip Wire, Snarl of Threads (row — the Cat Pile enablers) | 4 | 0.80 |
+| DUMPSTER DUNK, TRASH COMPACTOR, FULL UNRAVEL, Whisker Feint, boss Junkyard Toss | 6-8 | 1.00 |
 
 - **Shove-then-shred:** a fast cat pushes/pulls an enemy, and every teammate
-  acting later this round hits it for +50%. The visible initiative timeline
+  acting later this round hits it for +30%. The visible initiative timeline
   makes this plannable: "Pixel yanks at initiative 9, Bruno slams at 6."
+- **Aim, don't spray:** because a target goes Braced the moment its
+  Off-Balance lapses, keeping ONE enemy destabilised forever is impossible.
+  The question every round is *which* enemy — which is the decision the flat
+  ×1.5-at-100% version deleted.
 - **Rank denial as a bonus:** the same push that Off-Balances the shaman also
   shoves it out of its `usableFrom` ranks — next turn it must waste an action
   Advancing (§10).
@@ -282,13 +403,17 @@ turn start, §5. Listed to make the omission explicit.)
 > dogpile: each living enemy takes `floor(0.30 * sum(living cats' atk))` —
 > typeless, ignores DEF, Guarded, and the Off-Balance multiplier, cannot miss
 > or crit. Then **Off-Balance is removed from all surviving enemies** (they
-> scramble back to their feet). A procedural dust-cloud with paws sticking out
-> plays. Declining keeps all Off-Balance marks in place.
+> scramble back to their feet **Braced**, §6.1 — you do not get to re-pile
+> them next round). A procedural dust-cloud with paws sticking out plays.
+> Declining keeps all Off-Balance marks in place.
 
 Cat Pile is the payoff spike for coordinated shoving: Trip Wire's row-push or
 two sequenced single shoves can floor a whole encounter. The real decision is
 Design 2's "pile or pick": pile now for flat damage, or keep the enemies
-Off-Balance and let the remaining cats hit them at +50% the normal way.
+Off-Balance and let the remaining cats hit them at +30% the normal way.
+Under the gates above a pile is now a **planned** event a few times a run
+rather than the default opening of most fights — measure it with
+`npm run sim`, never by feel.
 Against a lone boss, the "every living enemy" condition is satisfied exactly
 during a Poise break (§11), making Cat Pile the boss-fight burst window.
 
@@ -453,6 +578,12 @@ movement, so the boss weaponizes the player's own twist against them.
 HP 18, ATK 7, DEF 1, SPD 5), Crow Shaman (R3, HP 14, ATK 8, DEF 0, SPD 7; its
 hex is `usableFrom [2,3,4]`, its Peck `usableFrom [1,2]`).
 
+*(Party of four: the §1.1 projection is the identity here, and every number
+below is the same as it was in v1 except where the ×1.3 Off-Balance
+multiplier and the new Off-Paw gate touch it. Recomputed by hand against the
+rules above — `tests/combat.spec.ts` asserts these values against the engine,
+never the other way round.)*
+
 **Initiative rolls** (spd + rngInt(0,2)): Bruno 4+2=6, Pixel 8+1=**9**, Mora
 6+2=**8**, Baguette 5+1=6, Rat A 5+2=7, Rat B 5+0=5, Crow 7+1=**8**.
 Sorted: Pixel 9 → [tie at 8: cats before enemies] Mora 8 → Crow 8 → Rat A 7 →
@@ -465,7 +596,10 @@ Sorted: Pixel 9 → [tie at 8: cats before enemies] Mora 8 → Crow 8 → Rat A 
 2. **Mora** (regen +2 → EN 6). **Yank of Yarn** (cost 3) on the Crow (rank 3,
    valid). Damage first: base 0.6×11 = 6.6 × variance 1.1 = 7.26 → round
    **7** − DEF 0 = 7. Crow 14→7. Then forced pull 2: Crow to enemy rank 1,
-   Rat A slides to 2, Rat B to 3. Moved 2 ranks → **Off-Balance**. Cat Pile
+   Rat A slides to 2, Rat B to 3. Moved 2 ranks, so the §8 gates run: the Crow
+   is neither Off-Balance nor Braced, Yank's `offBalanceChance` is 0.60 and
+   the roll is **0.31 < 0.60** → it lands; the Crow is tier 1, so the
+   tier-resistance roll is **not drawn at all** → **Off-Balance**. Cat Pile
    check: Rats A and B are not Off-Balance → no prompt. EN 3.
 3. **Crow Shaman** (Off-Balance, now rank 1). Its hex isn't usable from rank
    1; only Peck (targets cat ranks 1–2). Candidates: Bruno (100% HP), Pixel
@@ -476,9 +610,13 @@ Sorted: Pixel 9 → [tie at 8: cats before enemies] Mora 8 → Crow 8 → Rat A 
    **5**. Bruno 36→31.
 5. **Bruno** (regen +2 → EN 6). **Body Slam** (cost 4) on the Off-Balance Crow
    at enemy rank 1: base 1.2×10 = 12 × variance 1.0 × no crit × **Off-Balance
-   1.5** = 18 − 0 = **18**. Crow 7→**dead** (push moot). Rats slide: A→1,
-   B→2. EN 2. *(Had the Crow been a `heavy` elite, the Body Slam push would
-   instead have chipped 1 Poise.)*
+   1.3** = 15.6 → round half up **16** − DEF 0 = **16**. Crow 7→**dead**.
+   The push is moot on a corpse, so **Body Slam's own 0.70 gate is never
+   drawn** — a dead target costs no entropy (§3.2). Rats slide: A→1, B→2.
+   EN 2. *(Under v1's ×1.5 this hit for 18. The Crow dies either way, which is
+   the point: the multiplier cut removes the free +50% round, not the combo.)*
+   *(Had the Crow been a `heavy` elite, the Body Slam push would instead have
+   chipped 1 Poise.)*
 6. **Baguette** (regen +2 → EN 6). Bruno is at 31/40 — Soothing Purr would
    heal round(1.2×9) = 11, but he isn't in danger, so she **Guards**: Guarded
    until her next turn, EN 6+2 = 8, banking toward Nine Lives Nudge money she
@@ -486,19 +624,28 @@ Sorted: Pixel 9 → [tie at 8: cats before enemies] Mora 8 → Crow 8 → Rat A 
 7. **Rat B** (rank 2). Shiv on the most wounded reachable cat → Bruno:
    7 × 0.9 = 6.3 → 6 − 3 = **3**. Bruno 31→28.
 
-**Round-end phase:** no round-duration statuses remain (the Crow took its
-Off-Balance to the grave); the Off-Balance/Provoked sweep clears nothing; the
-Cat Pile latch resets; nobody is at 0 HP on either side → next round. Two rats
+**Round total: 20 rng draws** — 7 initiative, then 2 (Pixel) + 3 (Mora:
+variance, crit, Off-Paw gate) + 2 (Crow) + 2 (Rat A) + 2 (Bruno) + 0
+(Baguette guards) + 2 (Rat B). The single added draw versus v1 is Mora's
+gate.
+
+**Round-end phase:** no round-duration statuses remain — the Crow took its
+Off-Balance to the grave, and because KO already cleared its statuses the
+sweep finds nothing to expire, so **no Braced is granted to anyone** (§6.1
+only fires for the living). The Cat Pile latch resets; nobody is at 0 HP on
+either side → next round. Two rats
 at ranks 1–2, party healthy. Pixel is weighing a swap back to rank 3 to line
 up Pounce — or staying at rank 2 for Trip Wire next round to row-shove both
 rats Off-Balance and cash a **Cat Pile**
 (`floor(0.30 × (10+12+11+9)) = 12` to each rat, killing Rat A outright and
 leaving Rat B at 6).
 
+**Damage sequence for the round: 17, 7, 4, 5, 16, 3.**
+
 One round showcased: initiative ties, energy regen/banking, crit, variance,
-pull-combo (Yank → Body Slam for +50%), rank denial (the Crow's hex went
-offline), corpse sliding, AI wounded-targeting, the Guard economy, and the
-Cat Pile setup calculus.
+the Off-Paw application gate, pull-combo (Yank → Body Slam for +30%), rank
+denial (the Crow's hex went offline), corpse sliding, AI wounded-targeting,
+the Guard economy, and the Cat Pile setup calculus.
 
 ---
 
@@ -518,11 +665,12 @@ core is unit-testable; the worked example above doubles as a unit test.
 | `battle/state.ts` | 150 | Combatant, Battle, rank ops (slide, push/pull clamp, swap), seeded RNG stream |
 | `battle/turns.ts` | 160 | Initiative rolls, round loop, round-end phase, win/lose/flee, Lives bookkeeping |
 | `battle/resolve.ts` | 280 | Skill pipeline (damage formula, movement, statuses, energy), Cat Pile |
-| `battle/status.ts` | 120 | 6 status defs + tick/stack/expiry rules |
+| `battle/status.ts` | 120 | 7 status defs + tick/stack/expiry rules (incl. Braced) |
 | `battle/ai.ts` | 100 | §10 scorer + boss script hook |
 | `battle/boss.ts` | 100 | Poise, double-turn, phase swap, charge telegraph, summons |
 | `battle/ui.ts` | 550 | PixiJS: rank slots, cat/enemy blobs, initiative timeline, skill bar, Life pips, Poise counter, floating damage Text, dust-cloud Cat Pile, tweened lunges; mouse targeting + 1–5 keys |
-| `data/*.ts` | (content, not engine) | 4 classes × 4 skills, ~10 enemies, 3 bosses, items, encounters |
+| `data/*.ts` | (content, not engine) | 4 classes × 4 skills, ~10 enemies, 3 bosses, items, encounters, the per-floor `ENEMY_CURVE` |
+| `scripts/sim.ts` | 450 | headless balance harness (`npm run sim`): N seeded battles per floor, AI both sides, win rate / rounds / damage share / Off-Balance uptime / Cat Pile frequency / Lives lost |
 
 ---
 
