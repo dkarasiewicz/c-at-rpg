@@ -312,7 +312,9 @@ export function makeStatusChip(
           .fill(color)
           .stroke({ width: 1, color: darken(color) }),
   );
-  const g = statusGlyph(id, painted ? s : Math.round(s * 0.82));
+  // 0.86 keeps a painted glyph inside the plate's rounded corners; the MONO
+  // letter is measured cap-to-cap and wants a touch less.
+  const g = statusGlyph(id, Math.round(s * (painted ? 0.86 : 0.82)));
   g.position.set(s / 2, s / 2);
   chip.addChild(g);
   const stacked = value ?? opts.value;

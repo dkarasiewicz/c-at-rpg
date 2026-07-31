@@ -209,7 +209,16 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 const isBoundary = (type: string): boolean =>
   type === "session.waiting" ||
   type === "session.completed" ||
-  type === "session.failed";
+  type === "session.failed" ||
+  // `turn.failed` MUST end the read. eve emits it when a turn errors — most
+  // often OUTPUT_SCHEMA_NOT_FULFILLED — and does not always follow it with a
+  // session-level event, so a reader waiting only for `session.*` sits on an
+  // open stream until its own timeout. Measured on the deployed agent: party
+  // generation stopped producing events at 14s and the creator kept spinning
+  // "The GM shuffles the deck" for the full 120s budget. The turn was over in
+  // seconds; only the client did not know. Failing fast turns a two-minute
+  // hang into a prompt fallback.
+  type === "turn.failed";
 
 /**
  * Read an NDJSON body line by line. Falls back to buffering the whole body
