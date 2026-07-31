@@ -234,6 +234,11 @@
       "file": "title-hero.png",
       "w": 1792,
       "h": 1015
+    },
+    "title:logo": {
+      "file": "title-logo.png",
+      "w": 512,
+      "h": 512
     }
   },
   "spriteFrame": {
