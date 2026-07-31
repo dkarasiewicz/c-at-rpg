@@ -3,7 +3,7 @@
  * Zero pixi, zero DOM, zero self-seeded randomness — every random helper takes
  * an `Rng` argument and consumes exactly the documented number of draws.
  */
-import type { Rng } from "./types";
+import type { Rng } from "./types.js";
 
 /**
  * Round half UP (0.5 always rounds toward +∞), the game-wide `round`:

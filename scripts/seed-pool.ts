@@ -22,15 +22,15 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { getPool } from "../api/_lib/pool";
+import { getPool } from "../api/_lib/pool.js";
 import {
   BUDGET_CAPS,
   lintPowerScript,
   normalizePower,
   STOCK_POWERS,
-} from "../api/_lib/powers";
-import { ART_STYLE } from "../src/content/artStyle";
-import type { PowerScript } from "../src/services/gmTypes";
+} from "../api/_lib/powers.js";
+import { ART_STYLE } from "../src/content/artStyle.js";
+import type { PowerScript } from "../src/services/gmTypes.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 

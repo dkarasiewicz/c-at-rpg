@@ -158,7 +158,29 @@ R3 Mora, R4 Baguette; marching order **is** initial battle ranks.
   tuning pass — the XP table itself does not move.
 - gameloop.md's 4 **meta-unlock alternate skills** conflicted with combat.md
   ("meta-unlocks out of scope") and would collide with the capstone slot: **CUT**
-  (see §11). Skill kit is exactly 12 class skills + Claw Swipe, no alternates.
+  (see §11). Meta-unlocks stay cut; the in-run skill kit was later widened by
+  progression.md (below) from 12 class skills to 24 — earned by levelling, not
+  by meta-progression.
+
+### 5b. Progression depth — **canonical doc: `design/progression.md`**
+
+Four additive systems layered on top of the above (v1.1). Every new
+`CatRunState` field is **optional**; absent ⇒ the behaviour described in §5.
+
+- **Whisker Points.** Each level-up L2..L8 also grants each cat 1 point, spent
+  from a fixed menu (`hp +3 · atk +1 · def +1 · spd +1 · crt +3 · enMax +1`),
+  capped at 4 points per stat per cat. An `hp` point raises current HP too.
+- **Milestone unlocks.** 3 skills known at L1, +1 at **L2 / L4 / L6 / L8** →
+  **7 known at cap** (24 class skills + Claw Swipe). The 12 new skills give
+  each cat a tool its starter kit lacks — Bruno pulls and shields, Pixel marks
+  and sweeps, Mora mass-pulls and mass-frazzles, Baguette cleanses, pre-buffs
+  and revives twice.
+- **Loadout.** A cat fights with **4** skills: Claw Swipe plus 3 chosen from
+  what it knows. Re-planned at the Landing, not in battle.
+- **Collars.** A universal **third equipment slot**, defensive/utility only
+  (never `atk`/`crt`): 8 defs, 3 Mewthical uniques on the existing hook menu.
+  20 % of wild equipment drops, plus one guaranteed Peddler slot per landing.
+- **Saves** are version 2; v1 saves migrate forward with no loss.
 
 ---
 

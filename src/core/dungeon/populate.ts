@@ -10,7 +10,7 @@
  * Per-entity derived seeds (`chestSeed`/`eventSeed`) come from core/rng hash —
  * open/trigger order can never perturb any other stream.
  */
-import { Tile } from "../types";
+import { Tile } from "../types.js";
 import type {
   EnemyDef,
   EnemyId,
@@ -20,12 +20,12 @@ import type {
   Rng,
   Roamer,
   Room,
-} from "../types";
-import { hash } from "../rng";
-import { ENEMIES } from "../../content/enemies";
-import { bfsFlood, idx, inBounds, recomputeVisibility } from "./floor";
-import type { Layout } from "./gen";
-import { LAIR_H } from "./gen";
+} from "../types.js";
+import { hash } from "../rng.js";
+import { ENEMIES } from "../../content/enemies.js";
+import { bfsFlood, idx, inBounds, recomputeVisibility } from "./floor.js";
+import type { Layout } from "./gen.js";
+import { LAIR_H } from "./gen.js";
 
 type ChestTableId = "chest_t1" | "chest_t2" | "chest_t3" | "boss_hoard";
 

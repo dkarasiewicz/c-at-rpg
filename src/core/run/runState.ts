@@ -23,28 +23,28 @@ import type {
   ScoreCounters,
   Skill,
   Stats,
-} from "../types";
-import type { PowerScript } from "../combat/powerTypes";
-import { EQUIP_DEFS } from "../../content/equipment";
-import { FLOORS } from "../../content/floors";
-import { STARTING_KIT } from "../../content/lootTables";
-import { generateFloor } from "../dungeon/gen";
-import { applyVictory } from "../dungeon/step";
+} from "../types.js";
+import type { PowerScript } from "../combat/powerTypes.js";
+import { EQUIP_DEFS } from "../../content/equipment.js";
+import { FLOORS } from "../../content/floors.js";
+import { STARTING_KIT } from "../../content/lootTables.js";
+import { generateFloor } from "../dungeon/gen.js";
+import { applyVictory } from "../dungeon/step.js";
 import {
   addConsumables,
   addShinies,
   applyGrant,
   applyGriefLoot,
   emptyInventory,
-} from "../loot/inventory";
-import { makeEquipInstance } from "../loot/roll";
+} from "../loot/inventory.js";
+import { makeEquipInstance } from "../loot/roll.js";
 import {
   applyLevelUps,
   expireFloorMods,
   levelForXp,
   maxHp,
   XP_CAP,
-} from "./party";
+} from "./party.js";
 
 /** Fixed party order (types.ts §2.9) — also the default marching order. */
 export const PARTY_ORDER: readonly ClassId[] = [

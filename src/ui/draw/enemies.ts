@@ -9,9 +9,9 @@
  * Graphics from `drawBossAura` so scenes can alpha-tween it).
  */
 import { Graphics, Text } from "pixi.js";
-import type { EnemyLook } from "../../core/types";
-import { PAL, THEMES, BANDANA_OUTLINE } from "../palette";
-import { mono } from "../textStyles";
+import type { EnemyLook } from "../../core/types.js";
+import { PAL, THEMES, BANDANA_OUTLINE } from "../palette.js";
+import { mono } from "../textStyles.js";
 
 const GRADE_SCALE: Record<EnemyLook["sizeGrade"], number> = {
   minion: 0.85,

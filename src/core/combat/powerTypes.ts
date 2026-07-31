@@ -17,7 +17,7 @@
  * powers ride as OPTIONAL parallel fields on the Powered* subtypes below, so
  * a setup without powers is byte-identical to today's engine behavior.
  */
-import type { BattleSetup, BattleState, StatusId } from "../types";
+import type { BattleSetup, BattleState, StatusId } from "../types.js";
 
 /* ------------------------------------------------------------------------ */
 /* Triggers, predicates, effects                                             */

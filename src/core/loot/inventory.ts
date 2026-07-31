@@ -11,15 +11,25 @@ import type {
   CatRunState,
   ConsumableStack,
   EquipInstance,
+  EquipSlot,
   Inventory,
   InventorySlot,
   ItemId,
   LootGrant,
   Rng,
   StatKey,
-} from "../types";
-import { EQUIP_DEFS } from "../../content/equipment";
-import { makeEquipInstance } from "./roll";
+} from "../types.js";
+import { EQUIP_SLOTS } from "../types.js";
+import { EQUIP_DEFS } from "../../content/equipment.js";
+import { makeEquipInstance } from "./roll.js";
+
+/**
+ * The cat's equipment slots, in display/iteration order (types.ts §2.6,
+ * progression.md §4). Re-exported here because every slot-generic helper in
+ * this file walks it — never hardcode `['weapon','trinket']` again.
+ */
+export { EQUIP_SLOTS };
+export type { EquipSlot };
 
 export const INVENTORY_SLOTS = 16;
 export const STACK_MAX = 5;
@@ -196,8 +206,8 @@ export function sortInventory(
 ): Inventory {
   const rarityRank = { stray: 0, sleek: 1, pedigree: 2, mewthical: 3 };
   const equips = inv.slots.filter(isEquip).sort((a, b) => {
-    const slotA = EQUIP_DEFS[a.defId].slot === "weapon" ? 0 : 1;
-    const slotB = EQUIP_DEFS[b.defId].slot === "weapon" ? 0 : 1;
+    const slotA = EQUIP_SLOTS.indexOf(EQUIP_DEFS[a.defId].slot);
+    const slotB = EQUIP_SLOTS.indexOf(EQUIP_DEFS[b.defId].slot);
     if (slotA !== slotB) return slotA - slotB;
     if (rarityRank[a.rarity] !== rarityRank[b.rarity])
       return rarityRank[b.rarity] - rarityRank[a.rarity];
@@ -215,10 +225,13 @@ export function sortInventory(
 /* equip / unequip (loot.md §2)                                        */
 /* ------------------------------------------------------------------ */
 
-/** Can this cat wear the item? Weapons are class-locked; trinkets universal. */
+/**
+ * Can this cat wear the item? Weapons are class-locked; trinkets and collars
+ * are universal (loot.md §2, progression.md §4).
+ */
 export function canEquip(cat: CatRunState, item: EquipInstance): boolean {
   const def = EQUIP_DEFS[item.defId];
-  return def.slot === "trinket" || def.classId === cat.classId;
+  return def.slot !== "weapon" || def.classId === cat.classId;
 }
 
 /**
@@ -244,12 +257,16 @@ export function equipItem(
   return { cat: next, replaced: un.removed };
 }
 
-/** Unequip a slot: current HP drops by the item's `hp` bonus, min 1. */
+/**
+ * Unequip a slot: current HP drops by the item's `hp` bonus, min 1. Slot-
+ * generic — an absent (`undefined`) collar on a pre-progression cat behaves
+ * exactly like an empty one.
+ */
 export function unequipItem(
   cat: CatRunState,
-  slot: "weapon" | "trinket",
+  slot: EquipSlot,
 ): { cat: CatRunState; removed: EquipInstance | null } {
-  const removed = cat[slot];
+  const removed = cat[slot] ?? null;
   if (!removed) return { cat, removed: null };
   return {
     cat: {
@@ -277,21 +294,18 @@ export function applyGriefLoot(
 } {
   const dropped: EquipInstance[] = [];
   const overflow: EquipInstance[] = [];
+  const stripped: CatRunState = { ...cat };
   let cur = inv;
-  for (const slot of ["weapon", "trinket"] as const) {
+  for (const slot of EQUIP_SLOTS) {
     const item = cat[slot];
     if (!item) continue;
+    stripped[slot] = null;
     dropped.push(item);
     const r = addEquip(cur, item);
     cur = r.inv;
     if (!r.added) overflow.push(item);
   }
-  return {
-    cat: { ...cat, weapon: null, trinket: null },
-    inv: cur,
-    dropped,
-    overflow,
-  };
+  return { cat: stripped, inv: cur, dropped, overflow };
 }
 
 /* ------------------------------------------------------------------ */
@@ -336,7 +350,7 @@ export type MoultResult =
       cats: CatRunState[];
       inv: Inventory;
       catIndex: number;
-      slot: "weapon" | "trinket";
+      slot: EquipSlot;
       before: EquipInstance;
       /** null = the item was Stray and is destroyed */
       after: EquipInstance | null;
@@ -364,11 +378,12 @@ export function applyMoult(
   inv: Inventory,
   fallbackDamage = 12,
 ): MoultResult {
-  const equipped: { catIndex: number; slot: "weapon" | "trinket" }[] = [];
+  const equipped: { catIndex: number; slot: EquipSlot }[] = [];
   cats.forEach((cat, catIndex) => {
     if (cat.lives <= 0) return;
-    if (cat.weapon) equipped.push({ catIndex, slot: "weapon" });
-    if (cat.trinket) equipped.push({ catIndex, slot: "trinket" });
+    for (const slot of EQUIP_SLOTS) {
+      if (cat[slot]) equipped.push({ catIndex, slot });
+    }
   });
 
   if (equipped.length === 0) {

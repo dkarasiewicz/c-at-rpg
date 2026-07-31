@@ -15,32 +15,32 @@ import type {
   BattleState,
   ClassId,
   Rng,
-} from "../src/core/types";
+} from "../src/core/types.js";
 import type {
   PoweredBattleSetup,
   PoweredBattleState,
   PowerScript,
-} from "../src/core/combat/powerTypes";
+} from "../src/core/combat/powerTypes.js";
 import {
   BUDGET_CAPS,
   capForCombatantId,
   powerBudget,
   validatePowerScript,
-} from "../src/core/combat/powers";
-import { CAT_POWERS, ENEMY_POWERS } from "../src/content/powers";
-import { CLASSES } from "../src/content/classes";
-import { hash, mulberry32 } from "../src/core/rng";
-import { createBattle } from "../src/core/combat/setup";
-import { resolveAction } from "../src/core/combat/resolve";
-import { startRound } from "../src/core/combat/turns";
-import { takeEnemyTurn } from "../src/core/combat/ai";
+} from "../src/core/combat/powers.js";
+import { CAT_POWERS, ENEMY_POWERS } from "../src/content/powers.js";
+import { CLASSES } from "../src/content/classes.js";
+import { hash, mulberry32 } from "../src/core/rng.js";
+import { createBattle } from "../src/core/combat/setup.js";
+import { resolveAction } from "../src/core/combat/resolve.js";
+import { startRound } from "../src/core/combat/turns.js";
+import { takeEnemyTurn } from "../src/core/combat/ai.js";
 import {
   byId,
   hasStatus,
   legalActions,
   nextActor,
   statusesOf,
-} from "../src/core/combat/state";
+} from "../src/core/combat/state.js";
 
 /* ------------------------------------------------------------------ */
 /* helpers (mirrors combat.spec.ts)                                    */

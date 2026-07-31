@@ -9,8 +9,8 @@
  * and asserted equal to `powerBudget(script)` in tests/powers.spec.ts —
  * all under their caps (cat 12; enemy tier 2 → 9, tier 3 → 12).
  */
-import type { ClassId, EnemyId } from "../core/types";
-import type { PowerScript } from "../core/combat/powerTypes";
+import type { ClassId, EnemyId } from "../core/types.js";
+import type { PowerScript } from "../core/combat/powerTypes.js";
 
 /** Stock cat powers, keyed by ClassId (attach as 'cat:<classId>'). */
 export const CAT_POWERS: Partial<Record<ClassId, PowerScript>> = {

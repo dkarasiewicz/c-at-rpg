@@ -2,7 +2,7 @@
  * POST /api/gm/party — free-text cat descriptions → 4 legal CatClass-shaped
  * kits + Stand names/visual prompts (gm-system.md).
  *
- * Uses GM_PARTY_MODEL (default claude-sonnet-5): the one-per-run creative
+ * Uses GM_PARTY_MODEL (default anthropic/claude-sonnet-5): the one-per-run creative
  * ask. Structured outputs guarantee the JSON shape; api/_lib/constraints
  * enforces the classes.md budgets server-side with one regenerate-on-invalid
  * retry. Valid parties are written to the shared "stands" pool.
@@ -10,14 +10,14 @@
  * Masonry sprite jobs are NOT enqueued yet (scaffold) — the client keeps the
  * procedural fallback sprites; see docs/GM-DEPLOY.md.
  */
-import { ART_STYLE } from "../../src/content/artStyle";
+import { ART_STYLE } from "../../src/content/artStyle.js";
 import type {
   GeneratedCatKit,
   GmPartyResponse,
-} from "../../src/services/gmTypes";
-import { getAnthropicGen, gmPartyModel } from "../_lib/anthropic";
-import { composeArtPrompt } from "../_lib/artPrompt";
-import { lintParty, ROLE_STAT_TOTALS } from "../_lib/constraints";
+} from "../../src/services/gmTypes.js";
+import { getAnthropicGen, gmPartyModel } from "../_lib/anthropic.js";
+import { composeArtPrompt } from "../_lib/artPrompt.js";
+import { lintParty, ROLE_STAT_TOTALS } from "../_lib/constraints.js";
 import {
   BUDGET_CAPS,
   EFFECT_CAPS,
@@ -26,21 +26,22 @@ import {
   POWER_FRAMEWORK_VERSION,
   POWER_SCHEMA,
   STOCK_POWERS,
-} from "../_lib/powers";
+} from "../_lib/powers.js";
 import {
   GmGenerationError,
   generateValidated,
   type LintResult,
   type StructuredGenClient,
-} from "../_lib/generate";
+} from "../_lib/generate.js";
 import {
   errorJson,
   json,
   rateLimit,
   readJson,
   requirePost,
-} from "../_lib/http";
-import { getPool, type PoolStore } from "../_lib/pool";
+  vercelHandler,
+} from "../_lib/http.js";
+import { getPool, type PoolStore } from "../_lib/pool.js";
 
 /* ------------------------------------------------------------------------ */
 /* JSON schema (hand-written to match GeneratedCatKit)                       */
@@ -372,7 +373,7 @@ export function createPartyHandler(deps: PartyDeps) {
 
 let deps: PartyDeps | null = null;
 
-export default async function handler(req: Request): Promise<Response> {
+export default vercelHandler(async (req) => {
   deps ??= { gen: getAnthropicGen(), pool: getPool() };
   return createPartyHandler(deps)(req);
-}
+});

@@ -7,7 +7,7 @@
  *
  * Data only: imports core/types.ts and nothing else.
  */
-import type { ItemId, Rarity } from "../core/types";
+import type { EquipSlot, ItemId, Rarity } from "../core/types.js";
 
 /**
  * The single consumable table every source references — loot.md §7.
@@ -36,6 +36,29 @@ export const RARITY_WEIGHTS: Record<
   f34: { stray: 30, sleek: 40, pedigree: 25, mewthical: 5 },
   f56: { stray: 15, sleek: 35, pedigree: 40, mewthical: 10 },
 };
+
+/**
+ * Equipment SLOT roll — loot.md §5 step ⑤, extended for the collar slot
+ * (progression.md §4). The weapon band keeps its original 1..40 range so the
+ * documented `weapon 40 / trinket 60` split becomes `40 / 40 / 20`: one in
+ * five wild equipment drops is now a collar, and no existing recorded stream
+ * changes hands at the weapon/trinket boundary.
+ */
+export const EQUIP_SLOT_WEIGHTS: { slot: EquipSlot; weight: number }[] = [
+  { slot: "weapon", weight: 40 },
+  { slot: "trinket", weight: 40 },
+  { slot: "collar", weight: 20 },
+];
+
+/**
+ * The Peddler's *gear* slot keeps the original two-slot ladder — the shop
+ * stocks a collar in its own dedicated slot every landing (loot.md §6 +
+ * progression.md §4), so rolling collars twice there would flood the stall.
+ */
+export const SHOP_GEAR_SLOT_WEIGHTS: { slot: EquipSlot; weight: number }[] = [
+  { slot: "weapon", weight: 40 },
+  { slot: "trinket", weight: 60 },
+];
 
 /** Chest draw table — 2 independent draws per chest, each on this (§5b). */
 export const CHEST_DRAWS: {

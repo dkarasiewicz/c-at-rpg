@@ -18,9 +18,9 @@ import type {
   Outcome,
   Rng,
   RunState,
-} from "../src/core/types";
-import { hash, mulberry32 } from "../src/core/rng";
-import { eligibleEvents, selectEvent } from "../src/core/events/select";
+} from "../src/core/types.js";
+import { hash, mulberry32 } from "../src/core/rng.js";
+import { eligibleEvents, selectEvent } from "../src/core/events/select.js";
 import {
   applyEventEffects,
   effectiveGateStat,
@@ -28,11 +28,11 @@ import {
   isOptionAvailable,
   resolveOption,
   resolveScalar,
-} from "../src/core/events/resolve";
-import { validateEvents } from "../src/core/events/validate";
-import { EVENTS } from "../src/content/events";
-import { CLASSES } from "../src/content/classes";
-import { CONSUMABLES } from "../src/content/consumables";
+} from "../src/core/events/resolve.js";
+import { validateEvents } from "../src/core/events/validate.js";
+import { EVENTS } from "../src/content/events.js";
+import { CLASSES } from "../src/content/classes.js";
+import { CONSUMABLES } from "../src/content/consumables.js";
 
 /* ------------------------------------------------------------------------ */
 /* Fixtures & instrumented Rng                                               */

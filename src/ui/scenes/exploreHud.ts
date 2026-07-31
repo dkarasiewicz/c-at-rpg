@@ -1,53 +1,40 @@
 /**
- * WP-10 — exploration HUD (ui-art §7, gameloop.md §3, GDD §7 rulings):
- * floor/seed chips, the four cat cards (portrait, HP bar, Lives paw row),
- * shiny counter, the item belt (all owned consumables shown; only Tuna
- * Snack / Sardine Tin pressable outside battle — others disabled with a
- * "battle only" tooltip), toasts, and the Tab marching-order panel.
+ * WP-10 (visual v3) — exploration HUD, re-chromed through the shared UI kit.
+ *
+ * Everything the old HUD hand-rolled (flat rects, procedural head glyphs,
+ * bespoke bars) now goes through `widgets.panel / avatar / bar / label /
+ * heading`, so the explore screen reads as the same game as results, battle
+ * and landing. Contents are unchanged: the header rail (floor + seed + key
+ * hints), the four cat cards (painted portrait, HP bar, Lives paw row), the
+ * shinies chip, the item belt (all owned consumables shown; only Tuna Snack
+ * / Sardine Tin pressable outside battle — GDD §7), toasts, and the Tab
+ * marching-order panel.
  *
  * Pure presentation + input: every gameplay mutation goes through the
  * callbacks the explore scene provides (UI never computes outcomes).
  */
-import { Container, Graphics, Sprite, Text } from "pixi.js";
-import type { ClassId, ItemId, RunState } from "../../core/types";
-import { CONSUMABLES } from "../../content/consumables";
-import { CLASSES } from "../../content/classes";
-import { FLOORS } from "../../content/floors";
-import { isStack } from "../../core/loot/inventory";
-import { maxHp } from "../../core/run/party";
-import { PAL, THEMES } from "../palette";
-import { R, RADIUS, rh, rw, rx, ry } from "../layout";
-import { mono, ui } from "../textStyles";
+import { Container, Graphics, Text } from "pixi.js";
+import type { ClassId, ItemId, RunState } from "../../core/types.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { CLASSES } from "../../content/classes.js";
+import { FLOORS } from "../../content/floors.js";
+import { isStack } from "../../core/loot/inventory.js";
+import { maxHp } from "../../core/run/party.js";
+import { PAL, THEMES } from "../palette.js";
+import { RADIUS, rcx, rh, rw, rx, ry } from "../layout.js";
+import { mono } from "../textStyles.js";
 import {
-  makeBar,
-  makePanel,
+  avatar,
+  bar,
+  heading,
+  label,
   makePawRow,
   makeSpriteIcon,
   makeTooltip,
-} from "../widgets";
-import { drawCatPortrait } from "../draw/cats";
-import { portraitTexture } from "../sprites";
-
-/**
- * Cat HUD portrait: generated `portrait:<id>` sprite when the manifest has
- * one (visual-v2), procedural head recipe otherwise. Centered on (0, 0),
- * `size` px square. `ko` greys the sprite / draws the ×-eyed variant.
- */
-function makeHudPortrait(classId: ClassId, ko: boolean, size = 48): Container {
-  const holder = new Container();
-  const tex = portraitTexture(classId);
-  if (tex) {
-    const sp = new Sprite({ texture: tex, anchor: 0.5 });
-    sp.scale.set(size / Math.max(tex.width, tex.height));
-    if (ko) sp.tint = 0x777788;
-    holder.addChild(sp);
-    return holder;
-  }
-  const g = new Graphics();
-  drawCatPortrait(g, classId, ko);
-  holder.addChild(g);
-  return holder;
-}
+  panel,
+} from "../widgets.js";
+import { makeLegend } from "../draw/mapIcons.js";
+import { EX, MARCH_PANEL } from "./exploreLayout.js";
 
 export interface HudCallbacks {
   getRun(): RunState;
@@ -66,6 +53,10 @@ interface BeltEntry {
 export const themeIndex = (floorNum: number): number =>
   Math.min(THEMES.length - 1, Math.floor((floorNum - 1) / 2));
 
+/** Display name of a floor (content table first, theme band as fallback). */
+export const floorName = (floorNum: number): string =>
+  FLOORS[floorNum - 1]?.name ?? THEMES[themeIndex(floorNum)].name;
+
 function beltEntries(run: RunState): BeltEntry[] {
   const byId = new Map<ItemId, number>();
   for (const slot of run.inventory.slots) {
@@ -74,6 +65,9 @@ function beltEntries(run: RunState): BeltEntry[] {
   }
   return [...byId.entries()].map(([defId, count]) => ({ defId, count }));
 }
+
+const KEY_HINTS =
+  "WASD / ↑↓←→ move · [E] descend · [M] map · [Tab] order · [Esc] menu";
 
 export class ExploreHud {
   readonly view = new Container();
@@ -86,6 +80,9 @@ export class ExploreHud {
   private readonly marching = new Container();
   private readonly pickRings = new Container();
   private tooltip: Container | null = null;
+
+  private readonly objective = new Container();
+  private objectiveSig = "";
 
   private toastTimer = 0; // ms left; Infinity = sticky
   private pickDefId: ItemId | null = null;
@@ -100,41 +97,72 @@ export class ExploreHud {
   constructor(cbs: HudCallbacks) {
     this.cbs = cbs;
     const run = cbs.getRun();
-
-    // ---- bottom party strip (full-bleed, square corners) --------------
-    const strip = new Graphics()
-      .rect(0, ry(R.explore.partyStrip), 1280, rh(R.explore.partyStrip))
-      .fill(PAL.panel)
-      .moveTo(0, ry(R.explore.partyStrip))
-      .lineTo(1280, ry(R.explore.partyStrip))
-      .stroke({ width: 2, color: PAL.border });
-
-    // ---- floor + seed chips -------------------------------------------
-    const floorChip = new Container();
-    floorChip.position.set(rx(R.explore.floorChip), ry(R.explore.floorChip));
-    floorChip.addChild(
-      makePanel(rw(R.explore.floorChip), rh(R.explore.floorChip)),
-    );
     const th = THEMES[themeIndex(run.floorNum)];
-    const dot = new Graphics().circle(16, 18, 5).fill(th.accent);
-    const floorName = FLOORS[run.floorNum - 1]?.name ?? th.name;
-    const floorTxt = new Text({
-      text: `Floor ${run.floorNum} — ${floorName}`,
-      style: ui(14, { fontWeight: "bold" }),
-    });
-    floorTxt.position.set(28, 9);
-    floorChip.addChild(dot, floorTxt);
 
-    const seedTxt = new Text({
-      text: `seed ${run.runSeed}`,
-      style: mono(11, { fill: PAL.textDim }),
+    // ---- bottom party strip (full bleed, square corners) --------------
+    // Hand-drawn rather than a kit `panel()`: a 1280×92 full-bleed plate has
+    // no corners, no visible drop shadow (it runs off three screen edges) and
+    // no free sides for the sheen — the kit call would cost thirteen
+    // screen-wide blends a frame to render one lit top edge. Same tokens.
+    const strip = new Container();
+    strip.position.set(rx(EX.strip), ry(EX.strip));
+    strip.addChild(
+      new Graphics()
+        .rect(0, 0, rw(EX.strip), rh(EX.strip))
+        .fill({ color: PAL.panel, alpha: 0.96 })
+        .rect(0, 0, rw(EX.strip), 1)
+        .fill({ color: PAL.sheen, alpha: 0.1 })
+        .moveTo(0, 0)
+        .lineTo(rw(EX.strip), 0)
+        .stroke({ width: 2, color: PAL.border }),
+    );
+
+    // ---- header rail: floor identity + the key map --------------------
+    const header = new Container();
+    header.position.set(rx(EX.header), ry(EX.header));
+    header.addChild(panel(rw(EX.header), rh(EX.header), { variant: "glass" }));
+    header.addChild(
+      new Graphics()
+        .circle(16, rh(EX.header) / 2, 5)
+        .fill(th.accent)
+        .stroke({ width: 1, color: PAL.void, alpha: 0.6 }),
+    );
+    const title = label(
+      `FLOOR ${run.floorNum} · ${floorName(run.floorNum).toUpperCase()}`,
+      { size: 13, bold: true },
+    );
+    title.position.set(30, rh(EX.header) / 2 - 8);
+    const seed = label(`seed ${run.runSeed}`, {
+      size: 11,
+      mono: true,
+      dim: true,
     });
-    seedTxt.position.set(rx(R.explore.seedChip), ry(R.explore.seedChip));
+    seed.position.set(30 + title.width + 16, rh(EX.header) / 2 - 7);
+    const hints = label(KEY_HINTS, { size: 11, dim: true });
+    hints.anchor.set(1, 0.5);
+    hints.position.set(rw(EX.header) - 14, rh(EX.header) / 2);
+    header.addChild(title, seed, hints);
+
+    // ---- right column: map key + this-floor status --------------------
+    const side = new Container();
+    side.position.set(rx(EX.legend), ry(EX.legend));
+    side.addChild(panel(rw(EX.legend), rh(EX.legend)));
+    const keyTitle = heading("MAP KEY", 3);
+    keyTitle.position.set(14, 12);
+    const legend = makeLegend({ rowH: 20, icon: 11, text: 11 });
+    legend.position.set(18, 32);
+    const rule = new Graphics()
+      .rect(14, 160, rw(EX.legend) - 28, 1)
+      .fill({ color: PAL.border, alpha: 0.8 });
+    const statusTitle = heading("THIS FLOOR", 3);
+    statusTitle.position.set(14, 172);
+    this.objective.position.set(14, 194);
+    side.addChild(keyTitle, legend, rule, statusTitle, this.objective);
 
     this.view.addChild(
       strip,
-      floorChip,
-      seedTxt,
+      header,
+      side,
       this.cards,
       this.pickRings,
       this.goldChip,
@@ -158,20 +186,49 @@ export class ExploreHud {
     return this.marchOpen;
   }
 
-  /** Toast at ui-art §7's rect; `stickyMs = 0` keeps it until hideToast. */
+  /** Toast inside the viewport; `stickyMs = 0` keeps it until hideToast. */
   showToast(text: string, stickyMs = 2500): void {
     this.toastBox
       .removeChildren()
       .forEach((c) => c.destroy({ children: true }));
     const box = new Container();
-    box.position.set(rx(R.explore.toast), ry(R.explore.toast));
-    box.addChild(makePanel(rw(R.explore.toast), rh(R.explore.toast)));
-    const txt = new Text({ text, style: ui(14) });
-    txt.anchor.set(0.5);
-    txt.position.set(rw(R.explore.toast) / 2, rh(R.explore.toast) / 2);
+    box.position.set(rx(EX.toast), ry(EX.toast));
+    box.addChild(
+      panel(rw(EX.toast), rh(EX.toast), {
+        variant: "raised",
+        accent: PAL.gold,
+      }),
+    );
+    const txt = label(text, { size: 14, center: true });
+    txt.position.set(rw(EX.toast) / 2, rh(EX.toast) / 2);
     box.addChild(txt);
     this.toastBox.addChild(box);
     this.toastTimer = stickyMs === 0 ? Infinity : stickyMs;
+  }
+
+  /**
+   * The "THIS FLOOR" block in the right column: one line per fact the party
+   * has actually learned (stairs found / locked, packs still prowling, loose
+   * chests). Purely a readout of FloorState — no gameplay decisions here.
+   */
+  setObjective(lines: readonly { text: string; tone?: number }[]): void {
+    const sig = lines.map((l) => `${l.text}|${l.tone ?? 0}`).join("\n");
+    if (sig === this.objectiveSig) return;
+    this.objectiveSig = sig;
+    this.objective
+      .removeChildren()
+      .forEach((c) => c.destroy({ children: true }));
+    let y = 0;
+    for (const line of lines) {
+      const t = label(line.text, {
+        size: 12,
+        wrap: rw(EX.legend) - 32,
+        ...(line.tone !== undefined ? { fill: line.tone } : { dim: true }),
+      });
+      t.position.set(0, y);
+      this.objective.addChild(t);
+      y += Math.ceil(t.height) + 6;
+    }
   }
 
   hideToast(): void {
@@ -261,51 +318,72 @@ export class ExploreHud {
       .removeChildren()
       .forEach((c) => c.destroy({ children: true }));
     run.cats.forEach((cat, i) => {
-      const r = R.explore.catCards[i];
+      const r = EX.cards[i];
+      if (!r) return;
+      const w = rw(r);
+      const h = rh(r);
+      const gone = cat.lives <= 0;
+      const lead = run.marchingOrder[0] === cat.classId;
+
       const card = new Container();
       card.position.set(rx(r), ry(r));
       card.addChild(
-        new Graphics()
-          .roundRect(0, 0, rw(r), rh(r), RADIUS.button)
-          .fill({ color: PAL.panelLite, alpha: 0.55 })
-          .stroke({ width: 1, color: PAL.border }),
+        panel(w, h, {
+          variant: "glass",
+          accent: gone ? PAL.textDim : PAL[cat.classId].body,
+        }),
       );
-      const gone = cat.lives <= 0;
-      const portrait = makeHudPortrait(cat.classId, gone);
-      portrait.position.set(8 + 24, 10 + 24);
-      card.addChild(portrait);
+
+      const face = avatar(cat.classId, 48, {
+        shape: "rounded",
+        dead: gone,
+        ...(lead && !gone ? { ring: PAL.gold } : {}),
+      });
+      face.position.set(38, h / 2);
+      card.addChild(face);
 
       const cls = CLASSES[cat.classId];
-      const name = new Text({
-        text: cls.catName,
-        style: ui(13, { fontWeight: "bold", fill: PAL[cat.classId].body }),
+      const name = label(cls.catName, {
+        size: 13,
+        bold: true,
+        fill: gone ? PAL.textDim : PAL[cat.classId].body,
       });
-      name.position.set(64, 6);
+      name.position.set(70, 8);
       card.addChild(name);
 
+      if (lead && !gone) {
+        const leadTag = label("LEAD", { size: 9, mono: true, fill: PAL.gold });
+        leadTag.anchor.set(1, 0);
+        leadTag.position.set(w - 12, 9);
+        card.addChild(leadTag);
+      }
+
       const max = maxHp(cat, run.level);
-      const bar = makeBar(120, 10);
-      bar.view.position.set(64, 26);
-      bar.set(cat.hp / max, false);
-      const hpTxt = new Text({
-        text: `${cat.hp}/${max}`,
-        style: mono(11, { fill: PAL.textDim }),
+      const hp = bar(112, 9, { kind: "hp" });
+      hp.view.position.set(70, 28);
+      hp.set(cat.hp, max, false);
+      const hpTxt = label(`${cat.hp}/${max}`, {
+        size: 11,
+        mono: true,
+        dim: true,
       });
-      hpTxt.position.set(190, 24);
-      card.addChild(bar.view, hpTxt);
+      hpTxt.anchor.set(1, 0);
+      hpTxt.position.set(w - 12, 25);
+      card.addChild(hp.view, hpTxt);
 
       const paws = makePawRow(cat.lives);
-      paws.view.position.set(64, 46);
+      paws.view.position.set(70, 46);
       card.addChild(paws.view);
 
       if (gone) {
-        card.alpha = 0.35;
-        const goneTxt = new Text({
-          text: "GONE",
-          style: ui(11, { fontWeight: "bold", fill: PAL.danger }),
+        card.alpha = 0.4;
+        const goneTxt = label("GONE", {
+          size: 11,
+          bold: true,
+          fill: PAL.danger,
+          center: true,
         });
-        goneTxt.anchor.set(0.5);
-        goneTxt.position.set(rw(r) / 2, rh(r) / 2);
+        goneTxt.position.set(w / 2, h / 2);
         goneTxt.rotation = -0.12;
         card.addChild(goneTxt);
       } else {
@@ -319,7 +397,7 @@ export class ExploreHud {
         });
         // gold target ring, shown only during belt target-pick
         const ring = new Graphics()
-          .roundRect(rx(r) - 2, ry(r) - 2, rw(r) + 4, rh(r) + 4, RADIUS.button)
+          .roundRect(rx(r) - 3, ry(r) - 3, w + 6, h + 6, RADIUS.panel + 2)
           .stroke({ width: 2, color: PAL.gold });
         ring.visible = this.pickDefId !== null;
         this.pickRings.addChild(ring);
@@ -332,59 +410,81 @@ export class ExploreHud {
     this.goldChip
       .removeChildren()
       .forEach((c) => c.destroy({ children: true }));
-    const r = R.explore.goldChip;
+    const r = EX.goldChip;
     const chip = new Container();
     chip.position.set(rx(r), ry(r));
+    chip.addChild(panel(rw(r), rh(r), { variant: "glass" }));
     chip.addChild(
       new Graphics()
-        .circle(12, rh(r) / 2, 7)
+        .circle(18, rh(r) / 2, 7)
         .fill(PAL.gold)
         .stroke({ width: 2, color: PAL.goldDark }),
     );
-    const txt = new Text({
-      text: `${run.inventory.shinies} ✦`,
-      style: ui(14, { fontWeight: "bold" }),
+    const txt = label(`${run.inventory.shinies}`, {
+      size: 15,
+      bold: true,
+      fill: PAL.gold,
     });
-    txt.position.set(26, rh(r) / 2 - 10);
-    chip.addChild(txt);
+    txt.position.set(32, rh(r) / 2 - 9);
+    const unit = label("shinies", { size: 11, dim: true });
+    unit.anchor.set(1, 0.5);
+    unit.position.set(rw(r) - 12, rh(r) / 2);
+    chip.addChild(txt, unit);
     this.goldChip.addChild(chip);
   }
 
   private buildBelt(run: RunState): void {
     this.belt.removeChildren().forEach((c) => c.destroy({ children: true }));
     this.clearTooltip();
-    const r = R.explore.itemChips;
+    const r = EX.belt;
     const entries = beltEntries(run);
-    entries.slice(0, 9).forEach((entry, i) => {
+    const size = 26;
+    const gap = 4;
+    const holder = new Container();
+    holder.position.set(rx(r), ry(r));
+    this.belt.addChild(holder);
+
+    if (entries.length === 0) {
+      const empty = label("belt empty", { size: 11, dim: true });
+      empty.position.set(2, (rh(r) - 14) / 2);
+      holder.addChild(empty);
+      return;
+    }
+
+    entries.slice(0, 8).forEach((entry, i) => {
       const def = CONSUMABLES[entry.defId];
       const usable = def?.explore !== undefined;
       const chip = new Container();
-      chip.position.set(rx(r) + i * 24, ry(r));
+      chip.position.set(i * (size + gap), (rh(r) - size) / 2);
       chip.addChild(
         new Graphics()
-          .roundRect(0, 0, 22, 22, RADIUS.chip)
-          .fill(PAL.panel)
+          .roundRect(0, 0, size, size, RADIUS.chip)
+          .fill({ color: PAL.panelLite, alpha: 0.9 })
           .stroke({ width: 1, color: usable ? PAL.gold : PAL.border }),
       );
-      const art = makeSpriteIcon(`item:${entry.defId}`, 18);
+      const art = makeSpriteIcon(`item:${entry.defId}`, size - 6);
       let icon: Container;
       if (art) {
-        art.position.set(11, 11);
+        art.position.set(size / 2, size / 2);
         icon = art;
       } else {
-        const glyph = new Text({ text: def?.icon ?? "?", style: mono(12) });
+        const glyph = new Text({
+          text: def?.icon ?? "?",
+          style: mono(13),
+        });
         glyph.anchor.set(0.5);
-        glyph.position.set(11, 10);
+        glyph.position.set(size / 2, size / 2 - 1);
         icon = glyph;
       }
-      const count = new Text({
-        text: String(entry.count),
-        style: mono(9, { fill: PAL.textDim }),
+      const count = label(String(entry.count), {
+        size: 9,
+        mono: true,
+        dim: true,
       });
       count.anchor.set(1, 1);
-      count.position.set(22, 24);
+      count.position.set(size - 1, size + 1);
       chip.addChild(icon, count);
-      if (!usable) chip.alpha = 0.55;
+      if (!usable) chip.alpha = 0.5;
 
       chip.eventMode = "static";
       chip.cursor = usable ? "pointer" : "default";
@@ -399,14 +499,16 @@ export class ExploreHud {
         this.tooltip = makeTooltip(
           usable ? def.name : `${def?.name} — battle only`,
         );
+        // above the whole strip, not just the belt row — otherwise it lands
+        // on top of the shinies chip
         this.tooltip.position.set(
-          Math.min(chip.position.x, 1280 - this.tooltip.width - 4),
-          ry(r) - this.tooltip.height - 4,
+          Math.min(rx(r) + i * (size + gap), 1280 - this.tooltip.width - 6),
+          ry(EX.strip) - this.tooltip.height - 6,
         );
         this.view.addChild(this.tooltip);
       });
       chip.on("pointerout", () => this.clearTooltip());
-      this.belt.addChild(chip);
+      holder.addChild(chip);
     });
   }
 
@@ -446,29 +548,39 @@ export class ExploreHud {
     this.marching
       .removeChildren()
       .forEach((c) => c.destroy({ children: true }));
-    const rowH = 52;
-    const w = 420;
-    const h = 52 + this.order.length * rowH + 34;
-    const px = (1280 - w) / 2;
-    const py = (632 - h) / 2;
-    const panel = new Container();
-    panel.position.set(px, py);
-    panel.addChild(makePanel(w, h));
-    const title = new Text({
-      text: "MARCHING ORDER",
-      style: ui(16, { fontWeight: "bold", fill: PAL.gold }),
+    const rowH = MARCH_PANEL.rowH;
+    const w = MARCH_PANEL.w;
+    const h = 60 + this.order.length * rowH + 36;
+    const cx = rcx(EX.viewport);
+    const cy = ry(EX.viewport) + rh(EX.viewport) / 2;
+
+    const wrap = new Container();
+    wrap.position.set(Math.round(cx - w / 2), Math.round(cy - h / 2));
+    wrap.addChild(panel(w, h, { variant: "raised", accent: PAL.gold }));
+    const title = label("MARCHING ORDER", {
+      size: 15,
+      bold: true,
+      fill: PAL.gold,
     });
-    title.position.set(16, 12);
-    panel.addChild(title);
+    title.position.set(18, 14);
+    const sub = label("front of the line takes the first swipe", {
+      size: 11,
+      dim: true,
+    });
+    sub.position.set(18, 34);
+    wrap.addChild(title, sub);
 
     this.order.forEach((classId, i) => {
       const row = new Container();
-      row.position.set(12, 44 + i * rowH);
+      row.position.set(14, 58 + i * rowH);
       const selected = i === this.sel;
       row.addChild(
         new Graphics()
-          .roundRect(0, 0, w - 24, rowH - 6, RADIUS.button)
-          .fill(selected ? PAL.panelLite : PAL.panel)
+          .roundRect(0, 0, w - 28, rowH - 6, RADIUS.button)
+          .fill({
+            color: selected ? PAL.panelLite : PAL.panel,
+            alpha: 0.95,
+          })
           .stroke({
             width: 2,
             color: selected
@@ -478,20 +590,20 @@ export class ExploreHud {
               : PAL.border,
           }),
       );
-      const rank = new Text({
-        text: String(i + 1),
-        style: mono(14, { fill: PAL.gold }),
+      const rank = label(String(i + 1), {
+        size: 14,
+        mono: true,
+        fill: PAL.gold,
       });
-      rank.position.set(12, 14);
-      const portrait = makeHudPortrait(classId, false);
-      portrait.scale.set(0.7);
-      portrait.position.set(52, 22);
-      const name = new Text({
-        text: `${CLASSES[classId].catName} — ${CLASSES[classId].className}`,
-        style: ui(14, { fontWeight: "bold", fill: PAL[classId].body }),
-      });
-      name.position.set(84, 12);
-      row.addChild(rank, portrait, name);
+      rank.position.set(14, rowH / 2 - 11);
+      const face = avatar(classId, 34, { shape: "rounded" });
+      face.position.set(52, rowH / 2 - 3);
+      const name = label(
+        `${CLASSES[classId].catName} — ${CLASSES[classId].className}`,
+        { size: 14, bold: true, fill: PAL[classId].body },
+      );
+      name.position.set(78, rowH / 2 - 12);
+      row.addChild(rank, face, name);
       row.eventMode = "static";
       row.cursor = "pointer";
       row.on("pointertap", () => {
@@ -507,17 +619,17 @@ export class ExploreHud {
         }
         this.buildMarching();
       });
-      panel.addChild(row);
+      wrap.addChild(row);
     });
 
-    const hint = new Text({
-      text: this.grabbed
+    const hint = label(
+      this.grabbed
         ? "↑/↓ move cat · Enter drop · Tab close"
         : "↑/↓ select · Enter grab · Tab close",
-      style: ui(11, { fill: PAL.textDim }),
-    });
-    hint.position.set(16, h - 24);
-    panel.addChild(hint);
-    this.marching.addChild(panel);
+      { size: 11, dim: true },
+    );
+    hint.position.set(18, h - 26);
+    wrap.addChild(hint);
+    this.marching.addChild(wrap);
   }
 }

@@ -10,16 +10,16 @@
  * from seed + delta overlay), version gate, and MetaFile records.
  */
 import { describe, expect, it } from "vitest";
-import { recomputeVisibility } from "../src/core/dungeon/floor";
+import { recomputeVisibility } from "../src/core/dungeon/floor.js";
 import type {
   BattleResult,
   CatRunState,
   RunState,
   ScoreCounters,
-} from "../src/core/types";
-import { EQUIP_DEFS } from "../src/content/equipment";
-import { makeEquipInstance } from "../src/core/loot/roll";
-import { isStack } from "../src/core/loot/inventory";
+} from "../src/core/types.js";
+import { EQUIP_DEFS } from "../src/content/equipment.js";
+import { makeEquipInstance } from "../src/core/loot/roll.js";
+import { isStack } from "../src/core/loot/inventory.js";
 import {
   applyLevelUps,
   effectiveStats,
@@ -30,7 +30,7 @@ import {
   skillsForLevel,
   traitTier,
   XP_CAP,
-} from "../src/core/run/party";
+} from "../src/core/run/party.js";
 import {
   applyBattleResult,
   applyLootGrant,
@@ -40,8 +40,8 @@ import {
   markEventFired,
   newRun,
   PARTY_ORDER,
-} from "../src/core/run/runState";
-import { computeScore, VICTORY_BONUS } from "../src/core/run/score";
+} from "../src/core/run/runState.js";
+import { computeScore, VICTORY_BONUS } from "../src/core/run/score.js";
 import {
   deleteSave,
   deserializeRun,
@@ -54,7 +54,7 @@ import {
   saveMeta,
   saveRun,
   serializeRun,
-} from "../src/core/run/save";
+} from "../src/core/run/save.js";
 
 const SEED = "MEOW-1987";
 
@@ -592,13 +592,24 @@ describe("save", () => {
     expect(loaded).toEqual(run);
   });
 
-  it("version mismatch silently deletes the save", () => {
+  it("an unknown save version silently deletes the save", () => {
     const storage = memoryStorage();
     const run = midFloorRun();
     const sf = serializeRun(run);
-    storage.set(SAVE_KEY, JSON.stringify({ ...sf, version: 2 }));
+    storage.set(SAVE_KEY, JSON.stringify({ ...sf, version: 99 }));
     expect(loadRun(storage)).toBeNull();
     expect(storage.get(SAVE_KEY)).toBeNull();
+  });
+
+  it("a v1 save migrates forward and loads without loss (progression.md §5)", () => {
+    const storage = memoryStorage();
+    const run = midFloorRun();
+    const sf = serializeRun(run);
+    // a pre-progression payload: version 1, and no optional cat fields
+    storage.set(SAVE_KEY, JSON.stringify({ ...sf, version: 1 }));
+    const loaded = loadRun(storage);
+    expect(loaded).toEqual(run);
+    expect(storage.get(SAVE_KEY)).not.toBeNull(); // not deleted
   });
 
   it("corrupt JSON silently deletes the save; empty storage loads null", () => {

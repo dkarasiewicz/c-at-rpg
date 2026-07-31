@@ -107,3 +107,90 @@ a WebP/AVIF pass would cut ~5x if load weight matters.
 3. Full-size review of borderline assets (tile:doorBoss, scene:event:redDot) and the two
    busiest scenes (landing, victory) for hidden text — clean.
 4. Manifests cross-checked against disk: 18 + 29 + 13 entries, zero missing, zero orphans.
+
+---
+
+# Battle Backdrops + The Peddler (added 2026-07-31)
+
+Second art pass, filling the two holes visible in playtest screenshots: battles were fought on an
+empty dark stage with a placeholder circle, and the landing screen's shopkeeper was still drawn by
+the old flat-vector procedural cat renderer on top of painted art.
+
+All new files live in `public/assets/gen/scenes/` and are registered in that folder's
+`manifest.json` (now 20 entries: the original 13 plus the 7 below, all verified against disk —
+every entry parses, every file exists at its declared size, no orphans).
+
+## scenes/ — battle backdrops (6, all 1600x900 WebP q82)
+
+One per floor of `src/content/floors.ts`. These are **backdrops, not illustrations**: no
+characters, no cats, no creatures anywhere in them. Each has three depth layers (far background,
+midground scenery pushed to the left/right edges, near ground plane), an unobstructed horizontal
+ground plane across the lower third for the sprite row, and an open centre band. All are
+deliberately darker, more desaturated and lower-contrast than the character sprites, with a
+purple-indigo key and exactly one warm accent light source per floor.
+
+| id | file | floor | warm accent | notes |
+|---|---|---|---|---|
+| scene:battle:1 | battle-1.webp | 1 The Cellar | bare filament bulb, upper left | coolest/greyest of the six (stone cellar); crate + coal-sack silhouettes at both edges |
+| scene:battle:2 | battle-2.webp | 2 The Drains | amber shaft from a storm grate, upper right | near ledge is the standing plane, black water channel behind it |
+| scene:battle:3 | battle-3.webp | 3 The Appliance Graveyard | open fridge bulb + sparks, right | 3 renders: v1/v2 rejected (see below), v3 keeps the appliance ridge low and dark |
+| scene:battle:4 | battle-4.webp | 4 The Undergarden | gold daylight shaft through broken glass, upper left | only backdrop with a second (teal) light: bioluminescent mushrooms, edges only |
+| scene:battle:5 | battle-5.webp | 5 The Cold Pantry | cracked-open freezer door, right | brightest of the six by design (ice); shelf labels are blank shapes, no text |
+| scene:battle:6 | battle-6.webp | 6 The Hollow Throne | two braziers of gold flame at the far dais | throne is far background, small, silhouetted — centre band stays clear |
+
+## scenes/ — NPC sprite (1, 640x640 keyed PNG)
+
+| id | file | description |
+|---|---|---|
+| npc:peddler | npc-peddler.png | THE PEDDLER: fat, smug, one-eyed stray tomcat merchant in a ragged hooded cloak hung with charms, sitting cross-legged behind a spread of scavenged wares on a tattered rug (tuna tins, bottle caps, corked bottles, a brass bell, a fish skeleton, a coin pouch). Painted to match the cat battle sprites (`cat-bruno.png` passed as `--ref`), transparent background. |
+
+## Generation recipe
+
+- Backdrops: `gemini-3-pro-image-preview` (best original designs, obeys "no text"), `--dimension
+  2752x1536` (the model's closest landscape size to 16:9), `--ref docs/art/style-anchor-bruno.png`
+  for palette/ink language. Prompt = framing paragraph + per-floor scenery + the `ART_STYLE`
+  cel-shading paragraph + `Avoid: <ART_STYLE.negative + backdrop-specific negatives>`. Export:
+  centre-crop to exactly 16:9, LANCZOS to 1600x900, WebP quality 82.
+  - The one style-bible deviation: `ART_STYLE.basePrompt`'s "flat #1a1626 background for clean
+    keying" sentence is dropped for backdrops (it fights a full-bleed environment) and replaced
+    with "deep desaturated purple-indigo palette, muted low-contrast values so bright character
+    sprites can be composited on top and still read" — the same intent as
+    `ART_STYLE.framing.tile`. All other style sentences are used verbatim.
+- Peddler: `gpt-image-2` (best anchor fidelity) with `--ref public/assets/gen/cat-bruno.png`, then
+  a second `gpt-image-2` img2img pass on that render to lift its values (see below), then keyed.
+
+## Chroma-key (unchanged recipe, reused as-is)
+
+Per-image median of the 4px border ring as the background estimate → border-seeded flood fill at
+colour tolerance 8 → soft alpha ramp from 8 out to colour distance 24 → interior-pocket cleanup
+pass (enclosed bg-coloured regions ≥24 px keyed too). RGB of keyed pixels is left untouched, so a
+transparent corner still carries the estimated bg colour — same as the existing `cat-*.png`
+(`npc-peddler.png` corner is `(18,18,36,0)`, `cat-bruno.png` is `(19,15,34,0)`).
+
+## Rejections and retries (looked at every render at full size)
+
+- **Backdrops 1, 2, 3 v1 — rejected.** Prompt wording "the whole middle band of the frame is
+  deliberately empty negative space" was taken literally: each came back with a hard-edged solid
+  rectangle painted across the middle. Fixed by rewording to "down the centre the eye travels
+  straight through to the distant background… every part of the canvas is painted scenery in
+  perspective" and adding `solid rectangle, flat colour block, dark banner across the middle,
+  letterbox bar, unpainted empty area` to the negatives. Backdrops 4, 5, 6 were clean on v1.
+- **Backdrop 3 v2 — rejected.** Band gone, but a tall pale mound of appliances filled the centre
+  (a centred subject, and too light). Re-prompted for a low dark ridge on the horizon with the
+  centre in shadow and smoke; v3 (2 seeds generated, seed 11 chosen) accepted.
+- **Peddler v1 — rejected after keying.** The design/pose/wares were perfect but the cloak was
+  painted at almost exactly the background value, so the key (correctly) ate the cloak's shadow
+  folds and left the character riddled with holes. Fixed at the art level, not the key level: an
+  img2img relight pass on the same image ("keep this exact character, pose, layout and wares; only
+  repaint the cloak and rug to a mid-value dusty plum, add a cool lavender rim light along the
+  whole silhouette, no part of the character as dark as the background"). v2 keys cleanly.
+
+## Verification
+
+- Every backdrop composited at 1:1 with the real party sprites (`cat-*.png` at 190 px) and the
+  floor's own enemies/bosses at 230 px: sprites read clearly against all six, no silhouette is
+  lost, no backdrop element competes for attention.
+- Full-size text hunt on the two busiest backdrops (5's pantry shelves, 3's appliance heap):
+  jar/box labels and appliance panels are blank shapes — no letters, numbers or logos anywhere.
+- Peddler keyed sprite composited over flat red and a checkerboard: clean silhouette, no interior
+  bleed-through, no halo.

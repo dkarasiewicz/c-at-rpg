@@ -9,7 +9,7 @@
  *   - ratPrince (SHOULD-tier alternate floor-3 boss): fights alone;
  *     seeded pick vs the Vacuum King for run variety.
  */
-import type { EnemyId } from "../core/types";
+import type { EnemyId } from "../core/types.js";
 
 export const BOSS_ENCOUNTERS: Record<EnemyId, EnemyId[]> = {
   vacuumKing: ["vacuumKing"],

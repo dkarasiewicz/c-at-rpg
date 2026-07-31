@@ -8,8 +8,13 @@
  * one `mulberry32(eventSeed)` stream; the UI renders result lines only.
  * Esc does nothing here — walking away is an explicit option, not a
  * keybind (events.md §3; ARCHITECTURE.md WP-12 acceptance).
+ *
+ * Chrome is the shared kit (widgets.ts): a `sceneBackdrop`+`scrim` stage,
+ * one raised `panel`, `heading`/`label` type, and one `button` language for
+ * every option row — each carrying its hotkey chip and, when gated, its
+ * requirement tag in the label. Nothing here paints its own rectangle.
  */
-import { Container, FillGradient, Graphics, Text } from "pixi.js";
+import { Container, FillGradient, Graphics } from "pixi.js";
 import type {
   EnemyId,
   EventOption,
@@ -18,34 +23,37 @@ import type {
   ResultLine,
   Rng,
   RunState,
-} from "../../core/types";
-import { CLASSES } from "../../content/classes";
-import { CONSUMABLES } from "../../content/consumables";
-import { EVENTS } from "../../content/events";
+} from "../../core/types.js";
+import { CLASSES } from "../../content/classes.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { EVENTS } from "../../content/events.js";
 import {
   isOptionAvailable,
-  requirementMet,
   resolveOption,
   resolveScalar,
   type FightRequest,
-} from "../../core/events/resolve";
-import { selectEvent } from "../../core/events/select";
-import { addShinies } from "../../core/loot/inventory";
-import { mulberry32 } from "../../core/rng";
-import { PAL } from "../palette";
-import { R, RADIUS, type Rect } from "../layout";
-import { display, ui } from "../textStyles";
+} from "../../core/events/resolve.js";
+import { selectEvent } from "../../core/events/select.js";
+import { addShinies } from "../../core/loot/inventory.js";
+import { mulberry32 } from "../../core/rng.js";
+import { PAL } from "../palette.js";
+import { DESIGN_H, DESIGN_W, R, RADIUS, SPACE, type Rect } from "../layout.js";
+import { TYPE } from "../textStyles.js";
 import {
-  makeButton,
+  button,
+  heading,
+  label,
   makeCoverSprite,
-  makeHotkeyChip,
-  makePanel,
-} from "../widgets";
-import { makeEventGlyph, type EventGlyphId } from "../draw/glyphs";
-import { layer, type GameCtx, type Scene } from "../sceneManager";
-import type { EventWinContext } from "../overlays/loot";
-import { probeGm, requestGmEventResolve } from "../../services/gm";
-import type { GmEventResolveOutcome } from "../../services/gmTypes";
+  panel,
+  scrim,
+  sceneBackdrop,
+  vignette,
+} from "../widgets.js";
+import { makeEventGlyph, type EventGlyphId } from "../draw/glyphs.js";
+import { layer, type GameCtx, type Scene } from "../sceneManager.js";
+import type { EventWinContext } from "../overlays/loot.js";
+import { probeGm, requestGmEventResolve } from "../../services/gm.js";
+import type { GmEventResolveOutcome } from "../../services/gmTypes.js";
 
 /* ---------------------------------------------------------------------- */
 /* Params (in from explore's StepTrigger, out to the battle scene)         */
@@ -157,21 +165,21 @@ export class EventScene implements Scene {
     this.view = view;
     layer(root, "hud").addChild(view);
 
-    // backdrop: deep bg + the §9 scrim (the modal look, explore is gone)
-    view.addChild(new Graphics().rect(...R.event.scrim).fill(PAL.bgDeep));
+    // backdrop: palette wash + the §9 scrim (the modal look, explore is
+    // gone) + vignette, all from the kit
     view.addChild(
-      new Graphics()
-        .rect(...R.event.scrim)
-        .fill({ color: PAL.scrim, alpha: 0.6 }),
+      sceneBackdrop("scene:eventStage", DESIGN_W, DESIGN_H),
+      scrim(DESIGN_W, DESIGN_H),
+      vignette(DESIGN_W, DESIGN_H, 0.7),
     );
     const [px, py, pw, ph] = R.event.panel;
-    const panel = new Container();
-    panel.position.set(px, py);
-    panel.addChild(makePanel(pw, ph));
-    view.addChild(panel);
-    this.panel = panel;
+    const modal = new Container();
+    modal.position.set(px, py);
+    modal.addChild(panel(pw, ph, { variant: "raised", accent: PAL.gold }));
+    view.addChild(modal);
+    this.panel = modal;
     this.dynamic = new Container();
-    panel.addChild(this.dynamic);
+    modal.addChild(this.dynamic);
 
     // ---- which event fires (eventRng draw #1 / shiny fallback) ---------
     const sel = selectEvent(
@@ -271,7 +279,7 @@ export class EventScene implements Scene {
     floorNum: number,
     sceneId?: string,
   ): void {
-    const panel = this.panel!;
+    const modal = this.panel!;
     const [px, py, pw, ph] = R.event.panel;
 
     // Generated illustration (scene:event:<id>): fills the panel, subject
@@ -285,9 +293,9 @@ export class EventScene implements Scene {
         })
       : null;
     if (illo) {
-      const scrim = new Graphics();
+      const gradient = new Graphics();
       const deep = (a: number) => `rgba(26, 22, 38, ${a})`; // PAL.bgDeep
-      scrim
+      gradient
         .rect(0, 0, pw, ph)
         .fill(
           new FillGradient({
@@ -310,24 +318,13 @@ export class EventScene implements Scene {
             ],
           }),
         );
-      illo.addChild(scrim); // clipped by the cover mask with the art
-      panel.addChildAt(illo, 1); // above the panel bg, below `dynamic`
+      illo.addChild(gradient); // clipped by the cover mask with the art
+      modal.addChildAt(illo, 1); // above the panel bg, below `dynamic`
       this.illustrated = true;
     }
 
-    const [tx, ty, tw] = R.event.title;
-    const titleText = new Text({
-      text: title,
-      style: display(22, {
-        fill: PAL.gold,
-        wordWrap: true,
-        wordWrapWidth: tw,
-      }),
-    });
-    titleText.position.set(tx - px, ty - py);
-    panel.addChild(titleText);
-
-    // procedural glyph is the assetless stand-in for the illustration
+    // procedural glyph is the assetless stand-in for the illustration; it
+    // also decides where the title column starts
     if (!illo) {
       const themeIndex = Math.min(2, Math.floor((floorNum - 1) / 2));
       const glyph = makeEventGlyph(glyphId, themeIndex);
@@ -335,8 +332,29 @@ export class EventScene implements Scene {
       glyph.position.set(gx - px + gw / 2, gy - py + gh / 2);
       this.glyphBaseY = glyph.y;
       this.glyph = glyph;
-      panel.addChild(glyph);
+      modal.addChild(glyph);
     }
+
+    const eyebrow = heading("AN EVENT", 3);
+    eyebrow.position.set(this.textX(), SPACE.lg);
+    const titleText = heading(title, 2, { fill: PAL.gold });
+    titleText.style.wordWrap = true;
+    titleText.style.wordWrapWidth = pw - this.textX() - SPACE.lg;
+    titleText.position.set(this.textX(), SPACE.lg + SPACE.lg);
+    modal.addChild(eyebrow, titleText);
+  }
+
+  /** Left edge of the text column: past the glyph, or the panel padding. */
+  private textX(): number {
+    const [px] = R.event.panel;
+    const [gx, , gw] = R.event.glyph;
+    return this.illustrated ? SPACE.xl : gx - px + gw + SPACE.lg;
+  }
+
+  /** Wrap width for body copy (illustrated layouts hug the dark left). */
+  private wrapW(): number {
+    const [, , pw] = R.event.panel;
+    return this.illustrated ? 420 : pw - this.textX() - SPACE.lg;
   }
 
   /* ---- PROMPT --------------------------------------------------------- */
@@ -348,25 +366,25 @@ export class EventScene implements Scene {
     this.state = "prompt";
     this.hotkeys = [];
 
-    const [px, py] = R.event.panel;
-    const [bx, by, bw] = R.event.body;
-    const body = new Text({
-      text: event.prompt,
-      // with an illustration up the prompt hugs the scrim-dark left column
-      style: ui(16, {
-        wordWrap: true,
-        wordWrapWidth: this.illustrated ? 420 : bw,
-        lineHeight: 24,
-      }),
+    const [, py] = R.event.panel;
+    const [, by] = R.event.body;
+    // with an illustration up the prompt hugs the scrim-dark left column
+    const body = label(event.prompt, {
+      size: TYPE.body,
+      wrap: this.wrapW(),
     });
-    body.position.set(bx - px, by - py);
+    body.position.set(this.textX(), by - py);
     dyn.addChild(body);
 
-    // last option sits in the Leave row; the rest fill the option rects.
-    // With the GM up, the Leave band is split so a "[T] Do something else…"
-    // row fits beside it (offline: the original full-width band, unchanged).
+    // Last option sits in the Leave row; the rest fill the option rects.
+    // The Leave band follows the last option row (instead of sitting at a
+    // fixed y) so a 2-option event has no orphan gap above it. With the GM
+    // up the band is split so a "[T] Do something else…" row fits beside it.
     const n = event.options.length;
-    const [lx, ly, lw, lh] = R.event.leave;
+    const [lx, , lw, lh] = R.event.leave;
+    const [, opt0Y] = R.event.options[0];
+    const optRowH = R.event.options[1][1] - opt0Y; // 60: 52 row + 8 gap
+    const ly = opt0Y + Math.max(1, n - 1) * optRowH + SPACE.sm;
     const leaveRect: Rect = this.gmAvailable
       ? [lx, ly, 486, lh]
       : [lx, ly, lw, lh];
@@ -409,6 +427,12 @@ export class EventScene implements Scene {
     this.showPrompt();
   }
 
+  /**
+   * One option row — the kit `button`, hotkey chip included. A gated option
+   * carries its requirement in the label ("… · [SPD 8+]") and, when unmet,
+   * renders disabled: dimmed but still VISIBLE, because showing locked
+   * doors sells build value (events.md §3).
+   */
   private makeOptionRow(
     rect: Rect,
     hotkey: string,
@@ -420,60 +444,16 @@ export class EventScene implements Scene {
   ): Container {
     const [px, py] = R.event.panel;
     const [x, y, w, h] = rect;
-    const row = new Container();
-    row.position.set(x - px, y - py);
-
-    const bg = new Graphics();
-    const paint = (hover: boolean) => {
-      bg.clear()
-        .roundRect(0, 0, w, h, RADIUS.button)
-        .fill(hover ? PAL.panelLite : PAL.panel)
-        .stroke({ width: 2, color: hover ? PAL.gold : PAL.border });
-    };
-    paint(false);
-    row.addChild(bg);
-
-    const chip = makeHotkeyChip(hotkey, available);
-    chip.view.position.set(12, (h - 16) / 2);
-    row.addChild(chip.view);
-
-    const label = new Text({
-      text: option.label,
-      style: small ? ui(14, { fill: PAL.textDim }) : ui(16),
+    const text = option.requires
+      ? `${option.label}   ·   ${gateTag(option.requires, run)}`
+      : option.label;
+    const b = button(text, w, h, onPick, {
+      hotkey,
+      disabled: !available,
+      fontSize: small ? TYPE.small : TYPE.body,
     });
-    label.anchor.set(0, 0.5);
-    label.position.set(40, h / 2);
-    row.addChild(label);
-
-    if (option.requires) {
-      const met = requirementMet(run, option.requires);
-      const tagText = new Text({
-        text: gateTag(option.requires, run),
-        style: ui(11, { fill: met ? PAL.gold : PAL.textDim }),
-      });
-      const tw = Math.ceil(tagText.width) + 12;
-      const tag = new Container();
-      tag.addChild(
-        new Graphics().roundRect(0, 0, tw, 18, RADIUS.chip).fill(PAL.panelLite),
-      );
-      tagText.position.set(6, 3);
-      tag.addChild(tagText);
-      tag.position.set(w - tw - 12, (h - 18) / 2);
-      row.addChild(tag);
-    }
-
-    if (available) {
-      row.eventMode = "static";
-      row.cursor = "pointer";
-      row.on("pointerover", () => paint(true));
-      row.on("pointerout", () => paint(false));
-      row.on("pointertap", onPick);
-    } else {
-      // unmet requirement: alpha 0.45, not clickable, still VISIBLE —
-      // showing locked doors sells build value (events.md §3)
-      row.alpha = 0.45;
-    }
-    return row;
+    b.view.position.set(x - px, y - py);
+    return b.view;
   }
 
   /* ---- GM free-text option (gm-system.md event/resolve) --------------- */
@@ -489,12 +469,16 @@ export class EventScene implements Scene {
     el.placeholder = "What do you do? (Enter to act · Esc to cancel)";
     el.autocomplete = "off";
     el.spellcheck = false;
+    // same tokens as the pixi chrome (PAL), so the DOM input reads as part
+    // of the modal rather than a browser widget dropped on top of it
+    const css = (c: number): string => `#${c.toString(16).padStart(6, "0")}`;
     el.style.cssText =
       "position:fixed;left:50%;top:62%;transform:translateX(-50%);" +
       "width:min(600px,86vw);padding:12px 16px;font-size:16px;" +
-      "color:#efe9ff;background:#241f38;border:2px solid #d7a94b;" +
-      "border-radius:8px;outline:none;z-index:10;" +
-      "box-shadow:0 8px 32px rgba(0,0,0,.5);";
+      `color:${css(PAL.text)};background:${css(PAL.hpBack)};` +
+      `border:1px solid ${css(PAL.gold)};` +
+      "border-radius:6px;outline:none;z-index:10;" +
+      "box-shadow:0 8px 32px rgba(7,6,13,.55);";
     // the game's single window key listener must not see typing
     el.addEventListener("keydown", (e) => {
       e.stopPropagation();
@@ -527,25 +511,20 @@ export class EventScene implements Scene {
     // waiting beat: prompt + the player's declared move
     const dyn = this.dynamic!;
     for (const c of dyn.removeChildren()) c.destroy({ children: true });
-    const [px, py] = R.event.panel;
-    const [bx, by, bw] = R.event.body;
-    const wrap = this.illustrated ? 420 : bw;
-    const body = new Text({
-      text: ev.prompt,
-      style: ui(16, { wordWrap: true, wordWrapWidth: wrap, lineHeight: 24 }),
-    });
-    body.position.set(bx - px, by - py);
+    const [, py] = R.event.panel;
+    const [, by] = R.event.body;
+    const wrap = this.wrapW();
+    const body = label(ev.prompt, { size: TYPE.body, wrap });
+    body.position.set(this.textX(), by - py);
     dyn.addChild(body);
-    const wait = new Text({
-      text: `“${text}” — the night holds its breath…`,
-      style: ui(15, {
-        fontStyle: "italic",
-        fill: PAL.textDim,
-        wordWrap: true,
-        wordWrapWidth: wrap,
-      }),
+    const wait = label(`“${text}” — the night holds its breath…`, {
+      dim: true,
+      wrap,
     });
-    wait.position.set(bx - px, by - py + Math.ceil(body.height) + 14);
+    wait.position.set(
+      this.textX(),
+      by - py + Math.ceil(body.height) + SPACE.md,
+    );
     dyn.addChild(wait);
 
     void requestGmEventResolve({
@@ -623,43 +602,35 @@ export class EventScene implements Scene {
     this.hotkeys = [];
     for (const c of dyn.removeChildren()) c.destroy({ children: true });
 
-    const [px, py, pw] = R.event.panel;
-    const [bx, by, bw] = R.event.body;
-    const body = new Text({
-      text,
-      style: ui(16, {
-        fontStyle: "italic",
-        wordWrap: true,
-        wordWrapWidth: this.illustrated ? 420 : bw,
-        lineHeight: 24,
-      }),
-    });
-    body.position.set(bx - px, by - py);
+    const [, py, pw] = R.event.panel;
+    const [, by] = R.event.body;
+    const body = label(text, { size: TYPE.body, wrap: this.wrapW() });
+    body.position.set(this.textX(), by - py);
     dyn.addChild(body);
 
     // one delta line per emitted result, color-coded (events.md §3)
-    let ly = by - py + Math.ceil(body.height) + 14;
+    let ly = by - py + Math.ceil(body.height) + SPACE.md;
     for (const line of lines) {
-      const t = new Text({
-        text: line.text,
-        style: ui(15, { fill: TONE_COLOR[line.tone] }),
-      });
-      t.position.set(bx - px, ly);
+      const t = label(line.text, { fill: TONE_COLOR[line.tone], bold: true });
+      t.position.set(this.textX(), ly);
       dyn.addChild(t);
       ly += 22;
     }
 
+    // one primary action, parked in the panel's action band
     const isFight = this.fight !== null;
-    const btn = makeButton(
-      isFight ? "[E] Fight!" : "[E] Continue",
-      240,
-      36,
+    const bw = 260;
+    const bh = 52;
+    const b = button(
+      isFight ? "Fight!" : "Continue",
+      bw,
+      bh,
       () => this.leave(),
-      { primary: true, fontSize: 15 },
+      { primary: true, hotkey: "E" },
     );
-    const [, lyR] = R.event.leave;
-    btn.view.position.set((pw - 240) / 2, lyR - py);
-    dyn.addChild(btn.view);
+    const [, , , ph] = R.event.panel;
+    b.view.position.set((pw - bw) / 2, ph - bh - SPACE.lg);
+    dyn.addChild(b.view);
     this.continueFn = () => this.leave();
   }
 

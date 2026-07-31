@@ -1,24 +1,66 @@
 /**
- * WP-09 — pause overlay (gameloop.md §6): Esc menu with Resume / Party /
+ * WP-09 — pause overlay (gameloop.md §6): Esc menu with Resume / The Den /
  * Inventory / Help / Abandon Run, plus a footer showing run seed (click to
  * copy), floor and play time. Freeze semantics live in the SceneManager
  * (underlying scene update skipped, interactiveChildren = false); this
  * overlay only renders and routes its own input.
  *
- * Party/Inventory open WP-12's panel (ui/overlays/inventoryPanel.ts);
- * marching-order editing is read-only while a battle scene is beneath.
+ * THE DEN (row 2, hotkey P — ui/overlays/progressPanel.ts) is the
+ * progression screen: Whisker Points, the battle loadout, the three gear
+ * slots. Its row carries a gold badge whenever a cat has a point unspent,
+ * so a level-up cannot be missed. Inventory opens WP-12's 16-slot panel
+ * (ui/overlays/inventoryPanel.ts); marching-order editing is read-only
+ * while a battle scene is beneath.
  * Abandon → RESULTS(defeat, cause 'abandoned') — results deletes the save.
+ *
+ * Chrome is the shared kit (widgets.ts): `scrim`, one raised `panel`, the
+ * `button` language with hotkey chips, `heading`/`label` type. Opening a
+ * sub-panel hides the menu column instead of stacking two panels on top of
+ * each other.
  */
-import { Container, Graphics, Text } from "pixi.js";
-import { PAL } from "../palette";
-import { DESIGN_H, DESIGN_W, RADIUS } from "../layout";
-import { display, mono, ui } from "../textStyles";
-import { makeButton, makePanel, type Button } from "../widgets";
-import { makeInventoryPanel } from "./inventoryPanel";
-import { layer, type GameCtx, type Overlay } from "../sceneManager";
-import type { ResultsParams } from "../scenes/results";
+import { Container, Text } from "pixi.js";
+import { PAL } from "../palette.js";
+import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
+import { TYPE } from "../textStyles.js";
+import {
+  button,
+  heading,
+  label,
+  panel,
+  scrim,
+  type Button,
+} from "../widgets.js";
+import {
+  INVENTORY_PANEL_H,
+  INVENTORY_PANEL_W,
+  makeInventoryPanel,
+} from "./inventoryPanel.js";
+import {
+  DEN_HOTKEY,
+  DEN_LABEL,
+  makeDenBox,
+  makePointBadgeAt,
+  totalUnspentPoints,
+} from "./progressPanel.js";
+import { layer, type GameCtx, type Overlay } from "../sceneManager.js";
+import type { ResultsParams } from "../scenes/results.js";
 
-const PANEL: [number, number, number, number] = [460, 120, 360, 480];
+/* ---- geometry (design px) -------------------------------------------- */
+const MENU_W = 340;
+const BTN_W = MENU_W - SPACE.lg * 2;
+const BTN_H = 52;
+const BTN_GAP = SPACE.md;
+const ROWS = 5;
+const HEADER_H = 76;
+const FOOTER_H = 40;
+const MENU_H =
+  HEADER_H + ROWS * BTN_H + (ROWS - 1) * BTN_GAP + FOOTER_H + SPACE.lg;
+const MENU_X = (DESIGN_W - MENU_W) / 2;
+const MENU_Y = (DESIGN_H - MENU_H) / 2;
+
+/** Help card geometry. */
+const HELP_W = 640;
+const HELP_H = 320;
 
 interface SubPanel {
   view: Container;
@@ -30,6 +72,7 @@ export function createPauseOverlay(): Overlay {
   const view = new Container();
   let ctx: GameCtx | null = null;
   let sub: SubPanel | null = null;
+  const menuLayer = new Container();
   const subHost = new Container();
   let timeText: Text | null = null;
   let abandonArmed = false;
@@ -37,12 +80,25 @@ export function createPauseOverlay(): Overlay {
   let seedText: Text | null = null;
   let elapsedBase = 0;
   let showHelp: () => void = () => undefined;
+  let denBadgeHost: Container | null = null;
+
+  /** Unspent Whisker Points pill on the Den row — level-ups are unmissable. */
+  const paintBadge = (): void => {
+    if (!denBadgeHost) return;
+    for (const c of denBadgeHost.removeChildren())
+      c.destroy({ children: true });
+    const run = ctx?.run;
+    if (!run) return;
+    const badge = makePointBadgeAt(totalUnspentPoints(run), 0, 0);
+    if (badge) denBadgeHost.addChild(badge);
+  };
 
   const closeSub = (): void => {
     if (!sub) return;
     sub.destroy();
     sub = null;
     subHost.removeChildren();
+    menuLayer.visible = true;
   };
 
   /**
@@ -55,7 +111,7 @@ export function createPauseOverlay(): Overlay {
     const c = ctx;
     if (!c || !c.run) return;
     closeSub();
-    const panel = makeInventoryPanel({
+    const inv = makeInventoryPanel({
       mode: "manage",
       getRun: () => {
         if (!c.run) throw new Error("pause: run vanished");
@@ -65,9 +121,61 @@ export function createPauseOverlay(): Overlay {
         c.run = run;
       },
     });
-    panel.view.position.set(160, 195); // 960×330 default, centered
-    sub = panel;
-    subHost.addChild(panel.view);
+    const box = new Container();
+    const invX = (DESIGN_W - INVENTORY_PANEL_W) / 2;
+    const invY = 176;
+    inv.view.position.set(invX, invY);
+    box.addChild(inv.view);
+    const back = button("Back", 200, 44, closeSub, { hotkey: "Esc" });
+    back.view.position.set(
+      (DESIGN_W - 200) / 2,
+      invY + INVENTORY_PANEL_H + SPACE.lg,
+    );
+    box.addChild(back.view);
+    sub = {
+      view: box,
+      onKey: (key) => inv.onKey(key),
+      destroy: () => {
+        inv.destroy();
+        box.destroy({ children: true });
+      },
+    };
+    menuLayer.visible = false;
+    subHost.addChild(box);
+  };
+
+  /**
+   * THE DEN (progression.md): Whisker Points, the battle loadout and the
+   * three gear slots, per cat. Same panel the Landing opens, so the screen
+   * is identical from either entry point.
+   */
+  const openDen = (): void => {
+    const c = ctx;
+    if (!c || !c.run) return;
+    closeSub();
+    const box = new Container();
+    const den = makeDenBox({
+      getRun: () => {
+        if (!c.run) throw new Error("pause: run vanished");
+        return c.run;
+      },
+      setRun: (run) => {
+        c.run = run;
+      },
+      onChanged: () => paintBadge(),
+      onClose: closeSub,
+    });
+    box.addChild(den.view);
+    sub = {
+      view: box,
+      onKey: (key) => den.onKey(key),
+      destroy: () => {
+        den.destroy();
+        box.destroy({ children: true });
+      },
+    };
+    menuLayer.visible = false;
+    subHost.addChild(box);
   };
 
   const resume = (): void => {
@@ -103,86 +211,97 @@ export function createPauseOverlay(): Overlay {
       ctx = gameCtx;
       elapsedBase = ctx.run?.playTimeMs ?? 0;
 
-      const scrim = new Graphics()
-        .rect(0, 0, DESIGN_W, DESIGN_H)
-        .fill({ color: PAL.scrim, alpha: 0.6 });
-      scrim.eventMode = "static"; // swallow clicks beneath the menu
-      view.addChild(scrim);
+      const back = scrim(DESIGN_W, DESIGN_H, 0.72);
+      back.eventMode = "static"; // swallow clicks beneath the menu
+      view.addChild(back);
 
-      const [px, py, pw, ph] = PANEL;
-      const panel = makePanel(pw, ph);
-      panel.position.set(px, py);
-      view.addChild(panel);
+      const card = panel(MENU_W, MENU_H, { variant: "raised" });
+      card.position.set(MENU_X, MENU_Y);
+      menuLayer.addChild(card);
 
-      const header = new Text({
-        text: "PAUSED",
-        style: display(32, { fill: PAL.text }),
-      });
-      header.anchor.set(0.5, 0);
-      header.position.set(px + pw / 2, py + 18);
-      view.addChild(header);
+      const header = heading("PAUSED", 1, { center: true });
+      header.position.set(MENU_W / 2, SPACE.lg + 4);
+      card.addChild(header);
 
       const hasRun = !!ctx.run;
       const rows: {
         label: string;
+        hotkey: string;
         onTap: () => void;
         enabled?: boolean;
         primary?: boolean;
       }[] = [
-        { label: "[1] Resume", onTap: resume, primary: true },
-        { label: "[2] Party", onTap: openSub, enabled: hasRun },
-        { label: "[3] Inventory", onTap: openSub, enabled: hasRun },
-        { label: "[4] Help", onTap: () => showHelp(), enabled: true },
-        { label: "[5] Abandon Run", onTap: abandon, enabled: hasRun },
+        { label: "Resume", hotkey: "1", onTap: resume, primary: true },
+        {
+          label: DEN_LABEL,
+          hotkey: DEN_HOTKEY,
+          onTap: openDen,
+          enabled: hasRun,
+        },
+        { label: "Inventory", hotkey: "3", onTap: openSub, enabled: hasRun },
+        { label: "Help", hotkey: "4", onTap: () => showHelp(), enabled: true },
+        {
+          label: "Abandon Run",
+          hotkey: "5",
+          onTap: abandon,
+          enabled: hasRun,
+        },
       ];
       rows.forEach((r, i) => {
-        const b = makeButton(r.label, pw - 48, 48, r.onTap, {
+        const b = button(r.label, BTN_W, BTN_H, r.onTap, {
           primary: r.primary,
-          fontSize: 16,
+          hotkey: r.hotkey,
+          disabled: r.enabled === false,
         });
-        b.view.position.set(px + 24, py + 76 + i * 60);
-        if (r.enabled === false) b.setEnabled(false);
+        b.view.position.set(SPACE.lg, HEADER_H + i * (BTN_H + BTN_GAP));
+        if (i === 1) {
+          denBadgeHost = new Container();
+          denBadgeHost.position.set(BTN_W - 52, -8);
+          b.view.addChild(denBadgeHost);
+        }
         if (i === 4) abandonBtn = b;
-        view.addChild(b.view);
+        card.addChild(b.view);
       });
+      paintBadge();
 
       /* ---- footer: seed (click to copy) · floor · time ------------- */
-      const footY = py + ph - 34;
-      seedText = new Text({
-        text: ctx.run ? `seed ${ctx.run.runSeed}` : "no run",
-        style: mono(11, { fill: PAL.textDim }),
+      const footY = MENU_H - FOOTER_H + SPACE.xs;
+      seedText = label(ctx.run ? `seed ${ctx.run.runSeed}` : "no run", {
+        mono: true,
+        dim: true,
+        size: TYPE.tiny,
       });
-      seedText.position.set(px + 24, footY);
+      seedText.position.set(SPACE.lg, footY);
       seedText.eventMode = "static";
       seedText.cursor = "pointer";
       seedText.on("pointerdown", copySeed);
-      view.addChild(seedText);
+      card.addChild(seedText);
 
-      const floorText = new Text({
-        text: ctx.run ? `floor ${ctx.run.floorNum}` : "",
-        style: mono(11, { fill: PAL.textDim }),
+      const floorText = label(ctx.run ? `floor ${ctx.run.floorNum}` : "", {
+        mono: true,
+        dim: true,
+        size: TYPE.tiny,
+        center: true,
       });
-      floorText.anchor.set(0.5, 0);
-      floorText.position.set(px + pw / 2, footY);
-      view.addChild(floorText);
+      floorText.position.set(MENU_W / 2, footY + 6);
+      card.addChild(floorText);
 
-      timeText = new Text({
-        text: "",
-        style: mono(11, { fill: PAL.textDim }),
-      });
+      timeText = label("", { mono: true, dim: true, size: TYPE.tiny });
       timeText.anchor.set(1, 0);
-      timeText.position.set(px + pw - 24, footY);
-      view.addChild(timeText);
+      timeText.position.set(MENU_W - SPACE.lg, footY);
+      card.addChild(timeText);
 
-      view.addChild(subHost);
+      view.addChild(menuLayer, subHost);
       layer(root, "modal").addChild(view);
 
-      /* Help is a one-page static panel (gameloop.md §6.4). */
+      /* Help is a one-page static card (gameloop.md §6.4). */
       showHelp = (): void => {
         closeSub();
         const help = new Container();
-        const hp = makePanel(560, 300);
-        help.addChild(hp);
+        help.addChild(panel(HELP_W, HELP_H, { variant: "raised" }));
+        const title = heading("HOW TO PLAY", 2, { fill: PAL.gold });
+        title.position.set(SPACE.lg, SPACE.lg);
+        help.addChild(title);
         const lines = [
           "WASD/arrows step · E interact · M map · Tab marching order",
           "Battle: 1-6 skills · arrows move-swap · G guard · R Scatter!",
@@ -190,31 +309,22 @@ export function createPauseOverlay(): Overlay {
           "them OFF-BALANCE (+50% damage taken until round end).",
           "When EVERY living enemy is Off-Balance: CAT PILE — pile on",
           "for big typeless damage, or keep the +50% windows. Your call.",
+          "P opens THE DEN: spend Whisker Points, pick the 4 skills each",
+          "cat takes to battle, and fit weapon / trinket / collar.",
         ].join("\n");
-        const txt = new Text({
-          text: lines,
-          style: ui(14, { fill: PAL.text, lineHeight: 24 }),
-        });
-        txt.position.set(24, 20);
+        const txt = label(lines, { size: TYPE.small });
+        txt.style.lineHeight = 24;
+        txt.position.set(SPACE.lg, SPACE.lg + 44);
         help.addChild(txt);
-        const back = new Graphics()
-          .roundRect(0, 0, 92, 30, RADIUS.button)
-          .fill(PAL.panel)
-          .stroke({ width: 2, color: PAL.border });
-        const backLabel = new Text({
-          text: "[Esc] back",
-          style: ui(13, { fill: PAL.textDim }),
-        });
-        backLabel.anchor.set(0.5);
-        backLabel.position.set(46, 15);
-        back.addChild(backLabel);
-        back.position.set(560 - 116, 300 - 46);
-        back.eventMode = "static";
-        back.cursor = "pointer";
-        back.on("pointerdown", closeSub);
-        help.addChild(back);
-        help.position.set(PANEL[0] - 580, PANEL[1] + 40);
+        const backBtn = button("Back", 160, 44, closeSub, { hotkey: "Esc" });
+        backBtn.view.position.set(
+          HELP_W - 160 - SPACE.lg,
+          HELP_H - 44 - SPACE.lg,
+        );
+        help.addChild(backBtn.view);
+        help.position.set((DESIGN_W - HELP_W) / 2, (DESIGN_H - HELP_H) / 2);
         sub = { view: help, destroy: () => help.destroy({ children: true }) };
+        menuLayer.visible = false;
         subHost.addChild(help);
       };
     },
@@ -224,6 +334,7 @@ export function createPauseOverlay(): Overlay {
       timeText = null;
       seedText = null;
       abandonBtn = null;
+      denBadgeHost = null;
       view.destroy({ children: true });
     },
 
@@ -249,7 +360,11 @@ export function createPauseOverlay(): Overlay {
         resume();
         return true;
       }
-      if ((key === "2" || key === "3") && ctx?.run) {
+      if ((key === "2" || key === "p") && ctx?.run) {
+        openDen();
+        return true;
+      }
+      if (key === "3" && ctx?.run) {
         openSub();
         return true;
       }

@@ -6,12 +6,12 @@
  * localStorage probe (MetaFile), and the first scene push → 'boot'.
  */
 import { Application, Container } from "pixi.js";
-import { PAL } from "./ui/palette";
-import { DESIGN_H, DESIGN_W } from "./ui/layout";
-import { installFonts } from "./ui/textStyles";
-import { initInput, setSceneKeyHandler } from "./ui/input";
-import { loadMeta, saveRun } from "./core/run/save";
-import { newRun } from "./core/run/runState";
+import { PAL } from "./ui/palette.js";
+import { DESIGN_H, DESIGN_W } from "./ui/layout.js";
+import { installFonts } from "./ui/textStyles.js";
+import { initInput, setSceneKeyHandler } from "./ui/input.js";
+import { loadMeta, saveRun } from "./core/run/save.js";
+import { newRun } from "./core/run/runState.js";
 import {
   createSceneManager,
   LAYER_NAMES,
@@ -19,20 +19,20 @@ import {
   type OverlayFactories,
   type SceneFactories,
   type SceneId,
-} from "./ui/sceneManager";
-import { createBootScene } from "./ui/scenes/boot";
-import { createTitleScene } from "./ui/scenes/title";
-import { createPartyCreatorScene } from "./ui/scenes/partyCreator";
-import { createFloorgenScene } from "./ui/scenes/floorgen";
-import { createResultsScene } from "./ui/scenes/results";
-import { createExploreScene } from "./ui/scenes/explore";
-import { createBattleScene } from "./ui/scenes/battle";
-import { EventScene } from "./ui/scenes/event";
-import { LandingScene } from "./ui/scenes/landing";
-import { LootOverlay } from "./ui/overlays/loot";
-import { createPauseOverlay } from "./ui/overlays/pause";
-import { mountGalleryIfRequested } from "./ui/draw/glyphs";
-import { initSprites } from "./ui/sprites";
+} from "./ui/sceneManager.js";
+import { createBootScene } from "./ui/scenes/boot.js";
+import { createTitleScene } from "./ui/scenes/title.js";
+import { createPartyCreatorScene } from "./ui/scenes/partyCreator.js";
+import { createFloorgenScene } from "./ui/scenes/floorgen.js";
+import { createResultsScene } from "./ui/scenes/results.js";
+import { createExploreScene } from "./ui/scenes/explore.js";
+import { createBattleScene } from "./ui/scenes/battle.js";
+import { EventScene } from "./ui/scenes/event.js";
+import { LandingScene } from "./ui/scenes/landing.js";
+import { LootOverlay } from "./ui/overlays/loot.js";
+import { createPauseOverlay } from "./ui/overlays/pause.js";
+import { mountGalleryIfRequested } from "./ui/draw/glyphs.js";
+import { initSprites } from "./ui/sprites.js";
 
 /** Scenes whose on-screen time counts as run play time. */
 const RUN_SCENES: readonly SceneId[] = [

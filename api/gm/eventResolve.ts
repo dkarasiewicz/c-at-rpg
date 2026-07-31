@@ -14,29 +14,30 @@
  * The client (src/ui/scenes/event.ts) applies the verdict through the SAME
  * core resolveOption path as a fixed option — every clamp stays intact.
  */
-import type { Effect, GameEvent } from "../../src/core/types";
-import { ENEMIES } from "../../src/content/enemies";
-import { CONSUMABLES } from "../../src/content/consumables";
-import { EQUIP_DEFS } from "../../src/content/equipment";
+import type { Effect, GameEvent } from "../../src/core/types.js";
+import { ENEMIES } from "../../src/content/enemies.js";
+import { CONSUMABLES } from "../../src/content/consumables.js";
+import { EQUIP_DEFS } from "../../src/content/equipment.js";
 import type {
   GmEventResolveRequest,
   GmEventResolveResponse,
-} from "../../src/services/gmTypes";
-import { getAnthropicGen, gmModel } from "../_lib/anthropic";
-import { EVENT_CAPS, lintEvent } from "../_lib/constraints";
+} from "../../src/services/gmTypes.js";
+import { getAnthropicGen, gmModel } from "../_lib/anthropic.js";
+import { EVENT_CAPS, lintEvent } from "../_lib/constraints.js";
 import {
   GmGenerationError,
   generateValidated,
   type LintResult,
   type StructuredGenClient,
-} from "../_lib/generate";
+} from "../_lib/generate.js";
 import {
   errorJson,
   json,
   rateLimit,
   readJson,
   requirePost,
-} from "../_lib/http";
+  vercelHandler,
+} from "../_lib/http.js";
 
 /* ------------------------------------------------------------------------ */
 /* JSON schema (events.md effect union, no gateCat — free text has no gate)  */
@@ -359,7 +360,7 @@ export function createEventResolveHandler(deps: EventResolveDeps) {
 
 let deps: EventResolveDeps | null = null;
 
-export default async function handler(req: Request): Promise<Response> {
+export default vercelHandler(async (req) => {
   deps ??= { gen: getAnthropicGen() };
   return createEventResolveHandler(deps)(req);
-}
+});

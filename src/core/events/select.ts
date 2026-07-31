@@ -6,8 +6,8 @@
  * passes it down. Selection consumes EXACTLY one draw (events.md §2.2 draw #1);
  * the empty-pool fallback consumes zero draws.
  */
-import type { GameEvent, Rng } from "../types";
-import { pickWeighted } from "../util";
+import type { GameEvent, Rng } from "../types.js";
+import { pickWeighted } from "../util.js";
 
 /** Result of stepping on an event tile: an event to show, or the guard fallback. */
 export type EventSelection =

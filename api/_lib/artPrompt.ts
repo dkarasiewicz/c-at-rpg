@@ -7,7 +7,7 @@
  * style wording, so runtime art matches the pregenerated batches. Models
  * generate SUBJECT-ONLY descriptions; the house style is appended.
  */
-import { ART_STYLE, type ArtCategory } from "../../src/content/artStyle";
+import { ART_STYLE, type ArtCategory } from "../../src/content/artStyle.js";
 
 /** `subject` is a style-free description of WHAT to draw. */
 export function composeArtPrompt(

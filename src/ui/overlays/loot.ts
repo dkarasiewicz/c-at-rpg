@@ -7,8 +7,13 @@
  *
  * The overlay APPLIES its grant (core applyLootGrant / applyEventEffects)
  * on mount and autosaves — callers only roll and hand over the LootGrant.
+ *
+ * Chrome is the shared kit (widgets.ts): `scrim`, one raised `panel` sized
+ * to its content, `heading`/`label` type, `makeSpriteIcon` art for every
+ * item, the kit `bar` for XP, `avatar()` for the Lives ledger faces, and
+ * one `button` with a hotkey chip. Nothing here paints its own rectangle.
  */
-import { Container, Graphics, Text } from "pixi.js";
+import { Container, Graphics } from "pixi.js";
 import type {
   ClassId,
   Effect,
@@ -16,35 +21,40 @@ import type {
   ItemId,
   ResultLine,
   Rng,
-} from "../../core/types";
-import { CLASSES } from "../../content/classes";
-import { CONSUMABLES } from "../../content/consumables";
-import { EQUIP_DEFS } from "../../content/equipment";
-import { XP_TO_LEVEL } from "../../content/floors";
-import { applyEventEffects } from "../../core/events/resolve";
-import { applyLootGrant } from "../../core/run/runState";
-import type { LootGrant } from "../../core/types";
-import { PAL } from "../palette";
-import { DESIGN_H, DESIGN_W, R } from "../layout";
-import { display, mono, ui } from "../textStyles";
-import { tween } from "../tween";
+} from "../../core/types.js";
+import { CLASSES } from "../../content/classes.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { EQUIP_DEFS } from "../../content/equipment.js";
+import { XP_TO_LEVEL } from "../../content/floors.js";
+import { applyEventEffects } from "../../core/events/resolve.js";
+import { applyLootGrant } from "../../core/run/runState.js";
+import type { LootGrant } from "../../core/types.js";
+import { PAL } from "../palette.js";
+import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
+import { TYPE } from "../textStyles.js";
+import { tween } from "../tween.js";
 import {
-  makeBar,
-  makeButton,
-  makePanel,
+  avatar,
+  bar,
+  button,
+  heading,
+  label,
   makePawRow,
   makeSpriteIcon,
-} from "../widgets";
-import { drawCatPortrait } from "../draw/cats";
-import { layer, type GameCtx, type Overlay } from "../sceneManager";
+  panel,
+  scrim,
+} from "../widgets.js";
+import { layer, type GameCtx, type Overlay } from "../sceneManager.js";
 import {
   RARITY_COLOR,
+  catNameColor,
   equipName,
   equipStatsText,
   itemSpriteId,
   makePickupModal,
   type PickupModal,
-} from "./inventoryPanel";
+} from "./inventoryPanel.js";
+import { levelUpCardHeight, makeLevelUpCard } from "./progressPanel.js";
 
 /* ---------------------------------------------------------------------- */
 /* Params (exported for the explore / battle / event callers)              */
@@ -97,6 +107,20 @@ const HEADERS: Record<LootVariant, string> = {
   boss: "BOSS HOARD",
 };
 
+const EYEBROWS: Record<LootVariant, string> = {
+  chest: "THE CHEST GIVES UP",
+  victory: "THE ALLEY IS YOURS",
+  boss: "THE HOARD IS YOURS",
+};
+
+/* ---- panel geometry (design px) --------------------------------------- */
+const PW = 640;
+const HEADER_H = 104;
+const FOOTER_H = 88;
+const PAD = SPACE.xl;
+const MIN_H = 320;
+const MAX_H = 620;
+
 type OverflowItem = EquipInstance | { defId: ItemId; count: number };
 
 /* ---------------------------------------------------------------------- */
@@ -145,39 +169,60 @@ export class LootOverlay implements Overlay {
     ];
     ctx.save(); // autosave point: chest loot / battle resolution
 
+    // ---- measure: the panel is sized to what it actually shows ---------
+    const runNow = ctx.run;
+    const hasXp = p.xpBefore !== undefined && runNow !== null;
+    const levelBefore = p.levelBefore ?? runNow?.level ?? 1;
+    const leveled = hasXp && (runNow?.level ?? 1) > levelBefore;
+    const ledger = p.livesLost ?? [];
+    // the level-up flourish (progressPanel.makeLevelUpCard) is measured here
+    const levelUpH =
+      leveled && runNow
+        ? levelUpCardHeight(runNow.cats, levelBefore, runNow.level)
+        : 0;
+    const bodyH =
+      (p.grant.shinies !== 0 ? 30 : 0) +
+      p.grant.equips.length * 44 +
+      p.grant.consumables.length * 28 +
+      lines.length * 24 +
+      (hasXp ? SPACE.md + 26 + levelUpH : 0) +
+      (ledger.length > 0 ? SPACE.md + ledger.length * 40 : 0);
+    const ph = Math.max(MIN_H, Math.min(MAX_H, HEADER_H + bodyH + FOOTER_H));
+    const px = (DESIGN_W - PW) / 2;
+    const py = (DESIGN_H - ph) / 2;
+
     // ---- build ---------------------------------------------------------
     const view = new Container();
     this.view = view;
     layer(root, "modal").addChild(view);
 
-    const scrim = new Graphics()
-      .rect(0, 0, DESIGN_W, DESIGN_H)
-      .fill({ color: PAL.scrim, alpha: 0.6 });
-    scrim.eventMode = "static";
-    view.addChild(scrim);
+    const back = scrim(DESIGN_W, DESIGN_H, 0.72);
+    back.eventMode = "static";
+    view.addChild(back);
 
-    const [px, py, pw, ph] = R.results.victoryPanel;
-    const panel = new Container();
-    panel.position.set(px, py);
-    panel.addChild(makePanel(pw, ph));
-    view.addChild(panel);
+    const card = panel(PW, ph, { variant: "raised", accent: PAL.gold });
+    card.position.set(px, py);
+    view.addChild(card);
 
-    const header = new Text({
-      text: HEADERS[this.variant],
-      style: display(32, { fill: PAL.gold }),
+    const eyebrow = heading(EYEBROWS[this.variant], 3, { center: true });
+    eyebrow.position.set(PW / 2, SPACE.lg);
+    card.addChild(eyebrow);
+
+    const header = heading(HEADERS[this.variant], 1, {
+      center: true,
+      fill: PAL.gold,
     });
-    header.anchor.set(0.5);
-    header.position.set(pw / 2, 44);
+    header.position.set(PW / 2, SPACE.lg + 34);
     header.scale.set(1.4); // drops in with backOut 1.4→1 (ui-art §10)
     tween(header.scale, { x: 1, y: 1 }, 300, "backOut");
-    panel.addChild(header);
+    card.addChild(header);
 
-    let y = 84;
+    let y = HEADER_H;
     let delay = 0;
     const addRow = (row: Container, h: number) => {
-      row.position.set(32, y);
+      row.position.set(PAD, y);
       row.alpha = 0;
-      panel.addChild(row);
+      card.addChild(row);
       const y0 = row.y;
       const at = delay;
       delay += 120; // rows pop in 120ms apart (ui-art §10)
@@ -191,47 +236,57 @@ export class LootOverlay implements Overlay {
     // shinies row
     if (p.grant.shinies !== 0) {
       const row = new Container();
-      const coin = new Graphics()
-        .circle(10, 10, 7)
-        .fill(PAL.gold)
-        .stroke({ width: 2, color: PAL.goldDark });
-      row.addChild(coin);
-      const t = new Text({
-        text: `${p.grant.shinies > 0 ? "+" : ""}${p.grant.shinies} ✦`,
-        style: mono(16, { fill: PAL.gold }),
+      const coin = makeSpriteIcon("item:shinies", 22);
+      if (coin) {
+        coin.position.set(11, 11);
+        row.addChild(coin);
+      } else {
+        row.addChild(
+          new Graphics()
+            .circle(11, 11, 7)
+            .fill(PAL.gold)
+            .stroke({ width: 2, color: PAL.goldDark }),
+        );
+      }
+      const t = label(`${p.grant.shinies > 0 ? "+" : ""}${p.grant.shinies} ✦`, {
+        mono: true,
+        fill: PAL.gold,
+        size: TYPE.body,
       });
-      t.position.set(26, 1);
+      t.position.set(30, 2);
       row.addChild(t);
-      addRow(row, 28);
+      addRow(row, 30);
     }
 
     // equipment rows
     for (const e of p.grant.equips) {
       const row = new Container();
-      const art = makeSpriteIcon(itemSpriteId(e), 32);
+      const art = makeSpriteIcon(itemSpriteId(e), 34);
       if (art) {
-        art.position.set(14, 17);
+        art.position.set(17, 18);
         row.addChild(art);
       } else {
-        const icon = new Text({
-          text: equipIcon(e),
-          style: mono(18, { fill: RARITY_COLOR[e.rarity] }),
+        const icon = label(EQUIP_DEFS[e.defId].icon, {
+          mono: true,
+          size: TYPE.h2,
+          fill: RARITY_COLOR[e.rarity],
         });
         row.addChild(icon);
       }
-      const name = new Text({
-        text: `${equipName(e)}  —  ${e.rarity} L${e.itemLevel}`,
-        style: ui(16, { fill: RARITY_COLOR[e.rarity] }),
+      const name = label(`${equipName(e)}  —  ${e.rarity} L${e.itemLevel}`, {
+        size: TYPE.body,
+        bold: true,
+        fill: RARITY_COLOR[e.rarity],
       });
-      name.position.set(30, 0);
-      row.addChild(name);
-      const stats = new Text({
-        text: equipStatsText(e),
-        style: mono(11, { fill: PAL.textDim }),
+      name.position.set(44, 0);
+      const stats = label(equipStatsText(e), {
+        mono: true,
+        dim: true,
+        size: TYPE.tiny,
       });
-      stats.position.set(30, 21);
-      row.addChild(stats);
-      addRow(row, 40);
+      stats.position.set(44, 22);
+      row.addChild(name, stats);
+      addRow(row, 44);
     }
 
     // consumable rows
@@ -239,122 +294,108 @@ export class LootOverlay implements Overlay {
       const row = new Container();
       const art = makeSpriteIcon(`item:${c.defId}`, 24);
       if (art) {
-        art.position.set(12, 11);
+        art.position.set(12, 12);
         row.addChild(art);
       } else {
-        const icon = new Text({
-          text: CONSUMABLES[c.defId].icon,
-          style: mono(18),
-        });
-        row.addChild(icon);
+        row.addChild(
+          label(CONSUMABLES[c.defId].icon, { mono: true, size: TYPE.h3 }),
+        );
       }
-      const name = new Text({
-        text: `${CONSUMABLES[c.defId].name} ×${c.count}`,
-        style: ui(16),
+      const name = label(`${CONSUMABLES[c.defId].name} ×${c.count}`, {
+        size: TYPE.body,
       });
-      name.position.set(30, 0);
+      name.position.set(44, 2);
       row.addChild(name);
-      addRow(row, 26);
+      addRow(row, 28);
     }
 
     // event-win / extra delta lines
     for (const line of lines) {
       const row = new Container();
-      const t = new Text({
-        text: line.text,
-        style: ui(15, { fill: TONE_COLOR[line.tone] }),
-      });
-      row.addChild(t);
-      addRow(row, 22);
+      row.addChild(
+        label(line.text, { fill: TONE_COLOR[line.tone], bold: true }),
+      );
+      addRow(row, 24);
     }
 
     // XP bar + level-up toast (victory variants)
-    const runNow = ctx.run;
-    if (p.xpBefore !== undefined && runNow) {
-      y += 8;
-      const gained = runNow.xp - p.xpBefore;
-      const label = new Text({
-        text: `XP +${Math.max(0, gained)}`,
-        style: mono(12, { fill: PAL.energy }),
+    if (hasXp && runNow) {
+      y += SPACE.md;
+      const gained = runNow.xp - (p.xpBefore ?? 0);
+      const xpLabel = label(`XP +${Math.max(0, gained)}`, {
+        mono: true,
+        fill: PAL.xp,
+        size: TYPE.small,
       });
-      label.position.set(32, y);
-      panel.addChild(label);
-      const bar = makeBar(320, 10, { hp: false, color: PAL.energy });
-      bar.view.position.set(120, y + 1);
-      panel.addChild(bar.view);
-      bar.set(xpFrac(p.xpBefore, p.levelBefore ?? runNow.level), false);
-      this.later(() => bar.set(xpFrac(runNow.xp, runNow.level)), 250);
-      y += 22;
+      xpLabel.position.set(PAD, y);
+      card.addChild(xpLabel);
+      const xpBar = bar(360, 10, { kind: "xp" });
+      xpBar.view.position.set(PW - PAD - 360, y + 4);
+      card.addChild(xpBar.view);
+      // a level-up restarts the band: begin empty rather than letting the
+      // bar visibly shrink (and leave a chip-away ghost) across the boundary
+      xpBar.set(leveled ? 0 : xpFrac(p.xpBefore ?? 0, levelBefore), 1, false);
+      this.later(() => xpBar.set(xpFrac(runNow.xp, runNow.level), 1), 250);
+      y += 26;
 
-      const levelBefore = p.levelBefore ?? runNow.level;
-      if (runNow.level > levelBefore) {
-        const toast = new Text({
-          text: `LEVEL UP!  Lv ${runNow.level}`,
-          style: ui(13, { fontWeight: "bold", fill: PAL.gold }),
-        });
-        toast.position.set(32, y);
-        panel.addChild(toast);
-        // gold flash: 3 alpha pulses
-        const pulse = (n: number) => {
-          if (n <= 0 || this.closed) return;
-          tween(toast, { alpha: 0.25 }, 140, "linear", () => {
-            tween(toast, { alpha: 1 }, 140, "linear", () => pulse(n - 1));
-          });
-        };
-        pulse(3);
-        y += 24;
+      if (leveled) {
+        // THE level-up moment (progression.md): new level, the growth rows
+        // gained, any milestone skill learned, and where to spend the points
+        const flourish = makeLevelUpCard(
+          runNow.cats,
+          levelBefore,
+          runNow.level,
+          PW - PAD * 2,
+        );
+        flourish.view.position.set(PAD, y);
+        card.addChild(flourish.view);
+        y += flourish.height;
       }
     }
 
     // Lives ledger (cats that stood up KO'd: pip crack + "-1 Life")
-    if (p.livesLost && p.livesLost.length > 0) {
-      y += 6;
-      for (const lost of p.livesLost) {
+    if (ledger.length > 0) {
+      y += SPACE.md;
+      for (const lost of ledger) {
         const row = new Container();
-        row.position.set(32, y);
-        panel.addChild(row);
-        const face = new Graphics();
-        drawCatPortrait(face, lost.classId, false);
-        face.scale.set(0.6);
-        face.position.set(14, 14);
+        row.position.set(PAD, y);
+        card.addChild(row);
+        const face = avatar(lost.classId, 32, {});
+        face.position.set(16, 16);
         row.addChild(face);
-        const name = new Text({
-          text: CLASSES[lost.classId].catName,
-          style: ui(13, {
-            fontWeight: "bold",
-            fill: PAL[lost.classId].body,
-          }),
+        const name = label(CLASSES[lost.classId].catName, {
+          bold: true,
+          fill: catNameColor(lost.classId),
         });
-        name.position.set(34, 0);
+        name.position.set(40, 0);
         row.addChild(name);
         const paws = makePawRow(lost.livesLeft);
-        paws.view.position.set(34, 18);
+        paws.view.position.set(40, 20);
         row.addChild(paws.view);
-        const tag = new Text({
-          text: "-1 Life",
-          style: mono(14, { fill: PAL.danger }),
-        });
-        tag.position.set(130, 4);
+        const tag = label("-1 Life", { mono: true, fill: PAL.danger });
+        tag.anchor.set(1, 0);
+        tag.position.set(PW - PAD * 2, 6);
         row.addChild(tag);
         // the cracked pip: index = livesLeft (first spent pip), splits into
         // two falling halves (ui-art §10)
         this.later(
-          () => this.crackPip(row, 34 + lost.livesLeft * 8 + 3.5, 21),
+          () => this.crackPip(row, 40 + lost.livesLeft * 8 + 3.5, 23),
           400,
         );
-        y += 34;
+        y += 40;
       }
     }
 
-    const btn = makeButton(
-      this.variant === "chest" ? "[Enter] Take All" : "[Enter] Continue",
-      240,
-      40,
+    const bw = 260;
+    const b = button(
+      this.variant === "chest" ? "Take All" : "Continue",
+      bw,
+      52,
       () => this.proceed(),
-      { primary: true, fontSize: 16 },
+      { primary: true, hotkey: "Enter" },
     );
-    btn.view.position.set(pw / 2 - 120, ph - 56);
-    panel.addChild(btn.view);
+    b.view.position.set((PW - bw) / 2, ph - 52 - SPACE.lg);
+    card.addChild(b.view);
   }
 
   onKey(key: string): boolean {
@@ -445,8 +486,4 @@ function xpFrac(xp: number, level: number): number {
   const hi = XP_TO_LEVEL[level];
   if (hi === undefined || hi <= lo) return 1; // level cap
   return Math.max(0, Math.min(1, (xp - lo) / (hi - lo)));
-}
-
-function equipIcon(e: EquipInstance): string {
-  return EQUIP_DEFS[e.defId].icon;
 }

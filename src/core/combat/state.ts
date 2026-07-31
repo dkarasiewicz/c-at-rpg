@@ -14,10 +14,10 @@ import type {
   SkillId,
   StatusInstance,
   StatusId,
-} from "../types";
-import { SKILLS } from "../../content/skills";
-import { CONSUMABLES } from "../../content/consumables";
-import { roundHalfUp, clamp } from "../util";
+} from "../types.js";
+import { SKILLS } from "../../content/skills.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { roundHalfUp, clamp } from "../util.js";
 
 /* ------------------------------------------------------------------ */
 /* basic queries                                                       */

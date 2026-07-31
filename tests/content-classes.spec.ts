@@ -10,9 +10,9 @@
  *    exists in SKILLS; table self-consistency invariants hold.
  */
 import { describe, expect, it } from "vitest";
-import { CLASSES } from "../src/content/classes";
-import { SKILLS } from "../src/content/skills";
-import type { ClassId, Skill, Stats } from "../src/core/types";
+import { CLASSES } from "../src/content/classes.js";
+import { SKILLS } from "../src/content/skills.js";
+import type { ClassId, Skill, Stats } from "../src/core/types.js";
 
 /** Apply growth rows 1..(level-1) to a base — classes.md §8 leveling. */
 function statsAtLevel(classId: ClassId, level: number): Stats {
@@ -81,12 +81,17 @@ describe("CLASSES — combat.md §13 level-1 party (byte-for-byte)", () => {
     );
   });
 
-  it("keys match ids and every class has exactly 4 skills (capstone at L4)", () => {
+  it("keys match ids and every class has 7 skills (L1 kit, capstone, milestones)", () => {
     for (const [key, cls] of Object.entries(CLASSES)) {
       expect(cls.id).toBe(key);
-      expect(cls.skills).toHaveLength(4);
+      // 3 known at L1 + one milestone unlock each at L2/L4/L6/L8
+      // (docs/design/progression.md §2). ARRAY ORDER IS LOAD-BEARING: the
+      // legacy kit (Claw Swipe, two L1 skills, the L4 capstone) comes first
+      // so the default battle loadout — knownSkills truncated to 4 — is the
+      // pre-milestone kit at every level.
+      expect(cls.skills).toHaveLength(7);
       const unlocks = cls.skills.map((s) => s.unlockLevel);
-      expect(unlocks).toEqual([1, 1, 1, 4]);
+      expect(unlocks).toEqual([1, 1, 1, 4, 2, 6, 8]);
       expect(cls.skills[0].skillId).toBe("clawSwipe");
       expect(cls.trait.tier2Level).toBe(7);
       expect(cls.base.enMax).toBe(10);
@@ -425,11 +430,18 @@ describe("SKILLS — table invariants", () => {
     }
   });
 
-  it("cat kit is exactly Claw Swipe + 12 class skills (GDD §5 budget)", () => {
+  it("cat kit is Claw Swipe + 24 class skills (6 per cat — progression.md §2)", () => {
     const catSkillIds = new Set(
       Object.values(CLASSES).flatMap((c) => c.skills.map((s) => s.skillId)),
     );
-    expect(catSkillIds.size).toBe(13);
+    expect(catSkillIds.size).toBe(25);
+    // the 12 milestone unlocks are all new ids, 3 per class
+    for (const cls of Object.values(CLASSES)) {
+      const milestones = cls.skills.filter(
+        (s) => s.unlockLevel > 1 && s.unlockLevel !== 4,
+      );
+      expect(milestones.map((s) => s.unlockLevel)).toEqual([2, 6, 8]);
+    }
   });
 
   it("every class skillId resolves in SKILLS", () => {

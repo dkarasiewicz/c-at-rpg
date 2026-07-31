@@ -1,7 +1,8 @@
 /**
  * c(at)rpg content — equipment definitions (loot.md §§2-4).
  *
- * 10 fixed EquipDefs: 4 class weapons + 6 universal trinkets. A Mewthical
+ * 18 fixed EquipDefs: 4 class weapons + 6 universal trinkets + 8 universal
+ * collars (the third slot — docs/design/progression.md §4). A Mewthical
  * drop of a def IS that def's unique (fixed name + one hook); Cardboard
  * Cuirass and Spiked Collar have no unique (Mewthical rolls of those defs
  * downgrade to Pedigree — loot.md §5). Stat values are formulas, not rolls
@@ -9,7 +10,7 @@
  *
  * Data only: imports core/types.ts and nothing else.
  */
-import type { EquipDef, ItemId, Rarity } from "../core/types";
+import type { EquipDef, ItemId, Rarity } from "../core/types.js";
 
 export const EQUIP_DEFS: Record<ItemId, EquipDef> = {
   /* ---- Weapons (primary always atk; class-locked) — loot.md §2 ---------- */
@@ -116,6 +117,95 @@ export const EQUIP_DEFS: Record<ItemId, EquipDef> = {
     primary: "atk", // trinket-atk base: ceil((1+L)/2) — loot.md §3
     secondaryPool: ["def", "crt"],
     // no unique — Mewthical rolls downgrade to Pedigree
+  },
+
+  /* ---- Collars (universal, third slot) — progression.md §4 -------------- */
+  /*
+   * Eight defensive/utility pieces. NO `atk` and NO `crt` anywhere in the
+   * slot: offense is what the weapon and the trinket are for, so a collar
+   * choice is always a survivability/tempo choice. Values use the same §3
+   * formulas as trinkets (the reduced non-weapon bases).
+   *
+   * Three carry Mewthical uniques. They draw from the SAME eight-hook menu as
+   * the trinkets (no new engine hooks — progression.md §4), which means the
+   * unique-or-downgrade rule (loot.md §5) makes them mutually exclusive with
+   * their trinket counterpart: exactly one Ninth-Bell-flavoured item, one
+   * static-shock item and one battery item can exist per run.
+   */
+  wovenCollar: {
+    id: "wovenCollar",
+    name: "Woven Collar",
+    icon: "⊂",
+    slot: "collar",
+    primary: "def",
+    secondaryPool: ["hp", "spd"],
+    // no unique — Mewthical rolls downgrade to Pedigree
+  },
+  quiltedGorget: {
+    id: "quiltedGorget",
+    name: "Quilted Gorget",
+    icon: "⊓",
+    slot: "collar",
+    primary: "hp",
+    secondaryPool: ["def", "spd"],
+    // no unique — Mewthical rolls downgrade to Pedigree
+  },
+  flealessBand: {
+    id: "flealessBand",
+    name: "Flealess Band",
+    icon: "≈",
+    slot: "collar",
+    primary: "def",
+    secondaryPool: ["hp", "enMax"],
+    // no unique — Mewthical rolls downgrade to Pedigree
+  },
+  noNameTag: {
+    id: "noNameTag",
+    name: "The No-Name Tag",
+    icon: "⌷",
+    slot: "collar",
+    primary: "spd",
+    secondaryPool: ["def", "hp"],
+    // no unique — Mewthical rolls downgrade to Pedigree
+  },
+  leadLinedCollar: {
+    id: "leadLinedCollar",
+    name: "Lead-Lined Collar",
+    icon: "▤",
+    slot: "collar",
+    primary: "def",
+    secondaryPool: ["enMax", "spd"],
+    // no unique — Mewthical rolls downgrade to Pedigree
+  },
+  bubbleWrapRuff: {
+    id: "bubbleWrapRuff",
+    name: "Bubble-Wrap Ruff",
+    icon: "◌",
+    slot: "collar",
+    primary: "hp",
+    secondaryPool: ["def", "enMax"],
+    uniqueId: "moverOffBalance",
+    uniqueName: "«PACKING MATERIAL»",
+  },
+  batteryCollar: {
+    id: "batteryCollar",
+    name: "Battery Collar",
+    icon: "⌁",
+    slot: "collar",
+    primary: "enMax",
+    secondaryPool: ["def", "hp"],
+    uniqueId: "startEnergy6",
+    uniqueName: "«IDLE THROTTLE»",
+  },
+  wardCollar: {
+    id: "wardCollar",
+    name: "Ward Collar",
+    icon: "☖",
+    slot: "collar",
+    primary: "hp",
+    secondaryPool: ["spd", "enMax"],
+    uniqueId: "ninthBell",
+    uniqueName: "«THE NINTH WARD»",
   },
 };
 

@@ -1,24 +1,40 @@
 /**
- * WP-09 — title scene (ui-art §11): night backdrop (stars, crescent moon,
- * rooftop skyline), the four cats sitting on the roofline, the c(at)rpg
- * logo, and the menu: New Run / Continue (iff a valid save exists) / Seed…
- * entry (blank = random 8-hex). Records line from MetaFile.
+ * WP-09 — title scene (ui-art §11): the painted hero illustration (or the
+ * procedural night sky when the art pack is absent), the c(at)rpg wordmark,
+ * and the menu panel: New Run / Continue (iff a valid save exists) / Create
+ * your party / Seed… entry (blank = random 8-hex). Records line from
+ * MetaFile.
+ *
+ * Chrome is the shared kit (widgets.ts): `sceneBackdrop` + `vignette` for
+ * atmosphere, one glass `panel` behind the menu column, `button` with
+ * hotkey chips for every action, `heading`/`label` for all type. The only
+ * bespoke piece is the wordmark itself (2× the h1 size — it is brand art,
+ * not UI copy) and the assetless night sky, whose cats go through the
+ * painted-first `catSprite` helper so no flat-vector cat can appear while a
+ * painted one exists.
  *
  * Visual randomness here is Math.random() — the ONE place it may feed
  * gameplay is *picking* a fresh runSeed string (ARCHITECTURE.md §4).
  */
 import { Container, Graphics, Sprite, Text } from "pixi.js";
-import type { RunState } from "../../core/types";
-import { loadRun } from "../../core/run/save";
-import { newRun } from "../../core/run/runState";
-import { PAL } from "../palette";
-import { DESIGN_H, DESIGN_W, R } from "../layout";
-import { display, mono, ui } from "../textStyles";
-import { makeButton } from "../widgets";
-import { drawCat } from "../draw/cats";
-import { spriteTextureFor } from "../sprites";
-import { applyPartyContent } from "./partyCreator";
-import { layer, type GameCtx, type Scene } from "../sceneManager";
+import type { ClassId, RunState } from "../../core/types.js";
+import { loadRun } from "../../core/run/save.js";
+import { newRun } from "../../core/run/runState.js";
+import { PAL } from "../palette.js";
+import { DESIGN_H, DESIGN_W, R, SPACE } from "../layout.js";
+import { TYPE, display } from "../textStyles.js";
+import {
+  button,
+  heading,
+  label,
+  panel,
+  sceneBackdrop,
+  vignette,
+} from "../widgets.js";
+import { drawCat } from "../draw/cats.js";
+import { catTexture, spriteTextureFor } from "../sprites.js";
+import { applyPartyContent } from "./partyCreator.js";
+import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 
 /** Random 8-hex seed (visual RNG picking a gameplay seed — §4 exception). */
 export function randomSeed(): string {
@@ -29,7 +45,22 @@ export function randomSeed(): string {
   return s.toUpperCase();
 }
 
-const CAT_ORDER = ["bruiser", "trickster", "hexer", "medic"] as const;
+const CAT_ORDER: readonly ClassId[] = [
+  "bruiser",
+  "trickster",
+  "hexer",
+  "medic",
+];
+
+/* ---- screen geometry (design px) ------------------------------------- */
+const LOGO_Y = 168;
+const SUBTITLE_Y = 224;
+const MENU_X = 460;
+const MENU_W = 360;
+const MENU_TOP = 288;
+const BTN_W = 300;
+const BTN_H = 52;
+const BTN_GAP = SPACE.md;
 
 export function createTitleScene(): Scene {
   const view = new Container();
@@ -49,11 +80,11 @@ export function createTitleScene(): Scene {
   let t = 0;
 
   const refreshSeedTexts = (): void => {
-    const label = seedBuffer === "" ? "random" : seedBuffer;
-    if (seedChip) seedChip.text = `seed ${label}`;
+    const seedLabel = seedBuffer === "" ? "random" : seedBuffer;
+    if (seedChip) seedChip.text = `seed ${seedLabel}`;
     if (entryChip) {
       entryChip.visible = entering || seedBuffer !== "";
-      entryChip.text = entering ? `seed: ${seedBuffer}_` : `seed: ${label}`;
+      entryChip.text = entering ? `seed: ${seedBuffer}_` : `seed: ${seedLabel}`;
     }
   };
 
@@ -87,27 +118,30 @@ export function createTitleScene(): Scene {
       savedRun = loadRun(); // Continue visible iff a valid save exists
 
       /* ---- backdrop ------------------------------------------------ */
-      const bg = new Graphics().rect(0, 0, DESIGN_W, DESIGN_H).fill(PAL.bgDeep);
-      view.addChild(bg);
+      // palette wash under everything ('scene:title' is unpublished — the
+      // hero art below is the real backdrop when the pack is present)
+      view.addChild(sceneBackdrop("scene:title", DESIGN_W, DESIGN_H));
 
-      // generated hero illustration (visual-v2 'title:hero'): dimmed under
-      // the menu; the procedural sky below stays as the fallback.
       const heroTex = spriteTextureFor("title:hero");
-      if (heroTex) {
+      if (heroTex && heroTex.height > 0) {
+        // CONTAIN-fit (not cover): the hero art is a group staging and
+        // cropping it would decapitate the cast. Its flat PAL.bgDeep field
+        // blends into the wash on both sides.
         const hero = new Sprite({ texture: heroTex, anchor: 0.5 });
-        // fit height; the square art's flat #1a1626 bg blends into bgDeep
         hero.scale.set(DESIGN_H / heroTex.height);
         hero.position.set(DESIGN_W / 2, DESIGN_H / 2);
         view.addChild(hero);
-        const dim = new Graphics()
-          .rect(0, 0, DESIGN_W, DESIGN_H)
-          .fill({ color: PAL.bgDeep, alpha: 0.55 });
-        view.addChild(dim);
+        view.addChild(
+          new Graphics()
+            .rect(0, 0, DESIGN_W, DESIGN_H)
+            .fill({ color: PAL.bgDeep, alpha: 0.55 }),
+        );
       } else {
         buildProceduralSky();
       }
+      view.addChild(vignette(DESIGN_W, DESIGN_H, 0.85));
 
-      /* ---- logo ---------------------------------------------------- */
+      /* ---- wordmark + menu ----------------------------------------- */
       buildLogoAndMenu(gameCtx);
       layer(root, "bg").addChild(view);
     },
@@ -168,6 +202,28 @@ export function createTitleScene(): Scene {
     },
   };
 
+  /* ---- painted-first rooftop cat ----------------------------------- */
+  /**
+   * A full-body cat for the skyline: the painted `cat:*` sprite when the
+   * art pack has it, the procedural `drawCat` recipe only as the fallback
+   * (same painted-first contract as the kit's `avatar()`). Feet land on the
+   * container origin.
+   */
+  function catSprite(classId: ClassId, height: number): Container {
+    const c = new Container();
+    const tex = catTexture(classId);
+    if (tex && tex.height > 0) {
+      const sp = new Sprite({ texture: tex, anchor: { x: 0.5, y: 1 } });
+      sp.scale.set(height / tex.height);
+      c.addChild(sp);
+    } else {
+      const g = new Graphics();
+      drawCat(g, classId, "sit");
+      c.addChild(g);
+    }
+    return c;
+  }
+
   /* ---- procedural night sky (fallback when no title:hero asset) ---- */
   function buildProceduralSky(): void {
     for (let i = 0; i < 40; i++) {
@@ -220,95 +276,114 @@ export function createTitleScene(): Scene {
     pts.push(DESIGN_W, roofY, DESIGN_W, DESIGN_H);
     view.addChild(new Graphics().poly(pts).fill(PAL.void));
 
-    // the four cats on the roofline (sit pose, feet at rooftop y)
+    // the four cats on the roofline (feet at rooftop y)
     R.title.catXs.forEach((x, i) => {
-      const c = new Container();
-      const g = new Graphics();
-      drawCat(g, CAT_ORDER[i], "sit");
-      c.addChild(g);
+      const c = catSprite(CAT_ORDER[i], 108);
       c.position.set(x, roofY);
       cats.push({ c, baseY: roofY, phase: i * 0.9 });
       view.addChild(c);
     });
   }
 
-  /* ---- logo, menu, records (drawn over hero or procedural sky) ----- */
+  /* ---- wordmark, menu, records (over hero or procedural sky) -------- */
   function buildLogoAndMenu(gameCtx: GameCtx): void {
+    // The wordmark is the one bespoke type on the shared scale: 2 × h1.
     const logoParts: { text: string; fill: number }[] = [
       { text: "c", fill: PAL.text },
       { text: "(at)", fill: PAL.gold },
       { text: "rpg", fill: PAL.text },
     ];
     const texts = logoParts.map(
-      (p) => new Text({ text: p.text, style: display(72, { fill: p.fill }) }),
+      (p) =>
+        new Text({
+          text: p.text,
+          style: display(TYPE.h1 * 2, { fill: p.fill }),
+        }),
     );
     const totalW = texts.reduce((s, x) => s + x.width, 0);
-    let lx = R.title.logoCenter.x - totalW / 2;
+    let lx = DESIGN_W / 2 - totalW / 2;
     for (const txt of texts) {
       txt.anchor.set(0, 0.5);
-      txt.position.set(lx, R.title.logoCenter.y);
+      txt.position.set(lx, LOGO_Y);
       lx += txt.width;
       view.addChild(txt);
     }
     // whisker flourish: 3 lines per side, angled off the logo baseline
     const wg = new Graphics();
-    const cy = R.title.logoCenter.y;
     for (const side of [-1, 1]) {
-      const x0 = R.title.logoCenter.x + side * (totalW / 2 + 16);
+      const x0 = DESIGN_W / 2 + side * (totalW / 2 + SPACE.md);
       for (const [dy0, dy1] of [
         [-14, -22],
         [0, 0],
         [14, 22],
       ]) {
-        wg.moveTo(x0, cy + dy0)
-          .lineTo(x0 + side * 56, cy + dy1)
+        wg.moveTo(x0, LOGO_Y + dy0)
+          .lineTo(x0 + side * 56, LOGO_Y + dy1)
           .stroke({ width: 2, color: PAL.textDim });
       }
     }
     view.addChild(wg);
 
-    const subtitle = new Text({
-      text: "a cRPG of considerable fluffiness",
-      style: ui(18, { fill: PAL.textDim }),
+    const subtitle = heading("A CRPG OF CONSIDERABLE FLUFFINESS", 3, {
+      center: true,
     });
-    subtitle.anchor.set(0.5, 0);
-    subtitle.position.set(DESIGN_W / 2, R.title.subtitleY);
+    subtitle.position.set(DESIGN_W / 2, SUBTITLE_Y);
     view.addChild(subtitle);
 
     /* ---- menu ---------------------------------------------------- */
-    // Buttons keep the §11 column (x 500, 280×48) but stack from a local
-    // baseline: with Create-your-party ALWAYS present the menu can hold 4
-    // entries, one more than R.title.menuButtons planned for.
-    const [bx, , bw, bh] = R.title.menuButtons[0];
-    const entries: { label: string; onTap: () => void; primary?: boolean }[] = [
-      { label: "[Enter] New Run", onTap: startRun, primary: true },
+    const entries: {
+      label: string;
+      hotkey: string;
+      onTap: () => void;
+      primary?: boolean;
+    }[] = [
+      {
+        label: "New Run",
+        hotkey: "Enter",
+        onTap: startRun,
+        primary: true,
+      },
     ];
     if (savedRun) {
-      entries.push({ label: "[O] Continue", onTap: continueRun });
+      entries.push({ label: "Continue", hotkey: "O", onTap: continueRun });
     }
-    entries.push({ label: "[C] Create your party", onTap: openPartyCreator });
     entries.push({
-      label: "[S] Seed…",
+      label: "Create your party",
+      hotkey: "C",
+      onTap: openPartyCreator,
+    });
+    entries.push({
+      label: "Seed…",
+      hotkey: "S",
       onTap: () => {
         entering = !entering;
         refreshSeedTexts();
       },
     });
-    const startY = entries.length > 3 ? 330 : 360;
+
+    const rowsH = entries.length * BTN_H + (entries.length - 1) * BTN_GAP;
+    const menuH = rowsH + SPACE.lg * 2 + SPACE.lg;
+    const menu = panel(MENU_W, menuH, { variant: "glass" });
+    menu.position.set(MENU_X, MENU_TOP);
+    view.addChild(menu);
+
     entries.forEach((e, i) => {
-      const b = makeButton(e.label, bw, bh, e.onTap, {
+      const b = button(e.label, BTN_W, BTN_H, e.onTap, {
         primary: e.primary,
+        hotkey: e.hotkey,
       });
-      b.view.position.set(bx, startY + i * 60);
-      view.addChild(b.view);
+      b.view.position.set(
+        (MENU_W - BTN_W) / 2,
+        SPACE.lg + i * (BTN_H + BTN_GAP),
+      );
+      menu.addChild(b.view);
     });
 
-    // live seed entry chip under the menu
-    entryChip = new Text({ text: "", style: mono(14, { fill: PAL.gold }) });
-    entryChip.anchor.set(0.5, 0);
-    entryChip.position.set(DESIGN_W / 2, startY + entries.length * 60 + 6);
+    // live seed entry chip inside the menu foot
+    entryChip = label("", { mono: true, fill: PAL.gold, center: true });
+    entryChip.position.set(MENU_W / 2, menuH - SPACE.lg - SPACE.xs);
     entryChip.visible = false;
-    view.addChild(entryChip);
+    menu.addChild(entryChip);
 
     // records line from MetaFile
     const rec = gameCtx.meta;
@@ -316,26 +391,21 @@ export function createTitleScene(): Scene {
       rec.records.fastestVictoryMs === null
         ? "—"
         : formatTime(rec.records.fastestVictoryMs);
-    const records = new Text({
-      text:
-        `best score ${rec.records.bestScore} · fastest victory ${fastest}` +
+    const records = label(
+      `best score ${rec.records.bestScore} · fastest victory ${fastest}` +
         ` · victories ${rec.counters.victories} · runs ${rec.counters.runs}`,
-      style: ui(14, { fill: PAL.textDim }),
-    });
-    records.anchor.set(0.5, 0);
-    records.position.set(DESIGN_W / 2, startY + entries.length * 60 + 32);
+      { dim: true, center: true },
+    );
+    records.position.set(DESIGN_W / 2, MENU_TOP + menuH + SPACE.lg);
     view.addChild(records);
 
     // current seed chip bottom-left + version bottom-right
-    seedChip = new Text({ text: "", style: mono(11, { fill: PAL.textDim }) });
-    seedChip.position.set(R.title.seedChip[0], R.title.seedChip[1]);
+    seedChip = label("", { mono: true, dim: true, size: TYPE.tiny });
+    seedChip.position.set(SPACE.md, DESIGN_H - SPACE.lg - SPACE.xs);
     view.addChild(seedChip);
-    const version = new Text({
-      text: "v1",
-      style: mono(11, { fill: PAL.textDim }),
-    });
+    const version = label("v1", { mono: true, dim: true, size: TYPE.tiny });
     version.anchor.set(1, 0);
-    version.position.set(DESIGN_W - 12, R.title.seedChip[1]);
+    version.position.set(DESIGN_W - SPACE.md, DESIGN_H - SPACE.lg - SPACE.xs);
     view.addChild(version);
     refreshSeedTexts();
   }

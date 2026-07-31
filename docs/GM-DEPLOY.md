@@ -5,6 +5,45 @@ functions under `api/gm/*`, next to the static Vite build of the game. The
 game is fully playable without it — every client call falls back to static
 content on any failure.
 
+## Deployment status
+
+Live at **https://c-at-rpg.vercel.app** — Vercel project
+`dkarasiewiczs-projects/c-at-rpg` (Vite preset auto-detected, `dist/` output,
+`api/**` as Node functions with `maxDuration: 60` from `vercel.json`).
+`GM_MODEL` and `GM_PARTY_MODEL` are set for all three environments.
+
+`ANTHROPIC_API_KEY` is NOT set yet, so every generating endpoint answers a
+clean error and the game runs in its offline-first fallback. To enable the GM:
+
+```bash
+vercel env add ANTHROPIC_API_KEY production   # paste the key at the prompt
+vercel deploy --prod                          # env vars are read at build/boot
+```
+
+Verify with `curl -X POST https://c-at-rpg.vercel.app/api/gm/event \
+  -H 'content-type: application/json' -d '{"floor":1,...}'`.
+
+### Two runtime gotchas this deploy had to solve
+
+Both are properties of Vercel's Node runtime and will bite again if reverted:
+
+1. **Explicit `.js` import specifiers are mandatory.** `package.json` is
+   `"type": "module"` and Vercel *transpiles* `api/**/*.ts` without bundling,
+   so Node's ESM resolver — which does no extension guessing — threw
+   `ERR_MODULE_NOT_FOUND` on `import { ENEMIES } from "../../src/content/enemies"`.
+   Every relative specifier in `src/`, `api/`, `tests/` and `scripts/` therefore
+   carries an explicit `.js` extension. TypeScript (`moduleResolution: bundler`),
+   Vite and Vitest all resolve `./foo.js` back to `foo.ts`, so this costs
+   nothing locally. Do not "tidy" the extensions away.
+2. **The Node runtime calls the default export with `(IncomingMessage,
+   ServerResponse)`,** not the web `Request`/`Response` pair the handlers are
+   written against — `req.headers.get` is not a function. Each route's default
+   export is therefore wrapped in `vercelHandler()` (`api/_lib/http.ts`), which
+   accepts either calling convention and additionally converts any throw into a
+   clean JSON error, so a missing API key degrades to the offline fallback
+   instead of `FUNCTION_INVOCATION_FAILED`. The `createXHandler(deps)` factories
+   stay web-standard, which is what the unit tests drive.
+
 ## Layout
 
 | Path | What |

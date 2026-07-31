@@ -14,10 +14,10 @@
  * StepTrigger tells the UI what to react to. Post-battle re-entry is
  * applyVictory / applyFlee (+ contactCheck for chained fights, §14).
  */
-import { Tile } from "../types";
-import type { Entity, FloorState, Roamer, StepTrigger } from "../types";
-import { idx, inBounds, recomputeVisibility } from "./floor";
-import { advanceRoamers } from "./roamers";
+import { Tile } from "../types.js";
+import type { Entity, FloorState, Roamer, StepTrigger } from "../types.js";
+import { idx, inBounds, recomputeVisibility } from "./floor.js";
+import { advanceRoamers } from "./roamers.js";
 
 export type StepDir = "N" | "E" | "S" | "W";
 

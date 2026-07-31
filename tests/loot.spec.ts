@@ -14,8 +14,9 @@ import type {
   EquipInstance,
   Rarity,
   Rng,
-} from "../src/core/types";
-import { hash, mulberry32 } from "../src/core/rng";
+} from "../src/core/types.js";
+import { hash, mulberry32 } from "../src/core/rng.js";
+import { EQUIP_DEFS } from "../src/content/equipment.js";
 import {
   baseValue,
   floorBand,
@@ -28,7 +29,7 @@ import {
   rollVictory,
   secondaryValue,
   type LootCtx,
-} from "../src/core/loot/roll";
+} from "../src/core/loot/roll.js";
 import {
   INVENTORY_SLOTS,
   addConsumables,
@@ -45,7 +46,7 @@ import {
   removeConsumable,
   takeReplacing,
   unequipItem,
-} from "../src/core/loot/inventory";
+} from "../src/core/loot/inventory.js";
 import {
   buyStockItem,
   buyWarmLap,
@@ -55,7 +56,7 @@ import {
   sellValue,
   warmLapCost,
   warmLapHeal,
-} from "../src/core/loot/shop";
+} from "../src/core/loot/shop.js";
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -670,6 +671,21 @@ describe("Peddler stock roll (shop stream)", () => {
           price: 53,
           sold: false,
         },
+        // slot 6: the Peddler's dedicated collar (progression.md §4) —
+        // rolled AFTER the gear slot, so slots 1-5 are the same draws (and
+        // the same items) as the pre-collar recording.
+        {
+          kind: "equip",
+          item: {
+            uid: 2,
+            defId: "quiltedGorget",
+            itemLevel: 2,
+            rarity: "sleek",
+            stats: { hp: 9, spd: 1 },
+          },
+          price: 53,
+          sold: false,
+        },
       ],
       warmLapCost: 45,
       warmLapUsed: false,
@@ -695,6 +711,16 @@ describe("Peddler stock roll (shop stream)", () => {
     if (gear.kind === "equip") {
       expect(gear.item.itemLevel).toBe(4);
       expect(["sleek", "pedigree", "mewthical"]).toContain(gear.item.rarity);
+      expect(EQUIP_DEFS[gear.item.defId].slot).not.toBe("collar");
+    }
+    const collar = a.slots[5];
+    expect(collar.kind).toBe("equip");
+    if (collar.kind === "equip") {
+      expect(EQUIP_DEFS[collar.item.defId].slot).toBe("collar");
+      expect(collar.item.itemLevel).toBe(4);
+      expect(collar.item.uid).toBe(
+        gear.kind === "equip" ? gear.item.uid + 1 : 0,
+      );
     }
     expect(a.warmLapCost).toBe(75);
   });

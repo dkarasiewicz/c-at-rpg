@@ -10,7 +10,7 @@
  *
  * Data only: imports core/types.ts and nothing else.
  */
-import type { GameEvent } from "../core/types";
+import type { GameEvent } from "../core/types.js";
 
 export const EVENTS: GameEvent[] = [
   // ── 1 ─────────────────────────────────────────────────────────────────────

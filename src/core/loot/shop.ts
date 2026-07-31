@@ -8,24 +8,35 @@
  *   2. Sardine Tin 50 / Warm Milk 50 (one roll)
  *   3. Two rolls on the §7 consumable table (duplicates allowed)
  *   4. 1 equipment piece, L = n+1, rarity sleek 50 / pedigree 40 / mewthical 10
- *   5. Warm Lap (service, once per landing)
+ *      (weapon 40 / trinket 60 — the collar has its own slot below)
+ *   5. 1 collar, L = n+1, same rarity split (progression.md §4)
+ *   6. Warm Lap (service, once per landing)
  *
  * Prices (loot.md §6): consumable buy = def.price; equipValue(L, r) =
  * round((15 + 9L) · pmult), pmult 1/1.6/2.5/4; Warm Lap 30+15n; sell
  * (anything, landings only) = floor(buy/4), min 1.
  */
-import type { EquipInstance, Inventory, ItemId, Rarity, Rng } from "../types";
-import { pickWeighted, roundHalfUp } from "../util";
-import { CONSUMABLES } from "../../content/consumables";
-import { SHOP_GEAR_RARITY } from "../../content/lootTables";
-import { rollConsumable, rollOneEquip, type LootCtx } from "./roll";
+import type {
+  EquipInstance,
+  Inventory,
+  ItemId,
+  Rarity,
+  Rng,
+} from "../types.js";
+import { pickWeighted, roundHalfUp } from "../util.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import {
+  SHOP_GEAR_RARITY,
+  SHOP_GEAR_SLOT_WEIGHTS,
+} from "../../content/lootTables.js";
+import { rollConsumable, rollOneEquip, type LootCtx } from "./roll.js";
 import {
   addConsumables,
   addEquip,
   addShinies,
   isEquip,
   removeSlot,
-} from "./inventory";
+} from "./inventory.js";
 
 /** Price multiplier per rarity (loot.md §6). */
 export const PRICE_MULT: Record<Rarity, number> = {
@@ -67,7 +78,7 @@ export type ShopSlot =
   | { kind: "equip"; item: EquipInstance; price: number; sold: boolean };
 
 export interface ShopStock {
-  slots: ShopSlot[]; // 4 consumables + 1 equipment, §6 order
+  slots: ShopSlot[]; // 4 consumables + 1 gear + 1 collar, §6 order
   warmLapCost: number;
   warmLapUsed: boolean;
 }
@@ -100,11 +111,35 @@ export function rollShopStock(rng: Rng, ctx: LootCtx): ShopStock {
   );
   slots.push(consumableSlot(rollConsumable(rng)));
   slots.push(consumableSlot(rollConsumable(rng)));
-  const item = rollOneEquip(rng, n + 1, SHOP_GEAR_RARITY, ctx);
+  const item = rollOneEquip(rng, n + 1, SHOP_GEAR_RARITY, ctx, {
+    slotWeights: SHOP_GEAR_SLOT_WEIGHTS,
+  });
   slots.push({
     kind: "equip",
     item,
     price: equipValue(item.itemLevel, item.rarity),
+    sold: false,
+  });
+  // 6. One collar, same L and rarity split, slot forced (progression.md §4):
+  //    the Peddler is where a party reliably kits out its third slot. Rolled
+  //    LAST so every stream position above it is byte-identical to loot.md §6.
+  const collar = rollOneEquip(
+    rng,
+    n + 1,
+    SHOP_GEAR_RARITY,
+    {
+      ...ctx,
+      nextUid: ctx.nextUid + 1,
+      uniquesDropped: item.hook
+        ? [...ctx.uniquesDropped, item.hook]
+        : ctx.uniquesDropped,
+    },
+    { slot: "collar" },
+  );
+  slots.push({
+    kind: "equip",
+    item: collar,
+    price: equipValue(collar.itemLevel, collar.rarity),
     sold: false,
   });
   return { slots, warmLapCost: warmLapCost(n), warmLapUsed: false };

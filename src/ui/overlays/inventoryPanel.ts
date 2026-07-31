@@ -1,28 +1,36 @@
 /**
- * WP-12 — shared party inventory UI (loot.md §8): the 16-slot grid with
- * per-cat equip/unequip + stat-delta preview and Sort in 'manage' mode,
- * sell-at-quarter-value in 'sell' mode (the landing), plus the
- * full-inventory pickup modal (Take → replace a slot / Leave it).
+ * WP-12 — shared party inventory UI (loot.md §8, progression.md §4): the
+ * 16-slot grid with per-cat equip/unequip + stat-delta preview and Sort in
+ * 'manage' mode, sell-at-quarter-value in 'sell' mode (the landing), plus
+ * the full-inventory pickup modal (Take → replace a slot / Leave it).
  *
  * Pure presentation: every mutation goes through core/loot APIs and is
  * written back via `setRun`. This file exports embeddable components — the
  * pause overlay (Party/Inventory tabs), the landing scene (sell) and the
  * loot overlay (pickup path) host them; overlay ids stay 'loot' | 'pause'
  * (ARCHITECTURE.md §3).
+ *
+ * Chrome is the shared kit (widgets.ts): `panel` for the frame, every cell
+ * and every cat card, `avatar()` for cat faces (painted-first — never a
+ * flat vector portrait next to painted art), `makeSpriteIcon` for item art,
+ * `heading`/`label` type and the one `button` language.
  */
-import { Container, Graphics, Text } from "pixi.js";
+import { Container, Graphics } from "pixi.js";
 import type {
+  ClassId,
   ConsumableStack,
   EquipInstance,
+  EquipSlot,
   InventorySlot,
   Rarity,
   RunState,
   StatKey,
-} from "../../core/types";
-import { CLASSES } from "../../content/classes";
-import { CONSUMABLES } from "../../content/consumables";
-import { EQUIP_DEFS } from "../../content/equipment";
-import { CONSUMABLE_WEIGHTS } from "../../content/lootTables";
+} from "../../core/types.js";
+import { EQUIP_SLOTS } from "../../core/types.js";
+import { CLASSES } from "../../content/classes.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { EQUIP_DEFS } from "../../content/equipment.js";
+import { CONSUMABLE_WEIGHTS } from "../../content/lootTables.js";
 import {
   addEquip,
   canEquip,
@@ -32,13 +40,21 @@ import {
   sortInventory,
   takeReplacing,
   unequipItem,
-} from "../../core/loot/inventory";
-import { sellFromInventory, sellValue } from "../../core/loot/shop";
-import { PAL } from "../palette";
-import { DESIGN_H, DESIGN_W, RADIUS } from "../layout";
-import { display, mono, ui } from "../textStyles";
-import { makeButton, makePanel, makeSpriteIcon, makeTooltip } from "../widgets";
-import { drawCatPortrait } from "../draw/cats";
+} from "../../core/loot/inventory.js";
+import { sellFromInventory, sellValue } from "../../core/loot/shop.js";
+import { PAL, mix } from "../palette.js";
+import { DESIGN_H, DESIGN_W, RADIUS, SPACE } from "../layout.js";
+import { TYPE } from "../textStyles.js";
+import {
+  avatar,
+  button,
+  heading,
+  label,
+  makeSpriteIcon,
+  makeTooltip,
+  panel,
+  scrim,
+} from "../widgets.js";
 
 /* ---------------------------------------------------------------------- */
 /* Shared item-presentation helpers (also used by the loot overlay)        */
@@ -52,6 +68,16 @@ export const RARITY_COLOR: Record<Rarity, number> = {
   mewthical: PAL.stFrazzled,
 };
 
+/**
+ * Readable name color for a cat: the class body color lifted toward
+ * PAL.text, because two of the four cats (soot-black Pixel, dusk Mora) are
+ * darker than the panel fill and vanish when their raw body color is used
+ * as type. Shared by every screen that prints a cat's name on a panel.
+ */
+export function catNameColor(classId: ClassId): number {
+  return mix(PAL[classId].body, PAL.text, 0.4);
+}
+
 const STAT_LABEL: Record<StatKey, string> = {
   hp: "HP",
   atk: "ATK",
@@ -59,6 +85,13 @@ const STAT_LABEL: Record<StatKey, string> = {
   spd: "SPD",
   crt: "CRT",
   enMax: "EN",
+};
+
+/** Empty-slot placeholder glyph per equip slot. */
+const SLOT_GLYPH: Record<EquipSlot, string> = {
+  weapon: "W",
+  trinket: "T",
+  collar: "C",
 };
 
 /** Display name — Mewthical uniques show their hand-authored unique name. */
@@ -152,6 +185,13 @@ const CELL = 64;
 const GAP = 6;
 const COLS = 8;
 
+/** Selection / hover / rarity ring — the one outline language for cells. */
+function cellRing(size: number, color: number, alpha = 1): Graphics {
+  return new Graphics()
+    .roundRect(1, 1, size - 2, size - 2, RADIUS.button)
+    .stroke({ width: 2, color, alpha });
+}
+
 interface CellOpts {
   index: number;
   slot: InventorySlot;
@@ -167,63 +207,56 @@ function makeCell(o: CellOpts): Container {
     (o.index % COLS) * (CELL + GAP),
     Math.floor(o.index / COLS) * (CELL + GAP),
   );
-  const bg = new Graphics();
-  const paint = (hover: boolean) => {
-    bg.clear()
-      .roundRect(0, 0, CELL, CELL, RADIUS.button)
-      .fill(PAL.hpBack)
-      .stroke({
-        width: 2,
-        color: o.selected ? PAL.gold : hover ? PAL.panelLite : PAL.border,
-      });
-  };
-  paint(false);
-  cell.addChild(bg);
+  cell.addChild(panel(CELL, CELL, { variant: "solid", radius: RADIUS.button }));
+
+  const hoverRing = cellRing(CELL, PAL.gold, 0.55);
+  hoverRing.visible = false;
+  cell.addChild(hoverRing);
+  if (o.selected) cell.addChild(cellRing(CELL, PAL.gold));
 
   if (o.slot !== null) {
     const slot = o.slot;
-    const art = makeSpriteIcon(itemSpriteId(slot), CELL - 8);
+    const art = makeSpriteIcon(itemSpriteId(slot), CELL - 10);
     if (art) {
       art.position.set(CELL / 2, CELL / 2);
       cell.addChild(art);
       if (isEquip(slot)) {
         // the glyph's fill used to carry rarity — keep it as an inner ring
-        cell.addChild(
-          new Graphics()
-            .roundRect(2, 2, CELL - 4, CELL - 4, RADIUS.button)
-            .stroke({ width: 2, color: RARITY_COLOR[slot.rarity] }),
-        );
+        cell.addChild(cellRing(CELL, RARITY_COLOR[slot.rarity], 0.9));
       }
     } else {
-      const icon = new Text({
-        text: slotIcon(slot),
-        style: mono(24, {
-          fill: isEquip(slot) ? RARITY_COLOR[slot.rarity] : PAL.text,
-        }),
+      const icon = label(slotIcon(slot), {
+        mono: true,
+        size: TYPE.h2,
+        center: true,
+        fill: isEquip(slot) ? RARITY_COLOR[slot.rarity] : PAL.text,
       });
-      icon.anchor.set(0.5);
       icon.position.set(CELL / 2, CELL / 2 - 4);
       cell.addChild(icon);
     }
-    const corner = new Text({
-      text: isEquip(slot) ? `L${slot.itemLevel}` : `×${slot.count}`,
-      style: mono(10, { fill: PAL.textDim }),
-    });
+    const corner = label(
+      isEquip(slot) ? `L${slot.itemLevel}` : `×${slot.count}`,
+      {
+        mono: true,
+        dim: true,
+        size: TYPE.tiny,
+      },
+    );
     corner.anchor.set(1, 1);
-    corner.position.set(CELL - 4, CELL - 2);
+    corner.position.set(CELL - 5, CELL - 3);
     cell.addChild(corner);
 
     let tip: Container | null = null;
     cell.eventMode = "static";
     cell.cursor = "pointer";
     cell.on("pointerover", () => {
-      paint(true);
+      hoverRing.visible = true;
       tip = makeTooltip(slotTooltipText(slot, o.sellMode));
       tip.position.set(cell.x + 12, cell.y + CELL + 4);
       o.tipLayer.addChild(tip);
     });
     cell.on("pointerout", () => {
-      paint(false);
+      hoverRing.visible = false;
       tip?.destroy({ children: true });
       tip = null;
     });
@@ -262,6 +295,19 @@ export interface InventoryPanelApi {
   destroy(): void;
 }
 
+/* ---- panel + cat-card geometry ---------------------------------------- */
+/** Default panel box: the 8×2 grid column beside four cat cards. */
+const PANEL_W = 960;
+const PANEL_H = 316;
+
+/** Default panel size — hosts lay their own chrome out against these. */
+export const INVENTORY_PANEL_W = PANEL_W;
+export const INVENTORY_PANEL_H = PANEL_H;
+const CARD_W = 344;
+const CARD_H = 60;
+const CARD_GAP = 6;
+const CHIP = 40;
+
 /**
  * Build the 16-slot inventory panel (default 960×330). Manage mode: click
  * an equipment piece → eligible cats light up with a stat-delta preview →
@@ -272,48 +318,57 @@ export interface InventoryPanelApi {
 export function makeInventoryPanel(
   opts: InventoryPanelOpts,
 ): InventoryPanelApi {
-  const W = opts.width ?? 960;
-  const H = opts.height ?? 330;
+  const W = opts.width ?? PANEL_W;
+  const H = opts.height ?? PANEL_H;
   const view = new Container();
-  view.addChild(makePanel(W, H));
+  view.addChild(panel(W, H, { variant: "raised" }));
 
-  const title = new Text({
-    text: opts.mode === "sell" ? "SELL — ¼ of buy value" : "INVENTORY",
-    style: ui(16, { fontWeight: "bold" }),
-  });
-  title.position.set(16, 14);
-  const shinies = new Text({ text: "", style: mono(14, { fill: PAL.gold }) });
+  const title = heading(
+    opts.mode === "sell" ? "SELL — ¼ OF BUY VALUE" : "INVENTORY",
+    3,
+  );
+  title.position.set(SPACE.lg, SPACE.lg);
+  const shinies = label("", { mono: true, fill: PAL.gold, size: TYPE.body });
   shinies.anchor.set(1, 0);
-  shinies.position.set(W - 16, 16);
+  shinies.position.set(W - SPACE.lg, SPACE.md + 2);
   view.addChild(title, shinies);
 
   const gridLayer = new Container();
-  gridLayer.position.set(16, 48);
+  gridLayer.position.set(SPACE.lg, 48);
   const rightLayer = new Container();
-  rightLayer.position.set(600, 44);
+  rightLayer.position.set(W - SPACE.lg - CARD_W, 44);
   const tipLayer = new Container();
   view.addChild(gridLayer, rightLayer, tipLayer);
+
+  // one standing instruction under the grid, so the empty half of the
+  // backpack never reads as dead space
+  const gridHint = label(
+    "Click a piece of gear, then a cat to equip it.\nClick a worn item to take it off.",
+    { dim: true, size: TYPE.tiny },
+  );
+  gridHint.style.lineHeight = 18;
+  gridHint.position.set(SPACE.lg, 48 + 2 * (CELL + GAP) + SPACE.md);
+  view.addChild(gridHint);
 
   let selected: number | null = null;
   let destroyed = false;
 
-  const sortBtn = makeButton(
-    "Sort",
-    72,
-    26,
-    () => {
-      const run = opts.getRun();
-      opts.setRun({
-        ...run,
-        inventory: sortInventory(run.inventory, CONSUMABLE_ORDER),
-      });
-      selected = null;
-      opts.onChanged?.();
-      refresh();
-    },
-    { fontSize: 13 },
-  );
-  sortBtn.view.position.set(W - 180, 12);
+  const doSort = (): void => {
+    const run = opts.getRun();
+    opts.setRun({
+      ...run,
+      inventory: sortInventory(run.inventory, CONSUMABLE_ORDER),
+    });
+    selected = null;
+    opts.onChanged?.();
+    refresh();
+  };
+
+  const sortBtn = button("Sort", 96, 30, doSort, {
+    hotkey: "S",
+    fontSize: TYPE.small,
+  });
+  sortBtn.view.position.set(W - SPACE.lg - CARD_W - 96 - SPACE.lg, SPACE.md);
   sortBtn.view.visible = opts.mode === "manage";
   view.addChild(sortBtn.view);
 
@@ -375,7 +430,7 @@ export function makeInventoryPanel(
     refresh();
   }
 
-  function unequip(catIndex: number, slotName: "weapon" | "trinket"): void {
+  function unequip(catIndex: number, slotName: EquipSlot): void {
     const run = opts.getRun();
     const cat = run.cats[catIndex];
     if (!cat[slotName]) return;
@@ -403,62 +458,59 @@ export function makeInventoryPanel(
     const selEquip = sel !== null && isEquip(sel) ? sel : null;
     const eligible = !dead && selEquip !== null && canEquip(cat, selEquip);
 
-    const bg = new Graphics()
-      .roundRect(0, 0, 344, 60, RADIUS.button)
-      .fill(PAL.panel)
-      .stroke({ width: 2, color: eligible ? PAL.gold : PAL.border });
-    row.addChild(bg);
+    row.addChild(
+      panel(CARD_W, CARD_H, {
+        variant: "solid",
+        radius: RADIUS.button,
+        ...(eligible ? { accent: PAL.gold } : {}),
+      }),
+    );
 
-    const face = new Graphics();
-    drawCatPortrait(face, cat.classId, dead);
-    face.scale.set(0.8);
-    face.position.set(26, 30);
+    const face = avatar(cat.classId, 36, { dead });
+    face.position.set(SPACE.lg + 6, CARD_H / 2);
     row.addChild(face);
 
-    const name = new Text({
-      text: cls.catName,
-      style: ui(13, { fontWeight: "bold", fill: PAL[cat.classId].body }),
+    const name = label(cls.catName, {
+      bold: true,
+      fill: dead ? PAL.textDim : catNameColor(cat.classId),
     });
     name.position.set(52, 8);
     row.addChild(name);
 
     if (eligible && selEquip) {
       const slotName = EQUIP_DEFS[selEquip.defId].slot;
-      const delta = new Text({
-        text: statDeltaText(selEquip, cat[slotName]),
-        style: mono(10, { fill: PAL.energy }),
+      const delta = label(statDeltaText(selEquip, cat[slotName] ?? null), {
+        mono: true,
+        size: TYPE.tiny,
+        fill: PAL.energy,
       });
-      delta.position.set(52, 28);
+      delta.position.set(52, 30);
       row.addChild(delta);
     }
 
-    // gear chips: weapon / trinket
-    (["weapon", "trinket"] as const).forEach((slotName, i) => {
-      const item = cat[slotName];
+    // gear chips: weapon / trinket / collar (progression.md §4 slot order)
+    const chipsW = EQUIP_SLOTS.length * CHIP + (EQUIP_SLOTS.length - 1) * 6;
+    const chipX0 = CARD_W - SPACE.md - chipsW;
+    EQUIP_SLOTS.forEach((slotName, i) => {
+      const item = cat[slotName] ?? null;
       const chip = new Container();
-      chip.position.set(232 + i * 52, 8);
-      const cbg = new Graphics()
-        .roundRect(0, 0, 44, 44, RADIUS.button)
-        .fill(PAL.hpBack)
-        .stroke({ width: 1, color: PAL.border });
-      chip.addChild(cbg);
+      chip.position.set(chipX0 + i * (CHIP + 6), (CARD_H - CHIP) / 2);
+      chip.addChild(
+        panel(CHIP, CHIP, { variant: "glass", radius: RADIUS.button }),
+      );
       if (item) {
-        const art = makeSpriteIcon(itemSpriteId(item), 38);
+        const art = makeSpriteIcon(itemSpriteId(item), CHIP - 6);
         if (art) {
-          art.position.set(22, 22);
-          chip.addChild(
-            art,
-            new Graphics()
-              .roundRect(1, 1, 42, 42, RADIUS.button)
-              .stroke({ width: 2, color: RARITY_COLOR[item.rarity] }),
-          );
+          art.position.set(CHIP / 2, CHIP / 2);
+          chip.addChild(art, cellRing(CHIP, RARITY_COLOR[item.rarity], 0.9));
         } else {
-          const icon = new Text({
-            text: EQUIP_DEFS[item.defId].icon,
-            style: mono(18, { fill: RARITY_COLOR[item.rarity] }),
+          const icon = label(EQUIP_DEFS[item.defId].icon, {
+            mono: true,
+            size: TYPE.h3,
+            center: true,
+            fill: RARITY_COLOR[item.rarity],
           });
-          icon.anchor.set(0.5);
-          icon.position.set(22, 22);
+          icon.position.set(CHIP / 2, CHIP / 2);
           chip.addChild(icon);
         }
         if (!dead) {
@@ -469,7 +521,7 @@ export function makeInventoryPanel(
             tip = makeTooltip(
               `${slotTooltipText(item, false)}\n(click to unequip)`,
             );
-            tip.position.set(rightLayer.x + 200, rightLayer.y + y + 52);
+            tip.position.set(rightLayer.x + 180, rightLayer.y + y + CARD_H);
             tipLayer.addChild(tip);
             view.addChild(tipLayer); // keep tips on top
           });
@@ -484,12 +536,13 @@ export function makeInventoryPanel(
           });
         }
       } else {
-        const ph = new Text({
-          text: slotName === "weapon" ? "W" : "T",
-          style: mono(12, { fill: PAL.textDim }),
+        const ph = label(SLOT_GLYPH[slotName], {
+          mono: true,
+          dim: true,
+          size: TYPE.small,
+          center: true,
         });
-        ph.anchor.set(0.5);
-        ph.position.set(22, 22);
+        ph.position.set(CHIP / 2, CHIP / 2);
         chip.addChild(ph);
       }
       row.addChild(chip);
@@ -527,16 +580,18 @@ export function makeInventoryPanel(
     for (const c of rightLayer.removeChildren()) c.destroy({ children: true });
     if (opts.mode === "manage") {
       run.cats.forEach((_cat, i) => {
-        rightLayer.addChild(makeCatRow(run, i, i * 66));
+        rightLayer.addChild(makeCatRow(run, i, i * (CARD_H + CARD_GAP)));
       });
     } else {
-      const hint = new Text({
-        text: "Click an item to sell one.\nThe Peddler pays a quarter\nof buy value, minimum 1 ✦.",
-        style: ui(13, { fill: PAL.textDim, lineHeight: 20 }),
-      });
-      hint.position.set(8, 8);
+      const hint = label(
+        "Click an item to sell one.\nThe Peddler pays a quarter\nof buy value, minimum 1 ✦.",
+        { dim: true, wrap: CARD_W - SPACE.md },
+      );
+      hint.style.lineHeight = 20;
+      hint.position.set(SPACE.sm, SPACE.sm);
       rightLayer.addChild(hint);
     }
+    gridHint.visible = opts.mode === "manage";
   }
 
   refresh();
@@ -546,14 +601,7 @@ export function makeInventoryPanel(
     refresh,
     onKey(key: string): boolean {
       if (opts.mode === "manage" && key === "s") {
-        const run = opts.getRun();
-        opts.setRun({
-          ...run,
-          inventory: sortInventory(run.inventory, CONSUMABLE_ORDER),
-        });
-        selected = null;
-        opts.onChanged?.();
-        refresh();
+        doSort();
         return true;
       }
       return false;
@@ -593,60 +641,61 @@ export interface PickupModal {
  */
 export function makePickupModal(opts: PickupModalOpts): PickupModal {
   const view = new Container();
-  const scrim = new Graphics()
-    .rect(0, 0, DESIGN_W, DESIGN_H)
-    .fill({ color: PAL.scrim, alpha: 0.6 });
-  scrim.eventMode = "static"; // swallow clicks under the modal
-  view.addChild(scrim);
+  const back = scrim(DESIGN_W, DESIGN_H);
+  back.eventMode = "static"; // swallow clicks under the modal
+  view.addChild(back);
 
   const PW = 660;
   const PH = 420;
   const px = (DESIGN_W - PW) / 2;
   const py = (DESIGN_H - PH) / 2;
-  const panel = new Container();
-  panel.position.set(px, py);
-  panel.addChild(makePanel(PW, PH));
-  view.addChild(panel);
+  const card = new Container();
+  card.position.set(px, py);
+  card.addChild(panel(PW, PH, { variant: "raised", accent: PAL.danger }));
+  view.addChild(card);
 
-  const title = new Text({
-    text: "BACKPACK FULL!",
-    style: display(22, { fill: PAL.gold }),
+  const eyebrow = heading("NO ROOM IN THE BACKPACK", 3, { center: true });
+  eyebrow.position.set(PW / 2, SPACE.md);
+  const title = heading("BACKPACK FULL!", 2, {
+    center: true,
+    fill: PAL.gold,
   });
-  title.anchor.set(0.5, 0);
-  title.position.set(PW / 2, 16);
-  panel.addChild(title);
+  title.position.set(PW / 2, SPACE.md + 22);
+  card.addChild(eyebrow, title);
 
   const inc = opts.incoming;
-  const incArt = makeSpriteIcon(itemSpriteId(inc), 32);
-  const incIcon = new Text({
-    text: incArt ? "" : slotIcon(inc),
-    style: mono(22, {
-      fill: isEquip(inc) ? RARITY_COLOR[inc.rarity] : PAL.text,
-    }),
-  });
-  incIcon.position.set(24, 56);
+  const incArt = makeSpriteIcon(itemSpriteId(inc), 34);
   if (incArt) {
-    incArt.position.set(38, 70);
-    panel.addChild(incArt);
+    incArt.position.set(SPACE.xl + 17, 90);
+    card.addChild(incArt);
+  } else {
+    const incIcon = label(slotIcon(inc), {
+      mono: true,
+      size: TYPE.h2,
+      center: true,
+      fill: isEquip(inc) ? RARITY_COLOR[inc.rarity] : PAL.text,
+    });
+    incIcon.position.set(SPACE.xl + 17, 90);
+    card.addChild(incIcon);
   }
-  const incName = new Text({
-    text: isEquip(inc)
+  const incName = label(
+    isEquip(inc)
       ? `${equipName(inc)} — ${inc.rarity} L${inc.itemLevel}   ${equipStatsText(inc)}`
       : `${CONSUMABLES[inc.defId].name} ×${inc.count}`,
-    style: ui(15),
-  });
-  incName.position.set(56, 60);
-  const hint = new Text({
-    text: "Pick a slot to replace — the old item is left behind — or leave it.",
-    style: ui(13, { fill: PAL.textDim }),
-  });
-  hint.position.set(24, 86);
-  panel.addChild(incIcon, incName, hint);
+    { size: TYPE.body, bold: true },
+  );
+  incName.position.set(SPACE.xl + 44, 82);
+  const hint = label(
+    "Pick a slot to replace — the old item is left behind — or leave it.",
+    { dim: true },
+  );
+  hint.position.set(SPACE.xl, 110);
+  card.addChild(incName, hint);
 
   const tipLayer = new Container();
   const gridLayer = new Container();
-  gridLayer.position.set(48, 116);
-  panel.addChild(gridLayer, tipLayer);
+  gridLayer.position.set((PW - (COLS * CELL + (COLS - 1) * GAP)) / 2, 148);
+  card.addChild(gridLayer, tipLayer);
 
   let done = false;
   const finish = (taken: boolean, dropped: InventorySlot) => {
@@ -678,11 +727,11 @@ export function makePickupModal(opts: PickupModalOpts): PickupModal {
     );
   });
 
-  const leave = makeButton("[Esc] Leave it", 180, 36, () =>
-    finish(false, null),
-  );
-  leave.view.position.set(PW / 2 - 90, PH - 52);
-  panel.addChild(leave.view);
+  const leave = button("Leave it", 200, 44, () => finish(false, null), {
+    hotkey: "Esc",
+  });
+  leave.view.position.set(PW / 2 - 100, PH - 44 - SPACE.lg);
+  card.addChild(leave.view);
 
   return {
     view,

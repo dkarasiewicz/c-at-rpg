@@ -5,7 +5,7 @@
  *
  * XP_TO_LEVEL / LEVEL_CAP per classes.md §8.
  */
-import type { EnemyId, FloorConfig } from "../core/types";
+import type { EnemyId, FloorConfig } from "../core/types.js";
 
 const T1: EnemyId[] = ["ratThug", "sewerBat", "dustBunny", "crowShaman"];
 const T2: EnemyId[] = ["roombaScout", "sprinklerImp", "yarnGolem"];

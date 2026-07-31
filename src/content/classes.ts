@@ -8,8 +8,15 @@
  * Growth rows are applied at L2..L8 in order (classes.md §8): max HP rises
  * and current HP rises by the same delta; capstone unlocks at L4; trait
  * tier 2 at L7.
+ *
+ * SKILL ARRAY ORDER IS LOAD-BEARING (docs/design/progression.md §2-3): the
+ * first four entries are the legacy kit — Claw Swipe, the two L1 skills and
+ * the L4 capstone — and the milestone unlocks (L2, L6, L8) follow. The
+ * default battle loadout is `knownSkills(...)` truncated to 4, so this order
+ * is exactly what keeps a cat's default four identical to the pre-milestone
+ * build at every level.
  */
-import type { CatClass, ClassId } from "../core/types";
+import type { CatClass, ClassId } from "../core/types.js";
 
 export const CLASSES: Record<ClassId, CatClass> = {
   /* ---------------------------------------------------------------------- */
@@ -35,6 +42,9 @@ export const CLASSES: Record<ClassId, CatClass> = {
       { skillId: "bodySlam", unlockLevel: 1 },
       { skillId: "hiss", unlockLevel: 1 },
       { skillId: "dumpsterDunk", unlockLevel: 4 },
+      { skillId: "scruffToss", unlockLevel: 2 },
+      { skillId: "binLidBulwark", unlockLevel: 6 },
+      { skillId: "trashCompactor", unlockLevel: 8 },
     ],
     trait: {
       id: "immovableLoaf",
@@ -85,6 +95,9 @@ export const CLASSES: Record<ClassId, CatClass> = {
       { skillId: "pounce", unlockLevel: 1 },
       { skillId: "tripWire", unlockLevel: 1 },
       { skillId: "boxAmbush", unlockLevel: 4 },
+      { skillId: "bottleCapFlick", unlockLevel: 2 },
+      { skillId: "whiskerFeint", unlockLevel: 6 },
+      { skillId: "everyBoxAtOnce", unlockLevel: 8 },
     ],
     trait: {
       id: "opportunist",
@@ -132,6 +145,9 @@ export const CLASSES: Record<ClassId, CatClass> = {
       { skillId: "yankOfYarn", unlockLevel: 1 },
       { skillId: "hairballHex", unlockLevel: 1 },
       { skillId: "phantomCucumber", unlockLevel: 4 },
+      { skillId: "snarlOfThreads", unlockLevel: 2 },
+      { skillId: "ninthKnotCurse", unlockLevel: 6 },
+      { skillId: "fullUnravel", unlockLevel: 8 },
     ],
     trait: {
       id: "stringTheory",
@@ -182,6 +198,9 @@ export const CLASSES: Record<ClassId, CatClass> = {
       { skillId: "soothingPurr", unlockLevel: 1 },
       { skillId: "nineLivesNudge", unlockLevel: 1 },
       { skillId: "purrquake", unlockLevel: 4 },
+      { skillId: "kneadTheKnots", unlockLevel: 2 },
+      { skillId: "warmLoafPress", unlockLevel: 6 },
+      { skillId: "ovenSpring", unlockLevel: 8 },
     ],
     trait: {
       id: "purrEngine",

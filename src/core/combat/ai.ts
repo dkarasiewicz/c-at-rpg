@@ -18,16 +18,16 @@ import type {
   Combatant,
   Rng,
   Skill,
-} from "../types";
-import { SKILLS } from "../../content/skills";
+} from "../types.js";
+import { SKILLS } from "../../content/skills.js";
 import {
   hasStatus,
   isAlive,
   previewDamage,
   statusesOf,
   validTargets,
-} from "./state";
-import { bossDataOf, canSummon } from "./boss";
+} from "./state.js";
+import { bossDataOf, canSummon } from "./boss.js";
 
 export function takeEnemyTurn(
   self: Combatant,

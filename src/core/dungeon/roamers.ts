@@ -9,8 +9,15 @@
  * Movement legality: Floor/Door only — never stairs, chests, unused events,
  * other living roamers, or the party's tile. Blocked step = stand still.
  */
-import type { FloorState, Roamer } from "../types";
-import { DIRS4, bfsFlood, idx, inBounds, isRoamerPassable, los } from "./floor";
+import type { FloorState, Roamer } from "../types.js";
+import {
+  DIRS4,
+  bfsFlood,
+  idx,
+  inBounds,
+  isRoamerPassable,
+  los,
+} from "./floor.js";
 
 /** Chase acquisition range (Chebyshev, plus LOS) — dungeon.md §12. */
 export const SIGHT_RANGE = 6;

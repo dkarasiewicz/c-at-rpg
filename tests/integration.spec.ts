@@ -34,22 +34,22 @@ import {
   type Scene,
   type SceneFactories,
   type SceneId,
-} from "../src/ui/sceneManager";
+} from "../src/ui/sceneManager.js";
 import {
   applyBattleResult,
   applyLootGrant,
   descend,
   generateCurrentFloor,
   newRun,
-} from "../src/core/run/runState";
+} from "../src/core/run/runState.js";
 import {
   loadRun,
   memoryStorage,
   saveRun,
   serializeRun,
   emptyMeta,
-} from "../src/core/run/save";
-import { Tile } from "../src/core/types";
+} from "../src/core/run/save.js";
+import { Tile } from "../src/core/types.js";
 import type {
   BattleAction,
   BattleEvent,
@@ -63,35 +63,39 @@ import type {
   Roamer,
   RunState,
   SaveFile,
-} from "../src/core/types";
-import { hash, mulberry32 } from "../src/core/rng";
-import { CLASSES } from "../src/content/classes";
-import { SKILLS } from "../src/content/skills";
-import { EVENTS } from "../src/content/events";
-import { createBattle } from "../src/core/combat/setup";
-import { battleResult, isAutoSkip, startRound } from "../src/core/combat/turns";
-import { legalActions, nextActor } from "../src/core/combat/state";
-import { resolveAction } from "../src/core/combat/resolve";
-import { takeEnemyTurn } from "../src/core/combat/ai";
-import { contactCheck, step, type StepDir } from "../src/core/dungeon/step";
+} from "../src/core/types.js";
+import { hash, mulberry32 } from "../src/core/rng.js";
+import { CLASSES } from "../src/content/classes.js";
+import { SKILLS } from "../src/content/skills.js";
+import { EVENTS } from "../src/content/events.js";
+import { createBattle } from "../src/core/combat/setup.js";
+import {
+  battleResult,
+  isAutoSkip,
+  startRound,
+} from "../src/core/combat/turns.js";
+import { legalActions, nextActor } from "../src/core/combat/state.js";
+import { resolveAction } from "../src/core/combat/resolve.js";
+import { takeEnemyTurn } from "../src/core/combat/ai.js";
+import { contactCheck, step, type StepDir } from "../src/core/dungeon/step.js";
 import {
   rollBossLoot,
   rollChest,
   rollVictory,
   type LootCtx,
-} from "../src/core/loot/roll";
-import { addShinies } from "../src/core/loot/inventory";
-import { selectEvent } from "../src/core/events/select";
+} from "../src/core/loot/roll.js";
+import { addShinies } from "../src/core/loot/inventory.js";
+import { selectEvent } from "../src/core/events/select.js";
 import {
   applyEventEffects,
   isOptionAvailable,
   resolveOption,
-} from "../src/core/events/resolve";
+} from "../src/core/events/resolve.js";
 import {
   effectiveStats,
   skillsForLevel,
   traitTier,
-} from "../src/core/run/party";
+} from "../src/core/run/party.js";
 
 /* ------------------------------------------------------------------ */
 /* harness                                                             */

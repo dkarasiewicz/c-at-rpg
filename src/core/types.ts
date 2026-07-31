@@ -373,11 +373,22 @@ export type MewHookId =
   | "catPileDouble"
   | "startEnergy6";
 
+/**
+ * Equipment slots a cat wears (progression.md §4). `weapon` + `trinket` are
+ * the original two (loot.md §2); `collar` is the additive third slot — a
+ * universal, defensive/utility piece. Slot order is display order and the
+ * iteration order of every slot-generic helper (grief loot, MOULT, sort).
+ */
+export type EquipSlot = "weapon" | "trinket" | "collar";
+
+/** The canonical slot list — iterate this, never a hardcoded pair. */
+export const EQUIP_SLOTS = ["weapon", "trinket", "collar"] as const;
+
 export interface EquipDef {
   id: ItemId;
   name: string;
   icon: string;
-  slot: "weapon" | "trinket";
+  slot: EquipSlot;
   /** weapons only */
   classId?: ClassId;
   primary: StatKey;
@@ -639,6 +650,26 @@ export interface CatRunState {
   tempMods: TempMod[];
   /** consumed by next battle setup, then cleared */
   energyNextBattle: number;
+
+  /* ---- progression.md additions. ALL OPTIONAL: absent ⇒ v1 behaviour ---- */
+
+  /**
+   * Third equipment slot (progression.md §4). `undefined` = the cat predates
+   * the collar slot (v1 save) and wears nothing there; `null` = empty.
+   */
+  collar?: EquipInstance | null;
+  /**
+   * Whisker Points spent per stat (progression.md §1). Absent = nothing
+   * spent. Each entry counts POINTS, not stat magnitude — the per-point
+   * amount and per-stat cap live in `POINT_MENU` (core/run/party.ts).
+   */
+  points?: Partial<Record<StatKey, number>>;
+  /**
+   * The 3 chosen battle skills, in order, that follow the always-present
+   * `clawSwipe` (progression.md §3). Absent = the legacy default kit
+   * (`knownSkills` truncated to 4).
+   */
+  loadout?: SkillId[];
 }
 
 export interface ScoreCounters {
@@ -701,9 +732,16 @@ export interface FloorDelta {
   )[];
 }
 
-/** localStorage 'catrpg.save.v1' */
+/** Save-file schema versions this build can read (save.ts SAVE_VERSION = 2). */
+export type SaveVersion = 1 | 2;
+
+/**
+ * localStorage 'catrpg.save.v1' (the KEY keeps its name so v1 saves are still
+ * found; `version` is what gates them). v1 = pre-progression saves, migrated
+ * forward on load by core/run/save.ts `migrateSave`; v2 = current.
+ */
 export interface SaveFile {
-  version: 1;
+  version: SaveVersion;
   run: Omit<RunState, "floor">;
   floorDelta: FloorDelta;
 }

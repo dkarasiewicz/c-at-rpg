@@ -14,26 +14,28 @@
 import type {
   ClassId,
   EquipInstance,
+  EquipSlot,
   ItemId,
   LootGrant,
   MewHookId,
   Rarity,
   Rng,
   StatKey,
-} from "../types";
-import { pickWeighted, roundHalfUp } from "../util";
-import { EQUIP_DEFS, RARITY_TABLE } from "../../content/equipment";
+} from "../types.js";
+import { pickWeighted, roundHalfUp } from "../util.js";
+import { EQUIP_DEFS, RARITY_TABLE } from "../../content/equipment.js";
 import {
   BOSS_CONSUMABLE_ROLLS,
   BOSS_RARITY,
   BUNDLES,
   CHEST_DRAWS,
   CONSUMABLE_WEIGHTS,
+  EQUIP_SLOT_WEIGHTS,
   FIGHT_DROPS,
   RARITY_WEIGHTS,
   SHINY_INCOME,
   type LootBundle,
-} from "../../content/lootTables";
+} from "../../content/lootTables.js";
 
 /** Weighted-pick order for rarity rolls (loot.md §3 table order). */
 export const RARITY_ORDER: readonly Rarity[] = [
@@ -46,6 +48,11 @@ export const RARITY_ORDER: readonly Rarity[] = [
 /** Trinket def pick pool, in loot.md §2 table order (content table order). */
 const TRINKET_DEFS = Object.values(EQUIP_DEFS).filter(
   (d) => d.slot === "trinket",
+);
+
+/** Collar def pick pool (progression.md §4), content table order. */
+const COLLAR_DEFS = Object.values(EQUIP_DEFS).filter(
+  (d) => d.slot === "collar",
 );
 
 /** Weapon def lookup by class. */
@@ -83,13 +90,10 @@ export function floorBand(floor: number): "f12" | "f34" | "f56" {
 
 /**
  * Per-stat base value by item level L (loot.md §3). `atk` differs by slot:
- * weapon `1+L`, trinket `ceil((1+L)/2)` (the reduced trinket-atk base).
+ * weapon `1+L`, everything else `ceil((1+L)/2)` (the reduced trinket-atk
+ * base; collars never roll `atk` at all — progression.md §4).
  */
-export function baseValue(
-  stat: StatKey,
-  L: number,
-  slot: "weapon" | "trinket",
-): number {
+export function baseValue(stat: StatKey, L: number, slot: EquipSlot): number {
   switch (stat) {
     case "atk":
       return slot === "weapon" ? 1 + L : Math.ceil((1 + L) / 2);
@@ -109,7 +113,7 @@ export function primaryValue(
   stat: StatKey,
   L: number,
   rarity: Rarity,
-  slot: "weapon" | "trinket",
+  slot: EquipSlot,
 ): number {
   return Math.max(
     1,
@@ -122,7 +126,7 @@ export function secondaryValue(
   stat: StatKey,
   L: number,
   rarity: Rarity,
-  slot: "weapon" | "trinket",
+  slot: EquipSlot,
 ): number {
   return Math.max(
     1,
@@ -172,10 +176,21 @@ export function makeEquipInstance(
 /* §5 equipment roll ladder (steps ④-⑦)                                */
 /* ------------------------------------------------------------------ */
 
-const SLOT_WEIGHTS = [
-  { slot: "weapon" as const, weight: 40 },
-  { slot: "trinket" as const, weight: 60 },
-];
+/** Def pick pool per slot (step ⑥). */
+function poolFor(slot: EquipSlot): typeof TRINKET_DEFS {
+  return slot === "collar" ? COLLAR_DEFS : TRINKET_DEFS;
+}
+
+/**
+ * Options for the equipment ladder (both optional — omitted = loot.md §5
+ * behaviour extended with the collar band, EQUIP_SLOT_WEIGHTS).
+ */
+export interface EquipRollOpts {
+  /** Override the ⑤ slot table (the Peddler's gear slot keeps the 2-slot one). */
+  slotWeights?: readonly { slot: EquipSlot; weight: number }[];
+  /** Force a slot and SKIP the ⑤ roll entirely (the Peddler's collar slot). */
+  slot?: EquipSlot;
+}
 
 function rollEquipInternal(
   rng: Rng,
@@ -184,19 +199,24 @@ function rollEquipInternal(
   livingClasses: ClassId[],
   dropped: Set<MewHookId>,
   uid: number,
+  opts: EquipRollOpts = {},
 ): EquipInstance {
   // ④ rarity (one d100 against cumulative weights, §3 table order)
   let rarity = pickWeighted(rng, RARITY_ORDER, (r) => rarityWeights[r]);
-  // ⑤ slot: weapon 40 / trinket 60
-  let slot = pickWeighted(rng, SLOT_WEIGHTS, (s) => s.weight).slot;
+  // ⑤ slot: weapon 40 / trinket 40 / collar 20 (skipped when forced)
+  let slot: EquipSlot =
+    opts.slot ??
+    pickWeighted(rng, opts.slotWeights ?? EQUIP_SLOT_WEIGHTS, (s) => s.weight)
+      .slot;
   if (slot === "weapon" && livingClasses.length === 0) slot = "trinket"; // degenerate guard
-  // ⑥ def pick: weapon uniform over LIVING classes; trinket uniform over 6
+  // ⑥ def pick: weapon uniform over LIVING classes; trinket/collar uniform
+  // over their pool
   const def =
     slot === "weapon"
       ? WEAPON_BY_CLASS.get(
           livingClasses[rng.int(0, livingClasses.length - 1)],
         )!
-      : TRINKET_DEFS[rng.int(0, TRINKET_DEFS.length - 1)];
+      : poolFor(slot)[rng.int(0, poolFor(slot).length - 1)];
   // Mewthical rule: the drop IS the def's unique — or downgrades to Pedigree
   // if the unique already dropped this run / the def has no unique (§5).
   if (rarity === "mewthical") {
@@ -222,6 +242,7 @@ export function rollOneEquip(
   L: number,
   rarityWeights: Record<Rarity, number>,
   ctx: LootCtx,
+  opts: EquipRollOpts = {},
 ): EquipInstance {
   return rollEquipInternal(
     rng,
@@ -230,6 +251,7 @@ export function rollOneEquip(
     ctx.livingClasses,
     new Set(ctx.uniquesDropped),
     ctx.nextUid,
+    opts,
   );
 }
 

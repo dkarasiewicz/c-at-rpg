@@ -11,22 +11,23 @@ import type {
   GmSteerNudges,
   GmSteerRequest,
   GmSteerResponse,
-} from "../../src/services/gmTypes";
-import { getAnthropicGen, gmModel } from "../_lib/anthropic";
-import { lintSteer } from "../_lib/constraints";
+} from "../../src/services/gmTypes.js";
+import { getAnthropicGen, gmModel } from "../_lib/anthropic.js";
+import { lintSteer } from "../_lib/constraints.js";
 import {
   GmGenerationError,
   generateValidated,
   type LintResult,
   type StructuredGenClient,
-} from "../_lib/generate";
+} from "../_lib/generate.js";
 import {
   errorJson,
   json,
   rateLimit,
   readJson,
   requirePost,
-} from "../_lib/http";
+  vercelHandler,
+} from "../_lib/http.js";
 
 /* ------------------------------------------------------------------------ */
 /* JSON schema                                                               */
@@ -159,7 +160,7 @@ export function createSteerHandler(deps: SteerDeps) {
 
 let deps: SteerDeps | null = null;
 
-export default async function handler(req: Request): Promise<Response> {
+export default vercelHandler(async (req) => {
   deps ??= { gen: getAnthropicGen() };
   return createSteerHandler(deps)(req);
-}
+});

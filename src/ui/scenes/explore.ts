@@ -1,20 +1,38 @@
 /**
  * WP-10 — the explore scene (ui-art §7, dungeon.md §§9-12, gameloop.md §§1,3).
  *
- * Renders the current FloorState (tile layer drawn once, per-tile fog
- * sprites updated only for tiles whose knowledge state changed, entity
- * blobs culled by knowledge state, camera lerp + clamp) and drives the
- * core step loop: one `step(floor, dir)` per input, held-repeat on tween
- * completion (~9/s), click-to-path auto-walk, and every StepTrigger
- * dispatched to the right scene/overlay. The UI never computes gameplay
- * outcomes — it renders core state and hands triggers up.
+ * Renders the current FloorState and drives the core step loop: one
+ * `step(floor, dir)` per input, held-repeat on tween completion (~9/s),
+ * click-to-path auto-walk, and every StepTrigger dispatched to the right
+ * scene/overlay. The UI never computes gameplay outcomes — it renders core
+ * state and hands triggers up.
+ *
+ * ── VISUAL V3: the floor is a place, not a void ─────────────────────────
+ *  · FRAMED VIEWPORT — the world lives inside a bordered, masked viewport
+ *    (`exploreLayout.EX.viewport`) with the map column docked to its right
+ *    and the party strip along the bottom, instead of bleeding to the screen
+ *    edges. The camera keeps its lerp but centres the floor whenever the
+ *    floor is smaller than the viewport, and applies a modest zoom so tiles
+ *    read at a comfortable size.
+ *  · NO VOID — `exploreAtmosphere` paints an endless textured rock field
+ *    UNDER the tiles and a soft, feathered fog veil OVER them, so unexplored
+ *    space is solid rock the party's known world is carved out of. Tile cells
+ *    are simply hidden until explored; the veil handles frontier feathering,
+ *    remembered-tile dimming and distance falloff.
+ *  · LIGHTING — a warm additive lantern rides the party, the fog darkens
+ *    tiles by distance, and a vignette frames the viewport. Gameplay-critical
+ *    entities (stairs beacon, chests, events, packs) are drawn ABOVE the veil
+ *    at a knowledge-based alpha so nothing important can be swallowed.
+ *
+ * Presentation only: dungeon generation, fog-of-war rules and movement are
+ * untouched — `core/dungeon/*` still owns all of it.
  *
  * Scene/GameCtx shapes below are structural mirrors of ARCHITECTURE.md §3;
  * `ui/sceneManager.ts` (WP-09) is their canonical home.
  */
-import { Container, Graphics, Rectangle, Sprite, Text, Texture } from "pixi.js";
+import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type { FederatedPointerEvent } from "pixi.js";
-import { Tile } from "../../core/types";
+import { Tile } from "../../core/types.js";
 import type {
   Entity,
   FloorState,
@@ -22,35 +40,42 @@ import type {
   Roamer,
   RunState,
   StepTrigger,
-} from "../../core/types";
-import { mulberry32 } from "../../core/rng";
-import { idx, inBounds, recomputeVisibility } from "../../core/dungeon/floor";
+} from "../../core/types.js";
+import { mulberry32 } from "../../core/rng.js";
+import {
+  idx,
+  inBounds,
+  recomputeVisibility,
+} from "../../core/dungeon/floor.js";
 import {
   applyFlee,
   contactCheck,
   step,
   type StepDir,
-} from "../../core/dungeon/step";
-import { canSeeParty } from "../../core/dungeon/roamers";
-import { FLOOR_COUNT, generateCurrentFloor } from "../../core/run/runState";
-import { maxHp } from "../../core/run/party";
-import { removeConsumable } from "../../core/loot/inventory";
-import { rollBossLoot, rollChest, type LootCtx } from "../../core/loot/roll";
-import { ENEMIES } from "../../content/enemies";
-import { CONSUMABLES } from "../../content/consumables";
-import { PAL, THEMES } from "../palette";
-import { R, rh } from "../layout";
-import { display, mono, worldStroke } from "../textStyles";
-import { tween } from "../tween";
-import { isKeyDown } from "../input";
-import { drawCatPortrait, drawPaw } from "../draw/cats";
-import { drawEnemy } from "../draw/enemies";
-import { drawChest, drawStairs } from "../draw/glyphs";
-import { spriteTextureFor } from "../sprites";
-import { layer, type GameCtx, type Scene } from "../sceneManager";
-import type { LootOverlayParams } from "../overlays/loot";
-import { ExploreHud, themeIndex } from "./exploreHud";
-import { makeMinimap, type Minimap } from "./minimap";
+} from "../../core/dungeon/step.js";
+import { canSeeParty } from "../../core/dungeon/roamers.js";
+import { FLOOR_COUNT, generateCurrentFloor } from "../../core/run/runState.js";
+import { maxHp } from "../../core/run/party.js";
+import { removeConsumable } from "../../core/loot/inventory.js";
+import { rollBossLoot, rollChest, type LootCtx } from "../../core/loot/roll.js";
+import { ENEMIES } from "../../content/enemies.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { PAL, THEMES, mix } from "../palette.js";
+import { RADIUS, rh, rw, rx, ry } from "../layout.js";
+import { display, mono, worldStroke } from "../textStyles.js";
+import { vignette } from "../widgets.js";
+import { tween } from "../tween.js";
+import { isKeyDown } from "../input.js";
+import { drawCatPortrait, drawPaw } from "../draw/cats.js";
+import { drawEnemy } from "../draw/enemies.js";
+import { drawChest, drawStairs } from "../draw/glyphs.js";
+import { spriteTextureFor } from "../sprites.js";
+import { layer, type GameCtx, type Scene } from "../sceneManager.js";
+import type { LootOverlayParams } from "../overlays/loot.js";
+import { ExploreHud, floorName, themeIndex } from "./exploreHud.js";
+import { makeMinimap, type Minimap } from "./minimap.js";
+import { makeAtmosphere, type Atmosphere } from "./exploreAtmosphere.js";
+import { EX, FOG_BLEED, TILE, ZOOM } from "./exploreLayout.js";
 
 /** Optional mount params: a battle scene reports a flee so the pack stuns. */
 export interface ExploreParams {
@@ -61,9 +86,14 @@ export interface ExploreParams {
 /* constants & small helpers                                               */
 /* ---------------------------------------------------------------------- */
 
-const TILE = R.explore.tileSize; // 48
-const VIEW_W = 1280;
-const VIEW_H = rh(R.explore.viewport); // 632
+const VX = rx(EX.viewport);
+const VY = ry(EX.viewport);
+const VW = rw(EX.viewport);
+const VH = rh(EX.viewport);
+/** World-space size of what the viewport shows, at the scene's zoom. */
+const VIS_W = VW / ZOOM;
+const VIS_H = VH / ZOOM;
+
 const STEP_MS = 110; // dungeon.md §9.3 move tween
 
 const DIR_VEC: Record<StepDir, readonly [number, number]> = {
@@ -101,6 +131,9 @@ const isPack = (e: Entity): e is Roamer =>
 
 const tileCx = (x: number): number => x * TILE + TILE / 2;
 const tileCy = (y: number): number => y * TILE + TILE / 2;
+
+/** Alpha for an entity marker by knowledge state (kept readable on purpose). */
+const KNOWN_ALPHA = { visible: 1, remembered: 0.62 } as const;
 
 /** Tier color of a pack's most expensive member (dungeon.md §7.3). */
 function packTierColor(pack: Roamer): number {
@@ -147,12 +180,18 @@ export class ExploreScene implements Scene {
   private mounted = false;
 
   private hudView: Container | null = null;
+  private frame = new Container();
+  private worldWrap = new Container();
   private scroller = new Container();
   private fx = new Container();
-  private fogLayer = new Container();
+  private entityLayer = new Container();
 
-  private fogSprites: Sprite[] = [];
-  private know!: Uint8Array; // 0 unseen · 1 explored · 2 visible
+  /** One container per tile; hidden until its tile is explored. */
+  private tileCells: Container[] = [];
+  private revealed!: Uint8Array;
+
+  private atmos: Atmosphere | null = null;
+  private stairsBeacon = new Graphics();
 
   private chestViews: ChestView[] = [];
   private eventViews: EventView[] = [];
@@ -166,6 +205,7 @@ export class ExploreScene implements Scene {
   private minimap!: Minimap;
 
   private cam = { x: 0, y: 0 };
+  private camPublished = { x: -1, y: -1 };
   private busy = false;
   private stickyDescend = false;
   private bossGrowled = false;
@@ -184,73 +224,84 @@ export class ExploreScene implements Scene {
     if (!ctx.run) throw new Error("explore: mounted without a run");
     if (!ctx.run.floor) ctx.run = generateCurrentFloor(ctx.run); // defensive
     this.floor = ctx.run.floor as FloorState;
+    const run = ctx.run;
 
     const p = params as ExploreParams | undefined;
     if (p?.fled) applyFlee(this.floor, p.fled.roamerId);
     recomputeVisibility(this.floor);
 
     this.mounted = true;
+    const thIdx = themeIndex(run.floorNum);
 
-    // world-space stack: tiles → entities → party → fog → fx (markers)
+    /* ---- world stack, inside the framed viewport -------------------- */
+    this.atmos = makeAtmosphere(this.floor, TILE, FOG_BLEED, thIdx);
+
     this.scroller = new Container();
     const tiles = this.buildTiles();
-    const entityLayer = new Container();
-    this.fogLayer = new Container();
+    this.entityLayer = new Container();
     this.fx = new Container();
     this.partyView = new Container();
+    this.stairsBeacon = new Graphics();
     this.scroller.addChild(
+      this.atmos.rock,
       tiles,
-      entityLayer,
+      this.atmos.fog,
+      this.atmos.light,
+      this.stairsBeacon,
+      this.entityLayer,
       this.partyView,
-      this.fogLayer,
       this.fx,
     );
 
-    this.buildFog();
-    this.buildEntities(entityLayer);
+    this.buildEntities(this.entityLayer);
     this.buildParty();
     this.pawDots = new Graphics();
     this.fx.addChild(this.pawDots);
 
-    // click-to-path input on the world
-    this.scroller.eventMode = "static";
-    this.scroller.hitArea = new Rectangle(
-      0,
-      0,
-      this.floor.w * TILE,
-      this.floor.h * TILE,
-    );
-    this.scroller.on("pointertap", (e: FederatedPointerEvent) =>
-      this.onWorldTap(e),
-    );
+    this.worldWrap = new Container();
+    this.worldWrap.scale.set(ZOOM);
+    this.worldWrap.addChild(this.scroller);
 
-    // HUD + minimap + modal overlay
+    this.frame = this.buildFrame();
+
+    // HUD + minimap + [M] overlay
     this.hud = new ExploreHud({
       getRun: () => this.ctx.run as RunState,
       onUseConsumable: (defId, catIndex) => this.useConsumable(defId, catIndex),
       onReorder: (order) => {
-        const run = this.ctx.run as RunState;
-        this.ctx.run = { ...run, marchingOrder: order };
+        const r = this.ctx.run as RunState;
+        this.ctx.run = { ...r, marchingOrder: order };
         this.buildParty(); // lead portrait / trail colors may change
       },
     });
-    this.minimap = makeMinimap(this.floor);
+    this.minimap = makeMinimap(this.floor, {
+      floorNum: run.floorNum,
+      floorName: floorName(run.floorNum),
+      seed: run.runSeed,
+      themeIdx: thIdx,
+    });
     this.hudView = new Container();
     this.hudView.addChild(this.hud.view, this.minimap.view);
 
     // attach to the labeled root layers (ARCHITECTURE §3.4 / sceneManager)
-    layer(root, "world").addChild(this.scroller);
+    layer(root, "world").addChild(this.frame);
     layer(root, "hud").addChild(this.hudView);
     layer(root, "modal").addChild(this.minimap.overlay);
 
     // initial knowledge state + camera snap
-    this.refreshFogAll();
+    this.refreshTerrain();
     this.refreshEntities(false);
     this.minimap.refresh();
+    this.updateObjective();
     const c = this.camTarget();
     this.cam.x = c.x;
     this.cam.y = c.y;
     this.applyCamera();
+    this.atmos.update(
+      0,
+      tileCx(this.floor.party.x),
+      tileCy(this.floor.party.y),
+    );
     this.checkBossReveal();
 
     // post-battle chained contact (dungeon.md §14) after a beat
@@ -260,14 +311,16 @@ export class ExploreScene implements Scene {
   unmount(): void {
     this.mounted = false;
     this.path = [];
-    this.minimap?.destroy(); // panel + M overlay (uncaches its texture)
+    this.minimap?.destroy(); // panel + [M] overlay
     this.hud?.destroy();
     if (this.hudView) {
       this.hudView.destroy({ children: true });
       this.hudView = null;
     }
-    this.scroller.destroy({ children: true });
-    this.fogSprites = [];
+    this.frame.destroy({ children: true });
+    this.atmos?.destroy(); // releases the fog canvas texture (GPU side)
+    this.atmos = null;
+    this.tileCells = [];
     this.chestViews = [];
     this.eventViews = [];
     this.packViews = [];
@@ -318,6 +371,9 @@ export class ExploreScene implements Scene {
     this.cam.y += (target.y - this.cam.y) * k;
     this.applyCamera();
 
+    // the lantern rides the tweened party marker, not the logical tile
+    this.atmos?.update(dtMs, this.partyView.x, this.partyView.y);
+
     // held-repeat on tween completion (~9 steps/s) + auto-walk
     if (!this.busy && !this.blocked()) {
       if (this.path.length > 0) this.autoWalkTick();
@@ -342,7 +398,6 @@ export class ExploreScene implements Scene {
     for (const ev of this.eventViews) {
       if (ev.q) ev.q.y = -2 + bob;
       if (ev.sprite) {
-        // gentle pulse on the generated sparkle prop
         ev.sprite.alpha = sparkle;
         ev.sprite.y = bob * 0.6;
       }
@@ -352,6 +407,8 @@ export class ExploreScene implements Scene {
       pv.alert.alpha = 0.4 + 0.6 * pulse;
       if (pv.glow) pv.glow.alpha = 0.2 + 0.25 * pulse;
     }
+    this.stairsBeacon.alpha =
+      0.55 + 0.45 * (0.5 + 0.5 * Math.sin(this.t / 520));
 
     this.hud.update(dtMs);
     this.minimap.update(dtMs);
@@ -409,8 +466,9 @@ export class ExploreScene implements Scene {
     if (this.busy || this.blocked() || !this.mounted) return;
     const f = this.floor;
     const before = { x: f.party.x, y: f.party.y };
-    const prevVis = f.visible;
     const trigger = step(f, dir);
+
+    this.minimap.setFacing(dir); // the map marker points where we last went
 
     if (trigger.t === "bump") {
       // wall bump: no step consumed, quick nudge (visual only)
@@ -429,9 +487,10 @@ export class ExploreScene implements Scene {
       return;
     }
 
-    this.refreshFogDiff(prevVis);
+    this.refreshTerrain();
     this.refreshEntities(true);
     this.minimap.refresh();
+    this.updateObjective();
     this.checkBossReveal();
 
     const moved = f.party.x !== before.x || f.party.y !== before.y;
@@ -531,6 +590,7 @@ export class ExploreScene implements Scene {
     const isHoard = chest.lootTableId === "boss_hoard";
     const grant = isHoard ? rollBossLoot(rng, lctx) : rollChest(rng, lctx);
     this.refreshEntities(false); // opened tint
+    this.updateObjective();
     const params: LootOverlayParams = {
       variant: isHoard ? "boss" : "chest",
       grant,
@@ -685,22 +745,88 @@ export class ExploreScene implements Scene {
   /* ---------------------------- rendering ---------------------------- */
 
   /**
-   * Static tile layer, built ONCE per mount (visual-v2): one Sprite per
-   * tile from the env textures (LINEAR-scaled 512² squares → 48 px cells)
-   * with the original procedural Graphics as per-cell fallback, so the
-   * game stays fully playable assetless. Dressing passes: the boss-lair
-   * door gets tile:doorBoss, chest-bearing dead-end alcoves get tile:nook
-   * under the chest. Floor variants are picked by a pure (x, y) hash —
-   * zero draws from the gameplay RNG streams.
+   * The framed viewport: the bezel, the masked world, the vignette, the inner
+   * border, and one transparent hit pad that owns click-to-path (so taps
+   * outside the frame never reach the world).
+   *
+   * The bezel is drawn as concentric RINGS rather than a kit `panel()`: the
+   * world fills the viewport opaquely, so a ~1000×580 filled panel (plus its
+   * six shadow layers and seven sheen bands) would be a screenful of blend
+   * work per frame that nobody ever sees. Same tokens, same look, a fraction
+   * of the fill.
+   */
+  private buildFrame(): Container {
+    const frame = new Container();
+    const bezel = new Graphics();
+    for (let i = 4; i >= 1; i--) {
+      bezel
+        .roundRect(
+          VX - 6 - i * 2,
+          VY - 6 - i * 2 + 2,
+          VW + 12 + i * 4,
+          VH + 12 + i * 4,
+          RADIUS.panel + i * 2,
+        )
+        .stroke({
+          width: 6,
+          color: PAL.shadow,
+          alpha: 0.16 * (1 - i / 5),
+          alignment: 0.5,
+        });
+    }
+    bezel
+      .roundRect(VX - 6, VY - 6, VW + 12, VH + 12, RADIUS.panel + 3)
+      .stroke({ width: 12, color: PAL.panel, alignment: 0.5 })
+      .roundRect(VX - 12, VY - 12, VW + 24, VH + 24, RADIUS.panel + 6)
+      .stroke({ width: 1, color: PAL.border, alignment: 0.5 });
+    frame.addChild(bezel);
+
+    const clip = new Container();
+    clip.addChild(this.worldWrap);
+    const mask = new Graphics()
+      .roundRect(VX, VY, VW, VH, RADIUS.panel)
+      .fill(0xffffff);
+    clip.mask = mask;
+    frame.addChild(clip, mask);
+
+    const vig = vignette(VW, VH, 0.85);
+    vig.position.set(VX, VY);
+    frame.addChild(vig);
+
+    frame.addChild(
+      new Graphics()
+        .roundRect(VX, VY, VW, VH, RADIUS.panel)
+        .stroke({ width: 2, color: PAL.border, alignment: 0.5 }),
+    );
+
+    const pad = new Graphics()
+      .roundRect(VX, VY, VW, VH, RADIUS.panel)
+      .fill({ color: PAL.void, alpha: 0 });
+    pad.eventMode = "static";
+    pad.on("pointertap", (e: FederatedPointerEvent) => this.onWorldTap(e));
+    frame.addChild(pad);
+
+    return frame;
+  }
+
+  /**
+   * Tile cells, built ONCE per mount: one Container per tile holding the env
+   * texture sprite (LINEAR-scaled 512² squares → 48 px cells) with the
+   * original procedural Graphics recipe as per-cell fallback, so the game
+   * stays fully playable assetless. Cells stay hidden until their tile is
+   * explored — the rock field beneath is what "unexplored" looks like.
+   *
+   * Dressing passes: the boss-lair door gets tile:doorBoss, chest-bearing
+   * dead-end alcoves get tile:nook under the chest. Floor variants are picked
+   * by a pure (x, y) hash — zero draws from the gameplay RNG streams.
    */
   private buildTiles(): Container {
     const f = this.floor;
     const th = THEMES[themeIndex(f.floor)];
+    const floorWash = mix(PAL.text, th.accent, 0.35);
     const wrap = new Container();
-    const sprites = new Container(); // textured cells
-    const g = new Graphics(); // procedural cells (fallback only)
-    const dressing = new Container(); // alpha-keyed overlays (nook)
-    wrap.addChild(sprites, g, dressing);
+    this.tileCells = new Array<Container>(f.w * f.h);
+    this.revealed = new Uint8Array(f.w * f.h);
 
     // boss-lair door tiles: doors 4-adjacent to the lair room (§8)
     const bossDoors = new Set<number>();
@@ -753,16 +879,10 @@ export class ExploreScene implements Scene {
     }
 
     /** Add a textured cell; false = caller draws the procedural cell. */
-    const addCell = (
-      id: string,
-      px: number,
-      py: number,
-      into = sprites,
-    ): boolean => {
+    const addCell = (id: string, into: Container): boolean => {
       const tex = spriteTextureFor(id);
       if (!tex) return false;
       const s = new Sprite(tex);
-      s.position.set(px, py);
       s.width = TILE;
       s.height = TILE;
       into.addChild(s);
@@ -773,8 +893,10 @@ export class ExploreScene implements Scene {
       for (let x = 0; x < f.w; x++) {
         const i = idx(f.w, x, y);
         const t = f.tiles[i];
-        const px = x * TILE;
-        const py = y * TILE;
+        const cell = new Container();
+        cell.position.set(x * TILE, y * TILE);
+        cell.visible = false;
+
         if (t === Tile.Wall || t === Tile.Door) {
           const id =
             t === Tile.Door
@@ -782,93 +904,101 @@ export class ExploreScene implements Scene {
                 ? "tile:doorBoss"
                 : "tile:door"
               : "tile:wall";
-          if (!addCell(id, px, py)) {
-            g.rect(px, py, TILE, TILE).fill(th.wallFace);
-            g.rect(px, py, TILE, 8).fill(th.wallTop);
+          if (!addCell(id, cell)) {
+            const g = new Graphics();
+            g.rect(0, 0, TILE, TILE).fill(th.wallFace);
+            g.rect(0, 0, TILE, 8).fill(th.wallTop);
             if (t === Tile.Door) {
               // 32×40 floorA arch inset (ui-art §7)
-              g.roundRect(px + 8, py + 8, 32, 40, 10).fill(th.floorA);
+              g.roundRect(8, 8, 32, 40, 10).fill(th.floorA);
             }
+            cell.addChild(g);
           }
         } else {
           let id: string;
           if (t === Tile.StairsDown) id = "tile:stairsDown";
           else if (t === Tile.StairsUp) id = "tile:stairsUp";
           else id = FLOOR_VARIANTS[tileHash(x, y) % FLOOR_VARIANTS.length];
-          if (!addCell(id, px, py)) {
-            g.rect(px, py, TILE, TILE).fill(
+          if (!addCell(id, cell)) {
+            const g = new Graphics();
+            g.rect(0, 0, TILE, TILE).fill(
               (x + y) % 2 === 0 ? th.floorA : th.floorB,
             );
-            g.rect(px + 1, py + 1, TILE - 2, TILE - 2).stroke({
+            g.rect(1, 1, TILE - 2, TILE - 2).stroke({
               width: 1,
               color: th.wallFace,
               alpha: 0.15,
             });
             if (t === Tile.StairsDown) {
-              drawStairs(g, px + TILE / 2, py + TILE / 2);
+              drawStairs(g, TILE / 2, TILE / 2);
             } else if (t === Tile.StairsUp) {
               // scenery spawn stair: dim swirl ("the way back collapsed")
-              g.circle(px + TILE / 2, py + TILE / 2, 16).fill(PAL.void);
-              g.circle(px + TILE / 2, py + TILE / 2, 9).stroke({
+              g.circle(TILE / 2, TILE / 2, 16).fill(PAL.void);
+              g.circle(TILE / 2, TILE / 2, 9).stroke({
                 width: 2,
                 color: PAL.textDim,
               });
             }
+            cell.addChild(g);
           }
+          // WALKABLE WASH: the floor and wall tile art are both dark masonry,
+          // so a warm lift on every walkable cell is what makes rooms and
+          // corridors read as paths instead of more rock. Per-cell (not one
+          // big layer) so it is hidden with its cell and can never leak the
+          // shape of unexplored ground through the fog.
+          cell.addChild(
+            new Graphics()
+              .rect(0, 0, TILE, TILE)
+              .fill({ color: floorWash, alpha: 0.13 }),
+          );
           // alcove dressing under the chest (alpha-keyed, above the floor)
-          if (nooks.has(i)) addCell("tile:nook", px, py, dressing);
+          if (nooks.has(i)) addCell("tile:nook", cell);
         }
+        this.tileCells[i] = cell;
+        wrap.addChild(cell);
       }
     }
     return wrap;
   }
 
-  private buildFog(): void {
+  /**
+   * Reveal newly explored tile cells and rebuild the fog field. Explored is
+   * monotonic, so a cell only ever goes hidden → shown.
+   */
+  private refreshTerrain(): void {
     const f = this.floor;
-    this.know = new Uint8Array(f.w * f.h).fill(255); // force first update
-    this.fogSprites = new Array<Sprite>(f.w * f.h);
+    for (let i = 0; i < this.tileCells.length; i++) {
+      if (this.revealed[i] === 1 || !f.explored[i]) continue;
+      this.revealed[i] = 1;
+      this.tileCells[i].visible = true;
+    }
+    this.atmos?.refresh();
+    this.drawStairsBeacon();
+  }
+
+  /**
+   * A soft gold halo + swirl over any known stairs-down, drawn ABOVE the fog
+   * so the floor's goal can never be lost in the dark (lighting must never
+   * cost readability).
+   */
+  private drawStairsBeacon(): void {
+    const f = this.floor;
+    const g = this.stairsBeacon;
+    g.clear();
     for (let y = 0; y < f.h; y++) {
       for (let x = 0; x < f.w; x++) {
-        const s = new Sprite(Texture.WHITE);
-        s.position.set(x * TILE, y * TILE);
-        s.width = TILE;
-        s.height = TILE;
-        this.fogSprites[idx(f.w, x, y)] = s;
-        this.fogLayer.addChild(s);
+        const i = idx(f.w, x, y);
+        if (!f.explored[i] || f.tiles[i] !== Tile.StairsDown) continue;
+        const cx = tileCx(x);
+        const cy = tileCy(y);
+        g.circle(cx, cy, TILE * 0.7).fill({ color: PAL.heal, alpha: 0.1 });
+        g.circle(cx, cy, TILE * 0.42).fill({ color: PAL.gold, alpha: 0.12 });
+        drawStairs(g, cx, cy);
       }
     }
   }
 
-  private setFogTile(i: number): void {
-    const f = this.floor;
-    const state = f.visible.has(i) ? 2 : f.explored[i] ? 1 : 0;
-    if (this.know[i] === state) return;
-    this.know[i] = state;
-    const s = this.fogSprites[i];
-    if (state === 2) {
-      s.visible = false; // full color
-    } else if (state === 1) {
-      s.visible = true; // remembered: dim quad (ui-art §7)
-      s.tint = PAL.bgDeep;
-      s.alpha = 0.55;
-    } else {
-      s.visible = true; // unseen: void
-      s.tint = PAL.void;
-      s.alpha = 1;
-    }
-  }
-
-  private refreshFogAll(): void {
-    for (let i = 0; i < this.fogSprites.length; i++) this.setFogTile(i);
-  }
-
-  /** Only tiles whose knowledge state can have changed: old ∪ new visible. */
-  private refreshFogDiff(prevVis: Set<number>): void {
-    for (const i of prevVis) this.setFogTile(i);
-    for (const i of this.floor.visible) this.setFogTile(i);
-  }
-
-  private buildEntities(layer: Container): void {
+  private buildEntities(into: Container): void {
     const f = this.floor;
     const th = THEMES[themeIndex(f.floor)];
     for (const e of f.entities) {
@@ -877,6 +1007,11 @@ export class ExploreScene implements Scene {
         const hoard = e.lootTableId === "boss_hoard";
         const tex = spriteTextureFor(hoard ? "prop:hoardChest" : "prop:chest");
         let sprite: Sprite | null = null;
+        view.addChild(
+          new Graphics()
+            .ellipse(0, 14, 18, 6)
+            .fill({ color: PAL.void, alpha: 0.45 }),
+        );
         if (tex) {
           sprite = new Sprite({ texture: tex, anchor: 0.5 });
           sprite.width = TILE - 4;
@@ -888,13 +1023,18 @@ export class ExploreScene implements Scene {
           view.addChild(g);
         }
         view.position.set(tileCx(e.x), tileCy(e.y) + 4);
-        layer.addChild(view);
+        into.addChild(view);
         this.chestViews.push({ e, view, opened: !e.opened, sprite, hoard });
       } else if (e.kind === "event") {
         const view = new Container();
         const tex = spriteTextureFor("prop:eventSparkle");
         let sprite: Sprite | null = null;
         let q: Text | null = null;
+        view.addChild(
+          new Graphics()
+            .circle(0, 0, 20)
+            .fill({ color: PAL.stFrazzled, alpha: 0.16 }),
+        );
         if (tex) {
           sprite = new Sprite({ texture: tex, anchor: 0.5 });
           sprite.width = TILE - 6;
@@ -911,7 +1051,7 @@ export class ExploreScene implements Scene {
           view.addChild(q);
         }
         view.position.set(tileCx(e.x), tileCy(e.y));
-        layer.addChild(view);
+        into.addChild(view);
         this.eventViews.push({ e, view, q, sprite });
       } else {
         const view = new Container();
@@ -925,8 +1065,8 @@ export class ExploreScene implements Scene {
         } else {
           view.addChild(
             new Graphics()
-              .ellipse(0, 4, 14, 5)
-              .fill({ color: packTierColor(e), alpha: 0.5 }),
+              .ellipse(0, 6, 16, 6)
+              .fill({ color: packTierColor(e), alpha: 0.55 }),
           );
         }
         const look = ENEMIES[e.enemies[0]]?.look ?? {
@@ -962,7 +1102,7 @@ export class ExploreScene implements Scene {
         alert.visible = false;
         view.addChild(alert);
         view.position.set(tileCx(e.x), tileCy(e.y));
-        layer.addChild(view);
+        into.addChild(view);
         this.packViews.push({ e, view, alert, glow, prevState: e.state });
       }
     }
@@ -983,6 +1123,13 @@ export class ExploreScene implements Scene {
       { x: px, y: py },
       { x: px, y: py },
     ];
+
+    // grounding shadow keeps the marker sitting ON the floor, not over it
+    this.partyView.addChild(
+      new Graphics()
+        .ellipse(0, 16, 17, 6)
+        .fill({ color: PAL.void, alpha: 0.5 }),
+    );
 
     const partyTex = spriteTextureFor("token:party");
     if (partyTex) {
@@ -1010,7 +1157,7 @@ export class ExploreScene implements Scene {
     run.marchingOrder.slice(1, 4).forEach((cls) => {
       const dot = new Graphics().circle(0, 0, 4).fill(PAL[cls].body);
       dot.position.set(px, py);
-      // insert beneath the lead marker, above fog-free tiles
+      // insert beneath the lead marker, above the entity layer
       this.scroller.addChildAt(
         dot,
         this.scroller.getChildIndex(this.partyView),
@@ -1024,7 +1171,11 @@ export class ExploreScene implements Scene {
   private refreshEntities(animate: boolean): void {
     const f = this.floor;
     for (const cv of this.chestViews) {
-      cv.view.visible = f.explored[idx(f.w, cv.e.x, cv.e.y)] === 1;
+      const i = idx(f.w, cv.e.x, cv.e.y);
+      cv.view.visible = f.explored[i] === 1;
+      cv.view.alpha = f.visible.has(i)
+        ? KNOWN_ALPHA.visible
+        : KNOWN_ALPHA.remembered;
       if (cv.e.opened !== cv.opened) {
         cv.opened = cv.e.opened;
         // sprite chests swap to the open art; hoard (no open variant) and
@@ -1038,8 +1189,11 @@ export class ExploreScene implements Scene {
       }
     }
     for (const ev of this.eventViews) {
-      ev.view.visible =
-        !ev.e.used && f.explored[idx(f.w, ev.e.x, ev.e.y)] === 1;
+      const i = idx(f.w, ev.e.x, ev.e.y);
+      ev.view.visible = !ev.e.used && f.explored[i] === 1;
+      ev.view.alpha = f.visible.has(i)
+        ? KNOWN_ALPHA.visible
+        : KNOWN_ALPHA.remembered;
     }
     for (const pv of this.packViews) {
       const e = pv.e;
@@ -1067,6 +1221,52 @@ export class ExploreScene implements Scene {
         pv.prevState = e.state;
       }
     }
+  }
+
+  /** The "THIS FLOOR" readout in the right column (presentation only). */
+  private updateObjective(): void {
+    const f = this.floor;
+    let stairsKnown = false;
+    for (let i = 0; i < f.tiles.length && !stairsKnown; i++) {
+      if (f.tiles[i] === Tile.StairsDown && f.explored[i]) stairsKnown = true;
+    }
+    const lines: { text: string; tone?: number }[] = [];
+    if (!stairsKnown) {
+      lines.push({ text: "The way down is still hidden. Keep sniffing." });
+    } else if (f.stairsLocked) {
+      lines.push({
+        text: "Stairs found — but something huge still hums in its lair.",
+        tone: PAL.danger,
+      });
+    } else {
+      lines.push({
+        text: "Stairs found. Stand on them and press [E].",
+        tone: PAL.heal,
+      });
+    }
+    let packs = 0;
+    let chests = 0;
+    for (const e of f.entities) {
+      if (isPack(e) && !e.dead) packs++;
+      if (
+        e.kind === "chest" &&
+        !e.opened &&
+        f.explored[idx(f.w, e.x, e.y)] === 1
+      ) {
+        chests++;
+      }
+    }
+    lines.push({
+      text:
+        packs === 0
+          ? "Floor cleared — nothing prowls."
+          : `Packs left: ${packs}`,
+      ...(packs === 0 ? { tone: PAL.heal } : {}),
+    });
+    if (chests > 0) {
+      lines.push({ text: `Unopened chests seen: ${chests}`, tone: PAL.gold });
+    }
+    this.hud.setObjective(lines);
   }
 
   /** Floating '!' / '?' over a roamer (dungeon.md §12). Fire-and-forget. */
@@ -1106,6 +1306,11 @@ export class ExploreScene implements Scene {
 
   /* ----------------------------- camera ------------------------------ */
 
+  /**
+   * Where the camera wants to be, in world px. A floor smaller than the
+   * viewport is CENTRED (no lop-sided margin); a larger one follows the
+   * party, clamped so the frame never shows past the floor's edge.
+   */
   private camTarget(): { x: number; y: number } {
     const f = this.floor;
     const wpx = f.w * TILE;
@@ -1114,21 +1319,28 @@ export class ExploreScene implements Scene {
     const py = tileCy(f.party.y);
     return {
       x:
-        wpx <= VIEW_W
+        wpx <= VIS_W
           ? wpx / 2
-          : Math.min(Math.max(px, VIEW_W / 2), wpx - VIEW_W / 2),
+          : Math.min(Math.max(px, VIS_W / 2), wpx - VIS_W / 2),
       y:
-        hpx <= VIEW_H
+        hpx <= VIS_H
           ? hpx / 2
-          : Math.min(Math.max(py, VIEW_H / 2), hpx - VIEW_H / 2),
+          : Math.min(Math.max(py, VIS_H / 2), hpx - VIS_H / 2),
     };
   }
 
   private applyCamera(): void {
-    this.scroller.position.set(
-      Math.round(VIEW_W / 2 - this.cam.x),
-      Math.round(VIEW_H / 2 - this.cam.y),
+    this.worldWrap.position.set(
+      Math.round(VX + VW / 2 - this.cam.x * ZOOM),
+      Math.round(VY + VH / 2 - this.cam.y * ZOOM),
     );
+    // publish the viewport rectangle to the minimap (throttled to whole px)
+    const cx = Math.round(this.cam.x);
+    const cy = Math.round(this.cam.y);
+    if (cx !== this.camPublished.x || cy !== this.camPublished.y) {
+      this.camPublished = { x: cx, y: cy };
+      this.minimap.setCamera(cx - VIS_W / 2, cy - VIS_H / 2, VIS_W, VIS_H);
+    }
   }
 }
 

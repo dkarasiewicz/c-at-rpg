@@ -7,7 +7,7 @@
  * Looks per ui-art.md §5 (family / sizeGrade / tier / props).
  * `enMax` is unused for enemies (always 0). Bosses and summons cost 0 threat.
  */
-import type { EnemyDef, EnemyId } from "../core/types";
+import type { EnemyDef, EnemyId } from "../core/types.js";
 
 export const ENEMIES: Record<EnemyId, EnemyDef> = {
   /* ---------------------------------------------------------------- T1 -- */

@@ -7,30 +7,31 @@
  * scope for this scaffold (a consumable carries a full battle Skill payload;
  * see docs/GM-DEPLOY.md "Scaffold gaps").
  */
-import { ART_STYLE } from "../../src/content/artStyle";
-import type { Rarity } from "../../src/core/types";
+import { ART_STYLE } from "../../src/content/artStyle.js";
+import type { Rarity } from "../../src/core/types.js";
 import type {
   GeneratedEquip,
   GmItemRequest,
   GmItemResponse,
-} from "../../src/services/gmTypes";
-import { getAnthropicGen, gmModel } from "../_lib/anthropic";
-import { composeArtPrompt } from "../_lib/artPrompt";
-import { lintItem, MEW_HOOKS, STAT_KEYS } from "../_lib/constraints";
+} from "../../src/services/gmTypes.js";
+import { getAnthropicGen, gmModel } from "../_lib/anthropic.js";
+import { composeArtPrompt } from "../_lib/artPrompt.js";
+import { lintItem, MEW_HOOKS, STAT_KEYS } from "../_lib/constraints.js";
 import {
   GmGenerationError,
   generateValidated,
   type LintResult,
   type StructuredGenClient,
-} from "../_lib/generate";
+} from "../_lib/generate.js";
 import {
   errorJson,
   json,
   rateLimit,
   readJson,
   requirePost,
-} from "../_lib/http";
-import { getPool, shouldUsePool, type PoolStore } from "../_lib/pool";
+  vercelHandler,
+} from "../_lib/http.js";
+import { getPool, shouldUsePool, type PoolStore } from "../_lib/pool.js";
 
 /* ------------------------------------------------------------------------ */
 /* JSON schema                                                               */
@@ -225,7 +226,7 @@ export function createItemHandler(deps: ItemDeps) {
 
 let deps: ItemDeps | null = null;
 
-export default async function handler(req: Request): Promise<Response> {
+export default vercelHandler(async (req) => {
   deps ??= { gen: getAnthropicGen(), pool: getPool() };
   return createItemHandler(deps)(req);
-}
+});

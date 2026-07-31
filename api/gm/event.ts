@@ -4,7 +4,7 @@
  *
  * Pool-first per gm-system.md: roll p = min(0.7, poolSize/200); on a hit,
  * serve a re-validated pooled event, otherwise generate fresh with
- * GM_MODEL (default claude-haiku-4-5), lint with the SAME validator the
+ * GM_MODEL (default anthropic/claude-haiku-4.5), lint with the SAME validator the
  * static content passes (core/events/validate) plus per-floor effect caps,
  * retry once, then persist to the pool.
  *
@@ -13,30 +13,31 @@
  * which core validate independently requires anyway (fight must be last,
  * at most one per outcome).
  */
-import type { GameEvent } from "../../src/core/types";
-import { ENEMIES } from "../../src/content/enemies";
-import { CONSUMABLES } from "../../src/content/consumables";
-import { EQUIP_DEFS } from "../../src/content/equipment";
+import type { GameEvent } from "../../src/core/types.js";
+import { ENEMIES } from "../../src/content/enemies.js";
+import { CONSUMABLES } from "../../src/content/consumables.js";
+import { EQUIP_DEFS } from "../../src/content/equipment.js";
 import type {
   GmEventRequest,
   GmEventResponse,
-} from "../../src/services/gmTypes";
-import { getAnthropicGen, gmModel } from "../_lib/anthropic";
-import { EVENT_CAPS, lintEvent } from "../_lib/constraints";
+} from "../../src/services/gmTypes.js";
+import { getAnthropicGen, gmModel } from "../_lib/anthropic.js";
+import { EVENT_CAPS, lintEvent } from "../_lib/constraints.js";
 import {
   GmGenerationError,
   generateValidated,
   type LintResult,
   type StructuredGenClient,
-} from "../_lib/generate";
+} from "../_lib/generate.js";
 import {
   errorJson,
   json,
   rateLimit,
   readJson,
   requirePost,
-} from "../_lib/http";
-import { getPool, shouldUsePool, type PoolStore } from "../_lib/pool";
+  vercelHandler,
+} from "../_lib/http.js";
+import { getPool, shouldUsePool, type PoolStore } from "../_lib/pool.js";
 
 /* ------------------------------------------------------------------------ */
 /* JSON schema (hand-written to match core GameEvent)                        */
@@ -391,7 +392,7 @@ export function createEventHandler(deps: EventDeps) {
 
 let deps: EventDeps | null = null;
 
-export default async function handler(req: Request): Promise<Response> {
+export default vercelHandler(async (req) => {
   deps ??= { gen: getAnthropicGen(), pool: getPool() };
   return createEventHandler(deps)(req);
-}
+});

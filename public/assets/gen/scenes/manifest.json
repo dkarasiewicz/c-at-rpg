@@ -65,6 +65,41 @@
       "file": "defeat.webp",
       "w": 1600,
       "h": 907
+    },
+    "scene:battle:1": {
+      "file": "battle-1.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:battle:2": {
+      "file": "battle-2.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:battle:3": {
+      "file": "battle-3.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:battle:4": {
+      "file": "battle-4.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:battle:5": {
+      "file": "battle-5.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:battle:6": {
+      "file": "battle-6.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "npc:peddler": {
+      "file": "npc-peddler.png",
+      "w": 640,
+      "h": 640
     }
   }
 }

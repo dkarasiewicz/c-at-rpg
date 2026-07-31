@@ -86,6 +86,14 @@ export const PAL = {
   stGuarded: 0x5b7a9a, // glyph 'O'  (take -50%)
   stProvoked: 0xd9744f, // glyph '>'  (must target provoker)
   stMending: 0x5fd068, // glyph '+'  (regen)
+
+  // ---- shared chrome kit (widgets.ts panel/bar/avatar/backdrop) ----
+  // Derived chrome tones, not new art colors: they only ever appear at low
+  // alpha as lighting on top of the §2 fills above.
+  sheen: 0xffffff, // inner top highlight on panels, bars, buttons
+  shadow: 0x07060d, // soft drop shadow under panels/buttons/avatars
+  glass: 0x1d1830, // translucent fill for the 'glass' panel variant
+  xp: 0x7f6bd6, // XP bar fill (dusk violet — distinct from Energy cyan)
 } as const;
 
 /** Dungeon tile themes, keyed by enemy tier (floors 1-2 / 3-4 / 5-6). */
@@ -137,6 +145,21 @@ export function darken(color: number, f = 0.55): number {
   const g = Math.round(((color >> 8) & 0xff) * f);
   const b = Math.round((color & 0xff) * f);
   return (r << 16) | (g << 8) | b;
+}
+
+/**
+ * Linear RGB blend of two palette colors — `t` 0 returns `a`, 1 returns `b`.
+ * Used by the shared chrome kit for hover tints and gradient washes so no
+ * screen has to invent an in-between color.
+ */
+export function mix(a: number, b: number, t: number): number {
+  const k = Math.max(0, Math.min(1, t));
+  const ch = (shift: number): number => {
+    const av = (a >> shift) & 0xff;
+    const bv = (b >> shift) & 0xff;
+    return Math.round(av + (bv - av) * k);
+  };
+  return (ch(16) << 16) | (ch(8) << 8) | ch(0);
 }
 
 /**

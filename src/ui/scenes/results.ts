@@ -1,24 +1,40 @@
 /**
  * WP-09 — run-end results scene (ui-art §10, gameloop.md §7): victory or
- * defeat banner + cause line, the four cats (dead ones in KO greyscale),
- * the full score table tallied line by line with a count-up, records line
- * with NEW BEST flair, and Again (same seed) / New Seed / Title.
+ * defeat banner + cause line, the score table tallied line by line with a
+ * count-up, the clowder roll-call (painted portraits, Lives paw rows, KO
+ * state), records line with NEW BEST flair, and Again (same seed) / New
+ * Seed / Title.
  *
  * On entry (both outcomes): the autosave is DELETED, and MetaFile records
  * update + persist (gameloop.md §9).
+ *
+ * REFERENCE IMPLEMENTATION for the shared UI chrome kit (widgets.ts): every
+ * piece of chrome on this screen comes from the kit — `sceneBackdrop`,
+ * `vignette`, `panel`, `heading`, `label`, `avatar`, `button`, `makePawRow`
+ * — and nothing here draws its own rectangle, face or type style. Copy this
+ * shape when restyling the other screens.
  */
 import { Container, Graphics, Text } from "pixi.js";
-import { computeScore, type ScoreSummary } from "../../core/run/score";
-import { deleteSave, recordRunEnd, saveMeta } from "../../core/run/save";
-import { newRun } from "../../core/run/runState";
-import { PAL } from "../palette";
-import { DESIGN_H, DESIGN_W, R } from "../layout";
-import { display, mono, ui } from "../textStyles";
-import { makeButton, makeCoverSprite } from "../widgets";
-import { drawCat } from "../draw/cats";
-import { tween } from "../tween";
-import { randomSeed } from "./title";
-import { layer, type GameCtx, type Scene } from "../sceneManager";
+import { computeScore, type ScoreSummary } from "../../core/run/score.js";
+import { deleteSave, recordRunEnd, saveMeta } from "../../core/run/save.js";
+import { newRun } from "../../core/run/runState.js";
+import { CLASSES } from "../../content/classes.js";
+import { PAL } from "../palette.js";
+import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
+import { TYPE } from "../textStyles.js";
+import {
+  avatar,
+  button,
+  heading,
+  label,
+  makePawRow,
+  panel,
+  sceneBackdrop,
+  vignette,
+} from "../widgets.js";
+import { tween } from "../tween.js";
+import { randomSeed } from "./title.js";
+import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 
 /** Params contract for `scenes.goto('results', params)`. */
 export interface ResultsParams {
@@ -27,17 +43,19 @@ export interface ResultsParams {
   cause?: string;
 }
 
-const CAT_ORDER = ["bruiser", "trickster", "hexer", "medic"] as const;
 const LINE_MS = 320; // count-up: one score line per beat
 
-/**
- * The cat lineup flanks the center column (2 left, 2 right) instead of
- * sitting under it — the old centered row at R.results.catsY overlapped
- * the records line whenever the score table ran long. Feet at CATS_Y;
- * a sit-pose cat spans ~92px upward from its feet.
- */
-const CAT_XS = [180, 320, 960, 1100] as const;
-const CATS_Y = 560;
+/* ---- screen geometry (design px) ------------------------------------- */
+const EYEBROW_Y = 58;
+const BANNER_Y = 100;
+const CAUSE_Y = 142;
+const BODY_Y = 184;
+const SCORE_X = 120;
+const SCORE_W = 580;
+const ROLL_X = 740;
+const ROLL_W = 420;
+const ROW_H = 24; // one score line
+const CAT_ROW_H = 72;
 
 export function createResultsScene(): Scene {
   const view = new Container();
@@ -48,9 +66,10 @@ export function createResultsScene(): Scene {
   // count-up state
   let t = 0;
   let countDone = false;
-  const lineTexts: { pts: Text; line: number; points: number }[] = [];
+  const lineTexts: { pts: Text; row: Text; line: number; points: number }[] =
+    [];
   let totalText: Text | null = null;
-  let newBest: Text | null = null;
+  let newBest: Container | null = null;
   let isNewBest = false;
 
   const cats: { c: Container; baseY: number; phase: number; dead: boolean }[] =
@@ -71,7 +90,11 @@ export function createResultsScene(): Scene {
   const finishCountUp = (): void => {
     if (countDone || !summary) return;
     countDone = true;
-    for (const l of lineTexts) l.pts.text = String(l.points);
+    for (const l of lineTexts) {
+      l.pts.text = String(l.points);
+      l.pts.visible = true;
+      l.row.visible = true;
+    }
     if (totalText) totalText.text = String(summary.total);
     if (newBest && isNewBest) {
       newBest.visible = true;
@@ -101,144 +124,200 @@ export function createResultsScene(): Scene {
       saveMeta(ctx.meta);
       deleteSave();
 
-      /* ---- banner + cause ------------------------------------------ */
-      view.addChild(
-        new Graphics().rect(0, 0, DESIGN_W, DESIGN_H).fill(PAL.bgDeep),
-      );
-      // generated outcome scene behind everything, dimmed; the count-up
-      // and records get an extra center scrim below
-      const backdrop = makeCoverSprite(
-        p.victory ? "scene:victory" : "scene:defeat",
-        DESIGN_W,
-        DESIGN_H,
-        { dim: 0.6 },
-      );
-      if (backdrop) view.addChild(backdrop);
-      const banner = new Text({
-        text: p.victory ? "NINE LIVES WELL SPENT" : "THE ALLEY REMEMBERS",
-        style: display(40, { fill: p.victory ? PAL.gold : PAL.danger }),
-      });
-      banner.anchor.set(0.5);
-      banner.position.set(DESIGN_W / 2, R.results.headerY);
-      view.addChild(banner);
+      const accent = p.victory ? PAL.gold : PAL.danger;
 
-      const cause = new Text({
-        text:
-          p.cause ??
+      /* ---- backdrop: generated outcome art, dimmed + vignetted ------ */
+      view.addChild(
+        sceneBackdrop(
+          p.victory ? "scene:victory" : "scene:defeat",
+          DESIGN_W,
+          DESIGN_H,
+          { dim: 0.62 },
+        ),
+        vignette(DESIGN_W, DESIGN_H, 0.75),
+      );
+
+      /* ---- banner + cause ------------------------------------------ */
+      const eyebrow = heading(p.victory ? "RUN COMPLETE" : "RUN ENDED", 3, {
+        center: true,
+      });
+      eyebrow.position.set(DESIGN_W / 2, EYEBROW_Y);
+
+      const banner = heading(
+        p.victory ? "NINE LIVES WELL SPENT" : "THE ALLEY REMEMBERS",
+        1,
+        { center: true, fill: accent },
+      );
+      banner.position.set(DESIGN_W / 2, BANNER_Y);
+
+      const cause = label(
+        p.cause ??
           (p.victory
             ? `seed ${seed}`
             : `the clowder fell on floor ${run.floorNum}`),
-        style: ui(14, { fill: PAL.textDim }),
-      });
-      cause.anchor.set(0.5);
-      cause.position.set(DESIGN_W / 2, R.results.headerY + 36);
-      view.addChild(cause);
+        { dim: true, center: true },
+      );
+      cause.position.set(DESIGN_W / 2, CAUSE_Y);
+      view.addChild(eyebrow, banner, cause);
 
-      /* ---- score table (count-up) ---------------------------------- */
-      const [bx, by, bw] = R.results.statsBlock;
-      const lineH = 24;
-      if (backdrop) {
-        // soft scrim behind the stats/records column for readability
-        const scrimH = (summary.lines.length + 1) * lineH + 110;
-        view.addChild(
-          new Graphics()
-            .roundRect(bx - 28, by - 16, bw + 56, scrimH, 8)
-            .fill({ color: PAL.bgDeep, alpha: 0.55 }),
-        );
-      }
+      /* ---- score panel (count-up) ---------------------------------- */
+      const rows = summary.lines.length;
+      const scoreH = 56 + rows * ROW_H + 20 + ROW_H + 26 + SPACE.lg;
+      const rollH = 56 + run.cats.length * CAT_ROW_H + SPACE.md;
+      const bodyH = Math.max(scoreH, rollH);
+
+      const score = panel(SCORE_W, bodyH, { variant: "glass", accent });
+      score.position.set(SCORE_X, BODY_Y);
+      view.addChild(score);
+
+      const scoreTitle = heading("SCORE", 3);
+      scoreTitle.position.set(SPACE.lg, SPACE.md + 4);
+      score.addChild(scoreTitle);
+
+      const colL = SPACE.lg;
+      const colR = SCORE_W - SPACE.lg;
+      const top = 52;
       summary.lines.forEach((l, i) => {
-        const label = new Text({
-          text:
-            l.id === "victoryBonus"
-              ? l.label
-              : `${l.label}  ${l.count} × ${l.mult}`,
-          style: mono(14, { fill: PAL.textDim }),
-        });
-        label.position.set(bx, by + i * lineH);
-        label.visible = false;
-        const pts = new Text({
-          text: "0",
-          style: mono(14, { fill: PAL.text }),
-        });
+        const y = top + i * ROW_H;
+        const row = label(
+          l.id === "victoryBonus"
+            ? l.label
+            : `${l.label}  ${l.count} × ${l.mult}`,
+          { mono: true, dim: true },
+        );
+        row.position.set(colL, y);
+        row.visible = false;
+        const pts = label("0", { mono: true });
         pts.anchor.set(1, 0);
-        pts.position.set(bx + bw, by + i * lineH);
+        pts.position.set(colR, y);
         pts.visible = false;
-        view.addChild(label, pts);
-        lineTexts.push({ pts, line: i, points: l.points });
-        // reveal label + points together during the count-up
-        (pts as Text & { partner?: Text }).partner = label;
+        score.addChild(row, pts);
+        lineTexts.push({ pts, row, line: i, points: l.points });
       });
-      const totalY = by + summary.lines.length * lineH + 10;
-      const totalLabel = new Text({
-        text: "TOTAL",
-        style: mono(14, { fill: PAL.gold }),
+
+      // hairline above the TOTAL row
+      const totalY = top + rows * ROW_H + 18;
+      score.addChild(
+        new Graphics()
+          .moveTo(colL, totalY - 8)
+          .lineTo(colR, totalY - 8)
+          .stroke({ width: 1, color: PAL.border, alpha: 0.8 }),
+      );
+
+      const totalLabel = label("TOTAL", {
+        mono: true,
+        bold: true,
+        fill: PAL.gold,
       });
-      totalLabel.position.set(bx, totalY);
-      totalText = new Text({ text: "0", style: mono(14, { fill: PAL.gold }) });
+      totalLabel.position.set(colL, totalY);
+      totalText = label("0", { mono: true, fill: PAL.gold });
       totalText.anchor.set(1, 0);
-      totalText.position.set(bx + bw, totalY);
-      view.addChild(totalLabel, totalText);
+      totalText.position.set(colR, totalY);
+      score.addChild(totalLabel, totalText);
 
-      const timeLine = new Text({
-        text: `time ${formatTime(run.playTimeMs)} — never scored`,
-        style: mono(11, { fill: PAL.textDim }),
+      const timeLine = label(
+        `time ${formatTime(run.playTimeMs)} — never scored`,
+        { mono: true, dim: true, size: TYPE.tiny },
+      );
+      // pinned to the panel foot so short (defeat) tables don't leave a void
+      timeLine.position.set(colL, bodyH - 28);
+      score.addChild(timeLine);
+
+      /* ---- NEW BEST flair: a gold badge straddling the panel edge --- */
+      const best = heading("NEW BEST!", 2, { fill: PAL.gold, center: true });
+      const chipW = Math.ceil(best.width) + SPACE.lg * 2;
+      const chip = panel(chipW, 40, {
+        variant: "raised",
+        accent: PAL.gold,
+        radius: 20,
       });
-      timeLine.position.set(bx, totalY + 26);
-      view.addChild(timeLine);
+      best.position.set(chipW / 2, 20);
+      chip.addChild(best);
+      chip.pivot.set(chipW / 2, 20); // pivot on the badge center, not bounds
+      chip.position.set(SCORE_W / 2, bodyH - 4);
+      chip.visible = false;
+      score.addChild(chip);
+      newBest = chip;
 
-      /* ---- records line + NEW BEST flair --------------------------- */
+      /* ---- the clowder roll-call ----------------------------------- */
+      const roll = panel(ROLL_W, bodyH, { variant: "glass" });
+      roll.position.set(ROLL_X, BODY_Y);
+      view.addChild(roll);
+
+      const rollTitle = heading("THE CLOWDER", 3);
+      rollTitle.position.set(SPACE.lg, SPACE.md + 4);
+      roll.addChild(rollTitle);
+
+      run.cats.forEach((cat, i) => {
+        const dead = cat.lives <= 0;
+        const rowY = 52 + i * CAT_ROW_H;
+        const face = avatar(cat.classId, 56, {
+          dead,
+          ...(dead ? {} : { ring: PAL.heal }), // survivor ring
+        });
+        face.position.set(SPACE.lg + 28, rowY + 30);
+        roll.addChild(face);
+        cats.push({ c: face, baseY: face.y, phase: i * 0.9, dead });
+
+        const name = label(CLASSES[cat.classId].catName, {
+          bold: true,
+          size: TYPE.body,
+          fill: dead ? PAL.textDim : PAL.text,
+        });
+        name.position.set(SPACE.lg + 68, rowY + 8);
+        const state = label(dead ? "out of lives" : `${cat.lives} lives left`, {
+          dim: true,
+          size: TYPE.tiny,
+          mono: true,
+        });
+        state.position.set(SPACE.lg + 68, rowY + 30);
+        roll.addChild(name, state);
+
+        const paws = makePawRow(cat.lives);
+        paws.view.position.set(SPACE.lg + 68, rowY + 46);
+        roll.addChild(paws.view);
+      });
+
+      /* ---- records line -------------------------------------------- */
       const rec = ctx.meta;
-      const records = new Text({
-        text:
-          `best ${rec.records.bestScore} · victories ` +
+      const records = label(
+        `best ${rec.records.bestScore} · victories ` +
           `${rec.counters.victories} · runs ${rec.counters.runs}`,
-        style: ui(14, { fill: PAL.textDim }),
-      });
-      records.anchor.set(0.5);
-      records.position.set(DESIGN_W / 2, totalY + 56);
+        { dim: true, center: true },
+      );
+      records.position.set(DESIGN_W / 2, BODY_Y + bodyH + SPACE.lg + SPACE.xs);
       view.addChild(records);
 
-      newBest = new Text({
-        text: "NEW BEST!",
-        style: display(22, { fill: PAL.gold }),
-      });
-      newBest.anchor.set(0.5);
-      newBest.position.set(bx + bw + 90, totalY + 8);
-      newBest.visible = false;
-      view.addChild(newBest);
-
-      /* ---- the cats (survivors bob, dead cats greyscale ghosts) ---- */
-      run.cats.forEach((cat, i) => {
-        const c = new Container();
-        const g = new Graphics();
-        const dead = cat.lives <= 0;
-        drawCat(g, CAT_ORDER[i], "sit", 1, dead);
-        if (dead) c.alpha = 0.6;
-        c.addChild(g);
-        c.position.set(CAT_XS[i] ?? DESIGN_W / 2, CATS_Y);
-        cats.push({ c, baseY: CATS_Y, phase: i * 0.9, dead });
-        view.addChild(c);
-      });
-
       /* ---- buttons ------------------------------------------------- */
-      const defs: { label: string; onTap: () => void; primary?: boolean }[] = [
+      const defs: {
+        label: string;
+        hotkey: string;
+        onTap: () => void;
+        primary?: boolean;
+      }[] = [
         {
-          label: "[Enter] Again",
+          label: "Again",
+          hotkey: "Enter",
           onTap: () => again(true),
           primary: true,
         },
-        { label: "[N] New Seed", onTap: () => again(false) },
-        { label: "[T] Title", onTap: toTitle },
+        { label: "New Seed", hotkey: "N", onTap: () => again(false) },
+        { label: "Title", hotkey: "T", onTap: toTitle },
       ];
-      const bwid = 200;
-      const gap = 20;
-      const x0 = DESIGN_W / 2 - (bwid * 3 + gap * 2) / 2;
+      const bwid = 220;
+      const gap = SPACE.lg;
+      const x0 =
+        DESIGN_W / 2 - (bwid * defs.length + gap * (defs.length - 1)) / 2;
+      const buttonsY = Math.min(
+        DESIGN_H - 88,
+        BODY_Y + bodyH + SPACE.xl + SPACE.md,
+      );
       defs.forEach((d, i) => {
-        const b = makeButton(d.label, bwid, 48, d.onTap, {
+        const b = button(d.label, bwid, 52, d.onTap, {
           primary: d.primary,
-          fontSize: 16,
+          hotkey: d.hotkey,
         });
-        b.view.position.set(x0 + i * (bwid + gap), R.results.buttonsY);
+        b.view.position.set(x0 + i * (bwid + gap), buttonsY);
         view.addChild(b.view);
       });
 
@@ -266,11 +345,10 @@ export function createResultsScene(): Scene {
       // tally line by line: line i counts up during its LINE_MS window
       let running = 0;
       for (const l of lineTexts) {
-        const partner = (l.pts as Text & { partner?: Text }).partner;
         const start = l.line * LINE_MS;
         if (t < start) break;
         l.pts.visible = true;
-        if (partner) partner.visible = true;
+        l.row.visible = true;
         const frac = Math.min(1, (t - start) / LINE_MS);
         l.pts.text = String(Math.round(l.points * frac));
         running += Math.round(l.points * frac);

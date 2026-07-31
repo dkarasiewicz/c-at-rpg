@@ -7,8 +7,8 @@
  *
  * Pure core: zero pixi, zero RNG — every function is deterministic.
  */
-import { Tile } from "../types";
-import type { FloorState, Room } from "../types";
+import { Tile } from "../types.js";
+import type { FloorState, Room } from "../types.js";
 
 /** Flat tile index: `y * w + x` (the FloorState contract). */
 export const idx = (w: number, x: number, y: number): number => y * w + x;

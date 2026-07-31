@@ -19,7 +19,7 @@
  *
  * Data only: imports core/types.ts and nothing else.
  */
-import type { ConsumableDef, ItemId } from "../core/types";
+import type { ConsumableDef, ItemId } from "../core/types.js";
 
 const ANY_RANK = [1, 2, 3, 4];
 const ENEMY_RANKS = [1, 2, 3, 4, 5];

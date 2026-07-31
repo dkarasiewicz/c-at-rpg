@@ -10,8 +10,21 @@ export type Rect = [x: number, y: number, w: number, h: number];
 export const DESIGN_W = 1280;
 export const DESIGN_H = 720;
 
-/** Corner radii (ui-art §1). */
-export const RADIUS = { panel: 8, button: 6, chip: 4 } as const;
+/** Corner radii (ui-art §1) + the shared chrome kit's avatar/bar radii. */
+export const RADIUS = {
+  panel: 8,
+  button: 6,
+  chip: 4,
+  avatar: 12,
+  bar: 3,
+} as const;
+
+/**
+ * The ONE spacing scale for the shared chrome kit: panel padding, gaps
+ * between widgets, rows in a stack. Screens should reach for these instead
+ * of ad-hoc numbers so gutters line up across scenes.
+ */
+export const SPACE = { xs: 4, sm: 8, md: 12, lg: 20, xl: 32 } as const;
 
 export const R = {
   /* ---- §7 Exploration screen -------------------------------------- */

@@ -6,8 +6,8 @@
  * container's scale.x for left-facing.
  */
 import { Graphics } from "pixi.js";
-import type { ClassId } from "../../core/types";
-import { PAL, KO_GREY, BANDANA_OUTLINE } from "../palette";
+import type { ClassId } from "../../core/types.js";
+import { PAL, KO_GREY, BANDANA_OUTLINE } from "../palette.js";
 
 export type CatPose = "sit" | "battle";
 

@@ -5,11 +5,11 @@
  * flag (renders every cat/enemy/widget variant for eyeballing).
  */
 import { Container, Graphics, Text } from "pixi.js";
-import type { ClassId, EnemyLook, StatusId } from "../../core/types";
-import { PAL, THEMES, CHEST_WOOD } from "../palette";
-import { display, ui } from "../textStyles";
-import { drawCat, drawCatPortrait, drawPaw } from "./cats";
-import { drawEnemy, makeTierChevrons, makeHeavyGlyph } from "./enemies";
+import type { ClassId, EnemyLook, StatusId } from "../../core/types.js";
+import { PAL, THEMES, CHEST_WOOD } from "../palette.js";
+import { display, ui } from "../textStyles.js";
+import { drawCat, drawCatPortrait, drawPaw } from "./cats.js";
+import { drawEnemy, makeTierChevrons, makeHeavyGlyph } from "./enemies.js";
 import {
   makeBar,
   makeButton,
@@ -18,7 +18,7 @@ import {
   makePanel,
   makePawRow,
   makeStatusChip,
-} from "../widgets";
+} from "../widgets.js";
 
 export type EventGlyphId =
   "yarnBall" | "fishBones" | "pawShrine" | "strangeBox";

@@ -6,10 +6,15 @@
  * windup (charge state lives on the Combatant, resolve.ts drives it), and
  * summons. All boss data comes from `ENEMIES[speciesId].boss`.
  */
-import type { BattleEvent, BattleState, BossData, Combatant } from "../types";
-import { ENEMIES } from "../../content/enemies";
-import { living } from "./state";
-import { applyStatus } from "./status";
+import type {
+  BattleEvent,
+  BattleState,
+  BossData,
+  Combatant,
+} from "../types.js";
+import { ENEMIES } from "../../content/enemies.js";
+import { living } from "./state.js";
+import { applyStatus } from "./status.js";
 
 export function bossDataOf(c: Combatant): BossData | undefined {
   return c.speciesId ? ENEMIES[c.speciesId]?.boss : undefined;

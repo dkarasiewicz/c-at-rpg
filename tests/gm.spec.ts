@@ -8,7 +8,7 @@
  *    Anthropic client (no real API call).
  */
 import { describe, expect, it } from "vitest";
-import type { GameEvent, Skill } from "../src/core/types";
+import type { GameEvent, Skill } from "../src/core/types.js";
 import type {
   GeneratedCatKit,
   GeneratedEquip,
@@ -17,7 +17,7 @@ import type {
   InteractionRule,
   PowerScript,
   StoredInteraction,
-} from "../src/services/gmTypes";
+} from "../src/services/gmTypes.js";
 import {
   EVENT_CAPS,
   lintEvent,
@@ -26,13 +26,13 @@ import {
   lintParty,
   lintSteer,
   ROLE_STAT_TOTALS,
-} from "../api/_lib/constraints";
-import { MemoryPool, poolPickProbability } from "../api/_lib/pool";
+} from "../api/_lib/constraints.js";
+import { MemoryPool, poolPickProbability } from "../api/_lib/pool.js";
 import {
   GmGenerationError,
   generateValidated,
   type StructuredGenClient,
-} from "../api/_lib/generate";
+} from "../api/_lib/generate.js";
 import {
   BUDGET_CAPS,
   lintInteractionRule,
@@ -42,24 +42,24 @@ import {
   powerBudget,
   resonancePairKey,
   STOCK_POWERS,
-} from "../api/_lib/powers";
-import { ART_STYLE } from "../src/content/artStyle";
-import { resonancePairKey as clientPairKey } from "../src/services/gm";
-import { createPartyHandler } from "../api/gm/party";
-import { createResonanceHandler } from "../api/gm/resonance";
+} from "../api/_lib/powers.js";
+import { ART_STYLE } from "../src/content/artStyle.js";
+import { resonancePairKey as clientPairKey } from "../src/services/gm.js";
+import { createPartyHandler } from "../api/gm/party.js";
+import { createResonanceHandler } from "../api/gm/resonance.js";
 import {
   createEventResolveHandler,
   lintResolvePayload,
-} from "../api/gm/eventResolve";
-import type { BattleSetup, ClassId, Effect } from "../src/core/types";
+} from "../api/gm/eventResolve.js";
+import type { BattleSetup, ClassId, Effect } from "../src/core/types.js";
 import type {
   PoweredBattleSetup,
   PoweredBattleState,
-} from "../src/core/combat/powerTypes";
-import { CLASSES } from "../src/content/classes";
-import { createBattle } from "../src/core/combat/setup";
-import { startRound } from "../src/core/combat/turns";
-import { mulberry32 } from "../src/core/rng";
+} from "../src/core/combat/powerTypes.js";
+import { CLASSES } from "../src/content/classes.js";
+import { createBattle } from "../src/core/combat/setup.js";
+import { startRound } from "../src/core/combat/turns.js";
+import { mulberry32 } from "../src/core/rng.js";
 
 /* ------------------------------------------------------------------------ */
 /* fixtures                                                                  */

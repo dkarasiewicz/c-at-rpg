@@ -3,7 +3,7 @@
  * and core/util helpers (roundHalfUp, clamp, weighted picks, shuffle, bitset).
  */
 import { describe, expect, it } from "vitest";
-import { fnv1a, hash, mulberry32 } from "../src/core/rng";
+import { fnv1a, hash, mulberry32 } from "../src/core/rng.js";
 import {
   clamp,
   decodeBitset,
@@ -12,8 +12,8 @@ import {
   pickWeightedFloat,
   roundHalfUp,
   shuffle,
-} from "../src/core/util";
-import type { Rng } from "../src/core/types";
+} from "../src/core/util.js";
+import type { Rng } from "../src/core/types.js";
 
 /** Scripted Rng for deterministic helper tests. */
 function scriptedRng(floats: number[]): Rng {

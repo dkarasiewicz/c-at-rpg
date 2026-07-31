@@ -7,8 +7,8 @@ import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { ART_STYLE, type ArtCategory } from "../src/content/artStyle";
-import { composeArtPrompt } from "../api/_lib/artPrompt";
+import { ART_STYLE, type ArtCategory } from "../src/content/artStyle.js";
+import { composeArtPrompt } from "../api/_lib/artPrompt.js";
 
 const CATEGORIES: ArtCategory[] = ["battleSprite", "icon", "tile", "scene"];
 

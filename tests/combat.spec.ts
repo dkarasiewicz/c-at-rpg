@@ -19,10 +19,10 @@ import type {
   MewHookId,
   Rng,
   TraitId,
-} from "../src/core/types";
-import { hash, mulberry32 } from "../src/core/rng";
-import { CLASSES } from "../src/content/classes";
-import { createBattle } from "../src/core/combat/setup";
+} from "../src/core/types.js";
+import { hash, mulberry32 } from "../src/core/rng.js";
+import { CLASSES } from "../src/content/classes.js";
+import { createBattle } from "../src/core/combat/setup.js";
 import {
   byId,
   hasStatus,
@@ -30,11 +30,18 @@ import {
   living,
   nextActor,
   previewDamage,
-} from "../src/core/combat/state";
-import { catPileDamageEach, resolveAction } from "../src/core/combat/resolve";
-import { battleResult, fleeChance, startRound } from "../src/core/combat/turns";
-import { takeEnemyTurn } from "../src/core/combat/ai";
-import { applyStatus, roundEndPhase } from "../src/core/combat/status";
+} from "../src/core/combat/state.js";
+import {
+  catPileDamageEach,
+  resolveAction,
+} from "../src/core/combat/resolve.js";
+import {
+  battleResult,
+  fleeChance,
+  startRound,
+} from "../src/core/combat/turns.js";
+import { takeEnemyTurn } from "../src/core/combat/ai.js";
+import { applyStatus, roundEndPhase } from "../src/core/combat/status.js";
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */

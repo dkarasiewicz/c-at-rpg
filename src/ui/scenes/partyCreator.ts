@@ -17,23 +17,37 @@
  * art: `catTexture()` misses on their names, so the procedural renderers
  * take over automatically; `stand.visualPrompt` is stored on the run for
  * future sprite generation.
+ *
+ * All chrome is the shared kit (widgets.ts): `sceneBackdrop`/`vignette`,
+ * `panel` cards, `avatar()` slot portraits (painted-first — never a flat
+ * vector face), `heading`/`label` type and `button` hotkey chips. The DOM
+ * entry overlay mirrors the same palette tokens.
  */
-import { Container, Graphics, Text } from "pixi.js";
-import type { CatClass, ClassId, Skill, TraitId } from "../../core/types";
+import { Container, Text } from "pixi.js";
+import type { CatClass, ClassId, Skill, TraitId } from "../../core/types.js";
 import {
   newRun,
   PARTY_ORDER,
   type CustomCatKit,
-} from "../../core/run/runState";
-import { CLASSES } from "../../content/classes";
-import { SKILLS } from "../../content/skills";
-import { CAT_POWERS } from "../../content/powers";
-import { requestGmParty } from "../../services/gm";
-import type { GeneratedCatKit, GmRole } from "../../services/gmTypes";
-import { PAL } from "../palette";
-import { DESIGN_H, DESIGN_W, RADIUS } from "../layout";
-import { display, mono, ui } from "../textStyles";
-import { layer, type GameCtx, type Scene } from "../sceneManager";
+} from "../../core/run/runState.js";
+import { CLASSES } from "../../content/classes.js";
+import { SKILLS } from "../../content/skills.js";
+import { CAT_POWERS } from "../../content/powers.js";
+import { requestGmParty } from "../../services/gm.js";
+import type { GeneratedCatKit, GmRole } from "../../services/gmTypes.js";
+import { PAL } from "../palette.js";
+import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
+import { TYPE } from "../textStyles.js";
+import {
+  avatar,
+  button,
+  heading,
+  label,
+  panel,
+  sceneBackdrop,
+  vignette,
+} from "../widgets.js";
+import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 
 /* ---------------------------------------------------------------------- */
 /* Kit mapping (GeneratedCatKit → CustomCatKit, pure)                      */
@@ -184,6 +198,17 @@ const PLACEHOLDERS = [
   "(optional) fourth cat…",
 ];
 
+/* ---- screen geometry (design px) ------------------------------------- */
+const EYEBROW_Y = 46;
+const BANNER_Y = 78;
+const SUB_Y = 124;
+const CARD_TOP = 170;
+const CARD_W = 296;
+const CARD_H = 400;
+const CARD_GAP = SPACE.lg;
+const BAR_Y = 632;
+const BTN_H = 52;
+
 export function createPartyCreatorScene(): Scene {
   const view = new Container();
   let ctx: GameCtx | null = null;
@@ -272,135 +297,192 @@ export function createPartyCreatorScene(): Scene {
     if (hint) {
       hint.text =
         mode === "preview"
-          ? "[Enter] Take them in · [Esc] Rewrite"
+          ? "The GM's word is final — but you can always rewrite it."
           : mode === "loading"
-            ? "[Esc] Never mind — back to the title"
-            : "[Enter] Summon the GM · [Esc] Back to title";
+            ? "The GM is thinking. This takes a few seconds."
+            : "Describe one to four cats, then summon the GM.";
     }
   };
 
+  /** The persistent action bar: same slot, same language, every mode. */
+  function actionBar(
+    defs: {
+      label: string;
+      hotkey: string;
+      onTap: () => void;
+      primary?: boolean;
+      w?: number;
+    }[],
+  ): void {
+    if (!stage) return;
+    const gap = SPACE.lg;
+    const total =
+      defs.reduce((s, d) => s + (d.w ?? 220), 0) + gap * (defs.length - 1);
+    let x = (DESIGN_W - total) / 2;
+    for (const d of defs) {
+      const w = d.w ?? 220;
+      const b = button(d.label, w, BTN_H, d.onTap, {
+        primary: d.primary,
+        hotkey: d.hotkey,
+      });
+      b.view.position.set(x, BAR_Y);
+      stage.addChild(b.view);
+      x += w + gap;
+    }
+  }
+
   function buildInputStage(): void {
     if (!stage) return;
-    const sub = new Text({
-      text:
-        "Describe one to four cats. The GM invents the rest —\n" +
+    const sub = label(
+      "Describe one to four cats. The GM invents the rest —\n" +
         "Stands, skills, stats, the works.",
-      style: ui(16, { fill: PAL.textDim, align: "center" }),
-    });
-    sub.anchor.set(0.5, 0);
-    sub.position.set(DESIGN_W / 2, 116);
+      { dim: true, center: true, align: "center", size: TYPE.body },
+    );
+    sub.position.set(DESIGN_W / 2, SUB_Y);
     stage.addChild(sub);
 
-    statusText = new Text({
-      text: "",
-      style: ui(14, { fill: PAL.offBal }),
-    });
-    statusText.anchor.set(0.5, 0);
-    statusText.position.set(DESIGN_W / 2, 636);
+    // the DOM entry panel owns the middle of the screen in this mode; the
+    // status line sits just under it, above the action bar
+    statusText = label("", { fill: PAL.offBal, center: true });
+    statusText.position.set(DESIGN_W / 2, BAR_Y - SPACE.xl);
     stage.addChild(statusText);
+
+    actionBar([
+      { label: "Summon the GM", hotkey: "Enter", onTap: submit, primary: true },
+      { label: "Back", hotkey: "Esc", onTap: backToTitle, w: 160 },
+    ]);
   }
 
   function buildLoadingStage(): void {
     if (!stage) return;
-    statusText = new Text({
-      text: "The GM shuffles the deck",
-      style: display(24, { fill: PAL.gold }),
+    statusText = heading("The GM shuffles the deck", 2, {
+      center: true,
+      fill: PAL.gold,
     });
-    statusText.anchor.set(0.5);
-    statusText.position.set(DESIGN_W / 2, DESIGN_H / 2 - 10);
+    statusText.position.set(DESIGN_W / 2, DESIGN_H / 2 - 16);
     stage.addChild(statusText);
-    const sub = new Text({
-      text: "conjuring four Stands from your words…",
-      style: ui(15, { fill: PAL.textDim }),
+    const sub = label("conjuring four Stands from your words…", {
+      dim: true,
+      center: true,
+      size: TYPE.body,
     });
-    sub.anchor.set(0.5);
-    sub.position.set(DESIGN_W / 2, DESIGN_H / 2 + 26);
+    sub.position.set(DESIGN_W / 2, DESIGN_H / 2 + 24);
     stage.addChild(sub);
+
+    actionBar([
+      { label: "Never mind", hotkey: "Esc", onTap: backToTitle, w: 200 },
+    ]);
   }
 
   function buildPreviewStage(): void {
     if (!stage || !kits) return;
     const party = mapKitsToCustomParty(kits);
-    const colW = 296;
-    const gap = 16;
-    const x0 = (DESIGN_W - 4 * colW - 3 * gap) / 2;
+    const x0 = (DESIGN_W - 4 * CARD_W - 3 * CARD_GAP) / 2;
     const s = stage;
     party.forEach((kit, i) => {
-      const p = buildKitPanel(kit, colW);
-      p.position.set(x0 + i * (colW + gap), 112);
+      const p = buildKitPanel(kit, CARD_W, CARD_H);
+      p.position.set(x0 + i * (CARD_W + CARD_GAP), CARD_TOP);
       s.addChild(p);
     });
+
+    actionBar([
+      {
+        label: "Take them in",
+        hotkey: "Enter",
+        onTap: startCustomRun,
+        primary: true,
+        w: 240,
+      },
+      {
+        label: "Rewrite",
+        hotkey: "Esc",
+        onTap: () => setMode("input"),
+        w: 200,
+      },
+    ]);
   }
 
-  function buildKitPanel(kit: CustomCatKit, w: number): Container {
+  /** One kit preview card: kit chrome only, class-colored accent edge. */
+  function buildKitPanel(kit: CustomCatKit, w: number, h: number): Container {
     const c = new Container();
-    const h = 528;
     c.addChild(
-      new Graphics()
-        .roundRect(0, 0, w, h, RADIUS.panel)
-        .fill(PAL.panel)
-        .stroke({ width: 2, color: PAL.border }),
+      panel(w, h, { variant: "glass", accent: PAL[kit.classId].body }),
     );
-    let y = 14;
-    const add = (t: Text, x = 14): void => {
-      t.position.set(x, y);
+
+    // header: the party-slot portrait (painted-first) + name + role
+    const face = avatar(kit.classId, 60, { shape: "rounded" });
+    face.position.set(SPACE.lg + 30, SPACE.lg + 26);
+    c.addChild(face);
+
+    const name = heading(kit.catName, 2, { fill: PAL.gold });
+    name.position.set(SPACE.lg + 70, SPACE.md);
+    const role = label(`${kit.className} · ${kit.role}`, {
+      size: TYPE.tiny,
+      wrap: w - SPACE.lg - 78,
+    });
+    role.position.set(SPACE.lg + 70, SPACE.md + 30);
+    const slot = label(`${kit.classId} slot`, {
+      mono: true,
+      dim: true,
+      size: TYPE.tiny,
+    });
+    slot.position.set(SPACE.lg + 70, SPACE.md + 48);
+    c.addChild(name, role, slot);
+
+    let y = SPACE.lg + 62;
+    const add = (t: Text, gap: number = SPACE.xs): void => {
+      t.position.set(SPACE.lg, y);
       c.addChild(t);
-      y += t.height + 4;
+      y += t.height + gap;
     };
-    const wrap = { wordWrap: true, wordWrapWidth: w - 28 } as const;
+    const wrapW = w - SPACE.lg * 2;
+
+    add(label(kit.epithet, { dim: true, size: TYPE.tiny, wrap: wrapW }));
+    y += SPACE.xs;
     add(
-      new Text({ text: kit.catName, style: display(22, { fill: PAL.gold }) }),
-    );
-    add(
-      new Text({
-        text: kit.epithet,
-        style: ui(12, { fill: PAL.textDim, ...wrap }),
+      label(`«${kit.standName}»`, {
+        mono: true,
+        fill: PAL.energy,
+        wrap: wrapW,
       }),
+      SPACE.sm,
     );
-    add(
-      new Text({
-        text: `${kit.className} · ${kit.role}`,
-        style: ui(14, { fill: PAL.text }),
-      }),
-    );
-    y += 4;
-    add(
-      new Text({
-        text: `«${kit.standName}»`,
-        style: mono(14, { fill: PAL.energy, ...wrap }),
-      }),
-    );
-    y += 4;
+
     const b = kit.base;
     add(
-      new Text({
-        text:
-          `HP ${b.hp}  ATK ${b.atk}  DEF ${b.def}\n` +
+      label(
+        `HP ${b.hp}  ATK ${b.atk}  DEF ${b.def}\n` +
           `SPD ${b.spd}  CRT ${b.crt}  EN ${b.enMax}`,
-        style: mono(13, { fill: PAL.text }),
-      }),
+        { mono: true, size: TYPE.small },
+      ),
+      SPACE.sm,
     );
-    y += 6;
+
+    const skillsTitle = heading("SKILLS", 3);
+    add(skillsTitle, SPACE.xs);
     for (const s of kit.skills) {
       add(
-        new Text({
-          text: `· ${s.name} (${s.cost}⚡)`,
-          style: ui(13, { fill: PAL.text, ...wrap }),
+        label(`· ${s.name} (${s.cost}⚡)`, {
+          size: TYPE.small,
+          wrap: wrapW,
         }),
+        2,
       );
     }
-    y += 6;
+    y += SPACE.sm;
     add(
-      new Text({
-        text: `${kit.trait.name} — ${kit.trait.desc}`,
-        style: ui(11, { fill: PAL.textDim, ...wrap }),
+      label(`${kit.trait.name} — ${kit.trait.desc}`, {
+        dim: true,
+        size: TYPE.tiny,
+        wrap: wrapW,
       }),
+      SPACE.xs,
     );
-    y += 4;
     add(
-      new Text({
-        text: kit.power.flavor,
-        style: ui(11, { fill: PAL.hexer.body, ...wrap }),
+      label(kit.power.flavor, {
+        fill: PAL.hexer.body,
+        size: TYPE.tiny,
+        wrap: wrapW,
       }),
     );
     return c;
@@ -408,23 +490,23 @@ export function createPartyCreatorScene(): Scene {
 
   function showToast(msg: string): void {
     toastC?.destroy({ children: true });
-    toastC = new Container();
     const tw = 600;
-    toastC.addChild(
-      new Graphics()
-        .roundRect(0, 0, tw, 48, RADIUS.panel)
-        .fill(PAL.panelLite)
-        .stroke({ width: 2, color: PAL.gold }),
-    );
-    const t = new Text({ text: msg, style: ui(16, { fill: PAL.text }) });
-    t.anchor.set(0.5);
-    t.position.set(tw / 2, 24);
-    toastC.addChild(t);
-    toastC.position.set((DESIGN_W - tw) / 2, 560);
-    view.addChild(toastC);
+    const th = 56;
+    const box = new Container();
+    box.addChild(panel(tw, th, { variant: "raised", accent: PAL.gold }));
+    const t = label(msg, { center: true, size: TYPE.body });
+    t.position.set(tw / 2, th / 2);
+    box.addChild(t);
+    box.position.set((DESIGN_W - tw) / 2, DESIGN_H / 2 + 80);
+    toastC = box;
+    view.addChild(box);
   }
 
   /* ---- DOM overlay ------------------------------------------------- */
+
+  /** PAL token → CSS hex, so the DOM entry panel matches the pixi chrome. */
+  const css = (color: number): string =>
+    `#${color.toString(16).padStart(6, "0")}`;
 
   function buildDom(): void {
     dom = document.createElement("div");
@@ -439,20 +521,21 @@ export function createPartyCreatorScene(): Scene {
       zIndex: "10",
     } satisfies Partial<CSSStyleDeclaration>);
 
-    const panel = document.createElement("div");
-    Object.assign(panel.style, {
+    const domPanel = document.createElement("div");
+    Object.assign(domPanel.style, {
       pointerEvents: "auto",
       width: "min(560px, 82vw)",
-      background: "rgba(26, 22, 38, 0.96)",
-      border: "2px solid #4a3f66",
+      background: "rgba(29, 24, 48, 0.94)", // PAL.glass
+      border: `1px solid ${css(PAL.border)}`,
       borderRadius: "8px",
       padding: "18px 20px",
       display: "flex",
       flexDirection: "column",
       gap: "10px",
+      boxShadow: "0 10px 32px rgba(7, 6, 13, 0.55)",
       fontFamily: "monospace",
     } satisfies Partial<CSSStyleDeclaration>);
-    dom.appendChild(panel);
+    dom.appendChild(domPanel);
 
     inputs = PLACEHOLDERS.map((ph, i) => {
       const input = document.createElement("input");
@@ -461,10 +544,10 @@ export function createPartyCreatorScene(): Scene {
       input.placeholder = ph;
       input.setAttribute("data-cat-input", String(i + 1));
       Object.assign(input.style, {
-        background: "#241f33",
-        border: "1px solid #4a3f66",
+        background: css(PAL.hpBack),
+        border: `1px solid ${css(PAL.border)}`,
         borderRadius: "6px",
-        color: "#f2ede4",
+        color: css(PAL.text),
         padding: "10px 12px",
         fontSize: "14px",
         fontFamily: "inherit",
@@ -479,42 +562,12 @@ export function createPartyCreatorScene(): Scene {
         else if (e.key === "Escape") backToTitle();
       });
       input.addEventListener("keyup", (e) => e.stopPropagation());
-      panel.appendChild(input);
+      domPanel.appendChild(input);
       return input;
     });
 
-    const row = document.createElement("div");
-    Object.assign(row.style, {
-      display: "flex",
-      gap: "10px",
-      justifyContent: "flex-end",
-    } satisfies Partial<CSSStyleDeclaration>);
-    const mkBtn = (
-      label: string,
-      primary: boolean,
-      onClick: () => void,
-    ): HTMLButtonElement => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = label;
-      Object.assign(btn.style, {
-        background: primary ? "#f5c84c" : "#262038",
-        color: primary ? "#1a1626" : "#f2ede4",
-        border: `1px solid ${primary ? "#b98a1f" : "#4a3f66"}`,
-        borderRadius: "6px",
-        padding: "8px 16px",
-        fontFamily: "inherit",
-        fontSize: "14px",
-        cursor: "pointer",
-      } satisfies Partial<CSSStyleDeclaration>);
-      btn.addEventListener("click", onClick);
-      row.appendChild(btn);
-      return btn;
-    };
-    mkBtn("Back", false, backToTitle);
-    mkBtn("Summon the GM", true, submit);
-    panel.appendChild(row);
-
+    // No DOM buttons: the pixi action bar below owns Summon/Back, so the
+    // screen shows exactly one button language (kit `button` + hotkey chip).
     document.body.appendChild(dom);
     setTimeout(() => inputs[0]?.focus(), 0);
   }
@@ -529,22 +582,24 @@ export function createPartyCreatorScene(): Scene {
       kits = null;
 
       view.addChild(
-        new Graphics().rect(0, 0, DESIGN_W, DESIGN_H).fill(PAL.bgDeep),
+        sceneBackdrop("scene:partyCreator", DESIGN_W, DESIGN_H, { dim: 0.5 }),
+        vignette(DESIGN_W, DESIGN_H, 0.8),
       );
-      const header = new Text({
-        text: "Assemble your own alley",
-        style: display(34, { fill: PAL.text }),
+
+      const eyebrow = heading("THE GM IS LISTENING", 3, { center: true });
+      eyebrow.position.set(DESIGN_W / 2, EYEBROW_Y);
+      const header = heading("Assemble your own alley", 1, {
+        center: true,
+        fill: PAL.gold,
       });
-      header.anchor.set(0.5, 0);
-      header.position.set(DESIGN_W / 2, 52);
-      view.addChild(header);
+      header.position.set(DESIGN_W / 2, BANNER_Y);
+      view.addChild(eyebrow, header);
 
       stage = new Container();
       view.addChild(stage);
 
-      hint = new Text({ text: "", style: ui(14, { fill: PAL.textDim }) });
-      hint.anchor.set(0.5, 1);
-      hint.position.set(DESIGN_W / 2, DESIGN_H - 16);
+      hint = label("", { dim: true, center: true, size: TYPE.tiny });
+      hint.position.set(DESIGN_W / 2, DESIGN_H - SPACE.lg);
       view.addChild(hint);
 
       buildDom();

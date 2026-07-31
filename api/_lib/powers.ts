@@ -18,15 +18,15 @@ import {
   POWER_FRAMEWORK_VERSION,
   powerBudget,
   validatePowerScript,
-} from "../../src/core/combat/powers";
-import { CAT_POWERS } from "../../src/content/powers";
+} from "../../src/core/combat/powers.js";
+import { CAT_POWERS } from "../../src/content/powers.js";
 import type {
   GmRole,
   InteractionRule,
   PowerScript,
   PowerTrigger,
-} from "../../src/services/gmTypes";
-import { STATUS_IDS } from "./constraints";
+} from "../../src/services/gmTypes.js";
+import { STATUS_IDS } from "./constraints.js";
 
 export {
   BUDGET_CAPS,

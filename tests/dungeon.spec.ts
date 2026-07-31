@@ -7,31 +7,31 @@
  * light), the step loop, the roamer FSM, and the zero-runtime-RNG contract.
  */
 import { describe, expect, it, vi } from "vitest";
-import { generateFloor } from "../src/core/dungeon/gen";
+import { generateFloor } from "../src/core/dungeon/gen.js";
 import {
   bfsFlood,
   computeVisible,
   idx,
   los,
   recomputeVisibility,
-} from "../src/core/dungeon/floor";
+} from "../src/core/dungeon/floor.js";
 import {
   applyFlee,
   applyVictory,
   contactCheck,
   step,
-} from "../src/core/dungeon/step";
-import { advanceRoamers } from "../src/core/dungeon/roamers";
-import { hash } from "../src/core/rng";
-import { FLOORS } from "../src/content/floors";
+} from "../src/core/dungeon/step.js";
+import { advanceRoamers } from "../src/core/dungeon/roamers.js";
+import { hash } from "../src/core/rng.js";
+import { FLOORS } from "../src/content/floors.js";
 import type {
   Entity,
   FloorConfig,
   FloorState,
   Roamer,
   Room,
-} from "../src/core/types";
-import { Tile } from "../src/core/types";
+} from "../src/core/types.js";
+import { Tile } from "../src/core/types.js";
 
 /* ---------------------------------------------------------------- helpers */
 

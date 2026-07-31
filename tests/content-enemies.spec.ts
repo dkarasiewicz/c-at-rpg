@@ -6,11 +6,11 @@
  * dogfather 200 HP/Poise 4 + one porcelainHound escort).
  */
 import { describe, expect, it } from "vitest";
-import type { Stats } from "../src/core/types";
-import { ENEMIES } from "../src/content/enemies";
-import { SKILLS } from "../src/content/skills";
-import { BOSS_ENCOUNTERS } from "../src/content/bosses";
-import { FLOORS, LEVEL_CAP, XP_TO_LEVEL } from "../src/content/floors";
+import type { Stats } from "../src/core/types.js";
+import { ENEMIES } from "../src/content/enemies.js";
+import { SKILLS } from "../src/content/skills.js";
+import { BOSS_ENCOUNTERS } from "../src/content/bosses.js";
+import { FLOORS, LEVEL_CAP, XP_TO_LEVEL } from "../src/content/floors.js";
 
 const st = (
   hp: number,

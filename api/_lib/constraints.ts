@@ -15,17 +15,22 @@
  *
  * Everything returns human-readable error strings; empty array = valid.
  */
-import type { GameEvent, Rarity, Skill, StatusId } from "../../src/core/types";
-import { resolveScalar } from "../../src/core/events/resolve";
-import { validateEvents } from "../../src/core/events/validate";
-import { EQUIP_DEFS } from "../../src/content/equipment";
-import { EVENTS } from "../../src/content/events";
+import type {
+  GameEvent,
+  Rarity,
+  Skill,
+  StatusId,
+} from "../../src/core/types.js";
+import { resolveScalar } from "../../src/core/events/resolve.js";
+import { validateEvents } from "../../src/core/events/validate.js";
+import { EQUIP_DEFS } from "../../src/content/equipment.js";
+import { EVENTS } from "../../src/content/events.js";
 import type {
   GeneratedCatKit,
   GeneratedEquip,
   GmRole,
   GmSteerNudges,
-} from "../../src/services/gmTypes";
+} from "../../src/services/gmTypes.js";
 
 /* ------------------------------------------------------------------------ */
 /* Shared vocabularies                                                       */

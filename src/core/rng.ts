@@ -10,7 +10,7 @@
  *
  * Frozen implementation — tests/rng.spec.ts carries known-answer vectors.
  */
-import type { Rng } from "./types";
+import type { Rng } from "./types.js";
 
 /** 32-bit FNV-1a hash of a string (offset basis 0x811c9dc5, prime 0x01000193). */
 export function fnv1a(str: string): number {

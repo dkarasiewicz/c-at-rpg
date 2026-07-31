@@ -3,63 +3,121 @@
  * the between-floors stairwell after floors 1–5. In order: ① free catnap
  * heal `floor(0.25 × maxHP)` per living cat (floaters), ② the Peddler —
  * stock from the shop stream, buy/sell, Warm Lap once per landing —
- * ③ marching-order editor, ④ Descend → floorgen.
+ * ③ marching-order editor, ④ THE DEN (progression.md — Whisker Points,
+ * battle loadout, three gear slots; action bar, hotkey P, with a gold
+ * badge on every card that has a point unspent), ⑤ Descend → floorgen.
  *
  * On mount this scene applies the arrival steps itself (floor-mod expiry +
  * catnap via core APIs) so the cards, floaters and Warm Lap all see the
  * same HP; Descend then performs only the floor bookkeeping (core
  * `descend()` bundles the catnap and would double-heal — see notes).
+ *
+ * ── LAYOUT ──────────────────────────────────────────────────────────────
+ * Title zone (eyebrow / banner / subtitle) · content zone (clowder +
+ * marching order on the left, the Peddler on the right) · a persistent
+ * action bar with the primary Descend on the right. Every piece of chrome
+ * comes from the shared kit (widgets.ts): `sceneBackdrop`, `vignette`,
+ * `panel`, `avatar` (painted portraits — no flat-vector cats anywhere),
+ * `bar`, `makePawRow`, `makeSpriteIcon`, `heading`/`label`, `button`.
+ * THE PEDDLER is the painted `npc:peddler` sprite, with the procedural
+ * `drawCat` recipe kept only as the assetless fallback.
  */
 import { Container, Graphics, Text } from "pixi.js";
-import type { ClassId, RunState } from "../../core/types";
-import { CLASSES } from "../../content/classes";
-import { CONSUMABLES } from "../../content/consumables";
-import { EQUIP_DEFS } from "../../content/equipment";
-import { hash, mulberry32 } from "../../core/rng";
+import type { ClassId, RunState } from "../../core/types.js";
+import { CLASSES } from "../../content/classes.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { EQUIP_DEFS } from "../../content/equipment.js";
+import { hash, mulberry32 } from "../../core/rng.js";
 import {
   buyStockItem,
   buyWarmLap,
   rollShopStock,
   warmLapHeal,
   type ShopStock,
-} from "../../core/loot/shop";
-import { expireFloorMods, maxHp } from "../../core/run/party";
-import { catnapHeal, FLOOR_COUNT } from "../../core/run/runState";
-import { PAL, CHEST_WOOD } from "../palette";
-import { DESIGN_H, DESIGN_W, RADIUS } from "../layout";
-import { display, mono, ui } from "../textStyles";
-import { tween } from "../tween";
+} from "../../core/loot/shop.js";
+import { expireFloorMods, maxHp, unspentPoints } from "../../core/run/party.js";
+import { catnapHeal, FLOOR_COUNT } from "../../core/run/runState.js";
+import { PAL, CHEST_WOOD } from "../palette.js";
+import { DESIGN_H, DESIGN_W, RADIUS, SPACE } from "../layout.js";
+import { TYPE } from "../textStyles.js";
+import { tween } from "../tween.js";
 import {
-  makeBar,
-  makeButton,
-  makeCoverSprite,
-  makePanel,
+  avatar,
+  bar,
+  button,
+  heading,
+  label,
   makePawRow,
   makeSpriteIcon,
-  type Bar,
-} from "../widgets";
-import { drawCat, drawCatPortrait } from "../draw/cats";
+  panel,
+  scrim,
+  sceneBackdrop,
+  vignette,
+  type ValueBar,
+} from "../widgets.js";
+import { drawCat } from "../draw/cats.js";
 import {
+  catNameColor,
   equipName,
   equipStatsText,
   itemSpriteId,
+  INVENTORY_PANEL_H,
+  INVENTORY_PANEL_W,
   makeInventoryPanel,
   RARITY_COLOR,
   type InventoryPanelApi,
-} from "../overlays/inventoryPanel";
-import { layer, type GameCtx, type Scene } from "../sceneManager";
+} from "../overlays/inventoryPanel.js";
+import {
+  DEN_HOTKEY,
+  DEN_LABEL,
+  makeDenBox,
+  makePointBadgeAt,
+  totalUnspentPoints,
+  type ProgressPanelApi,
+} from "../overlays/progressPanel.js";
+import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 
 /** Factory used by main.ts's scene table. */
 export function createLandingScene(): Scene {
   return new LandingScene();
 }
 
+/* ---- screen geometry (design px) ------------------------------------- */
+const EYEBROW_Y = 34;
+const BANNER_Y = 62;
+const SUB_Y = 108;
+
+const CONTENT_Y = 148;
+const MARGIN = 40;
+
+const LEFT_W = 336;
+const CLOWDER_H = 336;
+const MARCH_Y = CONTENT_Y + CLOWDER_H + SPACE.md;
+const MARCH_H = 132;
+
+const PEDDLER_X = MARGIN + LEFT_W + SPACE.lg;
+const PEDDLER_W = DESIGN_W - MARGIN - PEDDLER_X;
+const PEDDLER_H = MARCH_Y + MARCH_H - CONTENT_Y;
+
+/** Peddler internals. */
+const NPC_COL_W = 196;
+const ROW_H = 46;
+const ROW_GAP = 4;
+
+/** The action bar: one row, three slots, primary on the right. */
+const BAR_Y = 640;
+const BAR_H = 52;
+const SLOT_W = 240;
+const DESCEND_W = 300;
+
 interface CatCard {
   view: Container;
   catIndex: number;
-  bar: Bar;
+  bar: ValueBar;
   hpText: Text;
   set(hp: number, max: number): void;
+  /** Unspent Whisker Points badge — the level-up must never be missed. */
+  setPoints(n: number): void;
 }
 
 export class LandingScene implements Scene {
@@ -73,6 +131,9 @@ export class LandingScene implements Scene {
   private marchSelected: number | null = null;
   private sellBox: Container | null = null;
   private sellPanel: InventoryPanelApi | null = null;
+  private denBox: Container | null = null;
+  private denPanel: ProgressPanelApi | null = null;
+  private denBadgeHost: Container | null = null;
   private shiniesText: Text | null = null;
   private peddlerCat: Container | null = null;
   private peddlerBaseY = 0;
@@ -118,84 +179,119 @@ export class LandingScene implements Scene {
 
     // ---- backdrop ------------------------------------------------------
     view.addChild(
-      new Graphics().rect(0, 0, DESIGN_W, DESIGN_H).fill(PAL.bgDeep),
+      sceneBackdrop("scene:landing", DESIGN_W, DESIGN_H, { dim: 0.6 }),
+      vignette(DESIGN_W, DESIGN_H, 0.8),
     );
-    // generated campfire scene, dimmed under the UI; procedural stairwell
-    // flavor stays as the assetless fallback
-    const backdrop = makeCoverSprite("scene:landing", DESIGN_W, DESIGN_H, {
-      dim: 0.55,
-    });
-    if (backdrop) {
-      view.addChild(backdrop);
-    } else {
-      // stairwell flavor: steps descending into the dark
-      const steps = new Graphics();
-      for (let i = 0; i < 6; i++) {
-        steps
-          .rect(80 + i * 60, 200 + i * 56, 420 - i * 60, 16)
-          .fill({ color: PAL.panel, alpha: 0.5 - i * 0.06 });
-      }
-      view.addChild(steps);
-    }
 
-    const title = new Text({
-      text: "THE LANDING",
-      style: display(32, { fill: PAL.gold }),
+    // ---- title zone ----------------------------------------------------
+    const eyebrow = heading(`FLOOR ${n} CLEARED`, 3, { center: true });
+    eyebrow.position.set(DESIGN_W / 2, EYEBROW_Y);
+    const banner = heading("THE LANDING", 1, {
+      center: true,
+      fill: PAL.gold,
     });
-    title.anchor.set(0.5, 0);
-    title.position.set(DESIGN_W / 2, 20);
-    view.addChild(title);
-    const sub = new Text({
-      text: `Floor ${n} cleared — the stairwell is quiet. The way up has already collapsed.`,
-      style: ui(14, { fill: PAL.textDim }),
-    });
-    sub.anchor.set(0.5, 0);
-    sub.position.set(DESIGN_W / 2, 62);
-    view.addChild(sub);
+    banner.position.set(DESIGN_W / 2, BANNER_Y);
+    const sub = label(
+      "The stairwell is quiet. The way up has already collapsed.",
+      { dim: true, center: true },
+    );
+    sub.position.set(DESIGN_W / 2, SUB_Y);
+    view.addChild(eyebrow, banner, sub);
 
-    // ---- cat cards + catnap floaters -----------------------------------
+    // ---- the clowder (cat cards + catnap floaters) ---------------------
+    const clowder = panel(LEFT_W, CLOWDER_H, { variant: "glass" });
+    clowder.position.set(MARGIN, CONTENT_Y);
+    view.addChild(clowder);
+    const clowderTitle = heading("THE CLOWDER", 3);
+    clowderTitle.position.set(SPACE.lg, SPACE.md + 2);
+    clowder.addChild(clowderTitle);
+
     this.cards = [];
     this.fxLayer = new Container();
-    let cy = 100;
+    const cardTop = 44;
+    const cardH = 72;
     run.cats.forEach((_cat, i) => {
-      const card = this.makeCatCard(run, i, 24, cy);
-      view.addChild(card.view);
+      const card = this.makeCatCard(
+        run,
+        i,
+        SPACE.md,
+        cardTop + i * cardH,
+        LEFT_W - SPACE.md * 2,
+      );
+      clowder.addChild(card.view);
       this.cards.push(card);
-      cy += 78;
     });
     view.addChild(this.fxLayer);
     healed.forEach((amount, i) => {
       if (amount > 0) {
-        this.floatText(224, 100 + i * 78 + 18, `+${amount}`, PAL.heal, i * 150);
+        this.floatText(
+          MARGIN + LEFT_W - 60,
+          CONTENT_Y + cardTop + i * cardH + 24,
+          `+${amount}`,
+          PAL.heal,
+          i * 150,
+        );
       }
     });
 
-    // ---- Peddler panel -------------------------------------------------
-    this.buildPeddler(view);
-
-    // ---- marching-order editor ----------------------------------------
+    // ---- marching-order editor (③) ------------------------------------
+    const march = panel(LEFT_W, MARCH_H, { variant: "glass" });
+    march.position.set(MARGIN, MARCH_Y);
+    view.addChild(march);
+    // (front → back is carried by the rank numerals on the chips)
+    const marchTitle = heading("MARCHING ORDER", 3);
+    marchTitle.position.set(SPACE.lg, SPACE.md + 2);
+    march.addChild(marchTitle);
+    const marchHint = label("1-4 to swap", {
+      dim: true,
+      size: TYPE.tiny,
+      mono: true,
+    });
+    marchHint.anchor.set(1, 0);
+    marchHint.position.set(LEFT_W - SPACE.lg, SPACE.md + 4);
+    march.addChild(marchHint);
     this.marchLayer = new Container();
-    this.marchLayer.position.set(24, 480);
-    view.addChild(this.marchLayer);
+    this.marchLayer.position.set(SPACE.md, 42);
+    march.addChild(this.marchLayer);
     this.refreshMarch();
 
-    // ---- bottom buttons ------------------------------------------------
-    const sellBtn = makeButton("Sell to the Peddler", 220, 40, () =>
-      this.toggleSell(true),
+    // ---- the Peddler (②) ----------------------------------------------
+    this.buildPeddler(view);
+
+    // ---- action bar (④) ------------------------------------------------
+    const sellBtn = button(
+      "Sell to the Peddler",
+      SLOT_W,
+      BAR_H,
+      () => this.toggleSell(true),
+      { hotkey: "S" },
     );
-    sellBtn.view.position.set(24, 656);
+    sellBtn.view.position.set(MARGIN, BAR_Y);
     view.addChild(sellBtn.view);
 
-    const canDescend = n < FLOOR_COUNT;
-    const descendBtn = makeButton(
-      `[Enter] Descend to Floor ${n + 1}`,
-      280,
-      48,
-      () => this.descend(),
-      { primary: true, fontSize: 16 },
+    // ── PROGRESSION SLOT — THE DEN (points / skills / gear) ─────────────
+    const denBtn = button(
+      `${DEN_LABEL} — Party`,
+      SLOT_W,
+      BAR_H,
+      () => this.toggleDen(true),
+      { hotkey: DEN_HOTKEY },
     );
-    descendBtn.view.position.set(DESIGN_W - 304, 648);
-    descendBtn.setEnabled(canDescend);
+    denBtn.view.position.set(MARGIN + SLOT_W + SPACE.lg, BAR_Y);
+    view.addChild(denBtn.view);
+    this.denBadgeHost = new Container();
+    this.denBadgeHost.position.set(SLOT_W - 46, -8);
+    denBtn.view.addChild(this.denBadgeHost);
+
+    const canDescend = n < FLOOR_COUNT;
+    const descendBtn = button(
+      `Descend to Floor ${n + 1}`,
+      DESCEND_W,
+      BAR_H,
+      () => this.descend(),
+      { primary: true, hotkey: "Enter", disabled: !canDescend },
+    );
+    descendBtn.view.position.set(DESIGN_W - MARGIN - DESCEND_W, BAR_Y);
     view.addChild(descendBtn.view);
     this.descendFn = canDescend ? () => this.descend() : null;
 
@@ -212,6 +308,9 @@ export class LandingScene implements Scene {
   }
 
   onKey(key: string): boolean {
+    if (this.denBox) {
+      return this.denPanel?.onKey(key) ?? false;
+    }
     if (this.sellBox) {
       if (key === "esc" || key === "x") {
         this.toggleSell(false);
@@ -221,6 +320,14 @@ export class LandingScene implements Scene {
     }
     if (key === "enter") {
       this.descendFn?.();
+      return true;
+    }
+    if (key === "s") {
+      this.toggleSell(true);
+      return true;
+    }
+    if (key === "p") {
+      this.toggleDen(true);
       return true;
     }
     const i = "1234".indexOf(key);
@@ -235,6 +342,10 @@ export class LandingScene implements Scene {
     this.sellPanel?.destroy();
     this.sellPanel = null;
     this.sellBox = null;
+    this.denPanel?.destroy();
+    this.denPanel = null;
+    this.denBox = null;
+    this.denBadgeHost = null;
     this.view?.destroy({ children: true });
     this.view = null;
     this.cards = [];
@@ -252,58 +363,71 @@ export class LandingScene implements Scene {
     catIndex: number,
     x: number,
     y: number,
+    w: number,
   ): CatCard {
     const cat = run.cats[catIndex];
     const cls = CLASSES[cat.classId];
+    const dead = cat.lives <= 0;
+    const h = 64;
     const viewC = new Container();
     viewC.position.set(x, y);
-    viewC.addChild(makePanel(244, 68));
+    viewC.addChild(panel(w, h, { variant: "solid", radius: RADIUS.button }));
 
-    const face = new Graphics();
-    drawCatPortrait(face, cat.classId, cat.lives <= 0);
-    face.position.set(32, 34);
+    const face = avatar(cat.classId, 44, { dead });
+    face.position.set(SPACE.md + 22, h / 2);
     viewC.addChild(face);
 
-    const name = new Text({
-      text: cls.catName,
-      style: ui(13, { fontWeight: "bold", fill: PAL[cat.classId].body }),
+    const textX = SPACE.md + 52;
+    const name = label(cls.catName, {
+      bold: true,
+      fill: dead ? PAL.textDim : catNameColor(cat.classId),
     });
-    name.position.set(64, 8);
+    name.position.set(textX, SPACE.sm);
     viewC.addChild(name);
 
-    const bar = makeBar(120, 10);
-    bar.view.position.set(64, 28);
-    viewC.addChild(bar.view);
-    const hpText = new Text({ text: "", style: mono(11) });
-    hpText.position.set(190, 26);
+    const barW = w - textX - SPACE.md - 52;
+    const hpBar = bar(barW, 10, { kind: "hp" });
+    hpBar.view.position.set(textX, 28);
+    viewC.addChild(hpBar.view);
+    const hpText = label("", { mono: true, size: TYPE.tiny });
+    hpText.anchor.set(1, 0);
+    hpText.position.set(w - SPACE.md, 26);
     viewC.addChild(hpText);
 
     const paws = makePawRow(cat.lives);
-    paws.view.position.set(64, 48);
+    paws.view.position.set(textX, 46);
     viewC.addChild(paws.view);
 
-    if (cat.lives <= 0) {
-      viewC.alpha = 0.35;
-      const gone = new Text({
-        text: "GONE",
-        style: ui(11, { fill: PAL.danger, fontWeight: "bold" }),
-      });
-      gone.position.set(150, 48);
+    if (dead) {
+      viewC.alpha = 0.4;
+      const gone = label("GONE", { bold: true, fill: PAL.danger });
+      gone.anchor.set(1, 0);
+      gone.position.set(w - SPACE.md, SPACE.sm);
       viewC.addChild(gone);
     }
+
+    const badgeHost = new Container();
+    badgeHost.position.set(w - 62, 4);
+    viewC.addChild(badgeHost);
 
     const card: CatCard = {
       view: viewC,
       catIndex,
-      bar,
+      bar: hpBar,
       hpText,
       set(hp: number, max: number) {
-        bar.set(max > 0 ? hp / max : 0);
+        hpBar.set(hp, max);
         hpText.text = `${hp}/${max}`;
       },
+      setPoints(n: number) {
+        for (const c of badgeHost.removeChildren())
+          c.destroy({ children: true });
+        const badge = makePointBadgeAt(dead ? 0 : n, 0, 0);
+        if (badge) badgeHost.addChild(badge);
+      },
     };
-    const max = maxHp(cat, run.level);
-    card.set(cat.hp, max);
+    card.set(cat.hp, maxHp(cat, run.level));
+    card.setPoints(unspentPoints(cat, run.level));
     return card;
   }
 
@@ -316,8 +440,7 @@ export class LandingScene implements Scene {
   ): void {
     const fx = this.fxLayer;
     if (!fx) return;
-    const t = new Text({ text, style: mono(14, { fill: color }) });
-    t.anchor.set(0.5);
+    const t = label(text, { mono: true, fill: color, center: true });
     t.position.set(x, y);
     t.alpha = 0;
     fx.addChild(t);
@@ -334,60 +457,65 @@ export class LandingScene implements Scene {
   /* ---- The Peddler ---------------------------------------------------- */
 
   private buildPeddler(view: Container): void {
-    const panel = new Container();
-    panel.position.set(656, 96);
-    panel.addChild(makePanel(600, 370));
-    view.addChild(panel);
-
-    // the fat orange cat on a cushion with a bindle
-    const cushion = new Graphics()
-      .ellipse(70, 96, 52, 14)
-      .fill(PAL.stProvoked)
-      .stroke({ width: 2, color: PAL.border });
-    panel.addChild(cushion);
-    const cat = new Container();
-    const catG = new Graphics();
-    drawCat(catG, "bruiser", "sit", 0.9);
-    cat.addChild(catG);
-    cat.position.set(70, 92);
-    this.peddlerCat = cat;
-    this.peddlerBaseY = cat.y;
-    panel.addChild(cat);
-    const bindle = new Graphics();
-    bindle
-      .moveTo(108, 40)
-      .lineTo(132, 84)
-      .stroke({ width: 3, color: CHEST_WOOD });
-    bindle
-      .circle(112, 38, 10)
-      .fill(PAL.panelLite)
-      .stroke({ width: 2, color: PAL.border });
-    panel.addChild(bindle);
-
-    const title = new Text({
-      text: "THE PEDDLER",
-      style: display(22, { fill: PAL.gold }),
+    const card = panel(PEDDLER_W, PEDDLER_H, {
+      variant: "glass",
+      accent: PAL.gold,
     });
-    title.position.set(150, 16);
-    panel.addChild(title);
-    const blurb = new Text({
-      text: '"Mrrp. Everything is for sale. Especially the things I found."',
-      style: ui(12, { fill: PAL.textDim, fontStyle: "italic" }),
-    });
-    blurb.position.set(150, 48);
-    panel.addChild(blurb);
+    card.position.set(PEDDLER_X, CONTENT_Y);
+    view.addChild(card);
 
-    this.shiniesText = new Text({
-      text: "",
-      style: mono(14, { fill: PAL.gold }),
+    const eyebrow = heading("THE STAIRWELL MERCHANT", 3);
+    eyebrow.position.set(SPACE.lg, SPACE.md);
+    const title = heading("THE PEDDLER", 2, { fill: PAL.gold });
+    title.position.set(SPACE.lg, SPACE.md + 20);
+    const blurb = label(
+      '"Mrrp. Everything is for sale. Especially the things I found."',
+      { dim: true, size: TYPE.tiny, wrap: NPC_COL_W },
+    );
+    blurb.position.set(SPACE.lg, SPACE.md + 52);
+    card.addChild(eyebrow, title, blurb);
+
+    this.shiniesText = label("", {
+      mono: true,
+      fill: PAL.gold,
+      size: TYPE.body,
     });
     this.shiniesText.anchor.set(1, 0);
-    this.shiniesText.position.set(584, 20);
-    panel.addChild(this.shiniesText);
+    this.shiniesText.position.set(PEDDLER_W - SPACE.lg, SPACE.md + 4);
+    card.addChild(this.shiniesText);
+
+    // the merchant himself: painted `npc:peddler` first, procedural cat on
+    // a cushion only when the sprite pack has not landed yet (fail-soft)
+    const npc = new Container();
+    const art = makeSpriteIcon("npc:peddler", 176);
+    if (art) {
+      npc.addChild(art);
+    } else {
+      const cushion = new Graphics()
+        .ellipse(0, 52, 52, 14)
+        .fill(PAL.stProvoked)
+        .stroke({ width: 2, color: PAL.border });
+      const catG = new Graphics();
+      drawCat(catG, "bruiser", "sit", 0.9);
+      catG.position.set(0, 48);
+      const bindle = new Graphics()
+        .moveTo(38, -52)
+        .lineTo(62, -8)
+        .stroke({ width: 3, color: CHEST_WOOD });
+      bindle
+        .circle(42, -54, 10)
+        .fill(PAL.panelLite)
+        .stroke({ width: 2, color: PAL.border });
+      npc.addChild(cushion, catG, bindle);
+    }
+    npc.position.set(SPACE.lg + NPC_COL_W / 2, PEDDLER_H / 2 + 20);
+    this.peddlerCat = npc;
+    this.peddlerBaseY = npc.y;
+    card.addChild(npc);
 
     this.stockLayer = new Container();
-    this.stockLayer.position.set(16, 130);
-    panel.addChild(this.stockLayer);
+    this.stockLayer.position.set(SPACE.lg + NPC_COL_W + SPACE.lg, 56);
+    card.addChild(this.stockLayer);
   }
 
   private refreshAll(): void {
@@ -399,154 +527,192 @@ export class LandingScene implements Scene {
     for (const card of this.cards) {
       const cat = run.cats[card.catIndex];
       card.set(cat.hp, maxHp(cat, run.level));
+      card.setPoints(unspentPoints(cat, run.level));
+    }
+    if (this.denBadgeHost) {
+      for (const c of this.denBadgeHost.removeChildren()) {
+        c.destroy({ children: true });
+      }
+      const badge = makePointBadgeAt(totalUnspentPoints(run), 0, 0);
+      if (badge) this.denBadgeHost.addChild(badge);
     }
     this.refreshStock();
     this.sellPanel?.refresh();
   }
 
+  /* ---- THE DEN (progression panel) ------------------------------------ */
+
+  private toggleDen(open: boolean): void {
+    const view = this.view;
+    const ctx = this.ctx;
+    if (!view || !ctx) return;
+    if (!open) {
+      this.denPanel?.destroy();
+      this.denPanel = null;
+      this.denBox?.destroy({ children: true });
+      this.denBox = null;
+      this.refreshAll();
+      return;
+    }
+    if (this.denBox) return;
+    if (this.sellBox) this.toggleSell(false);
+    const box = new Container();
+    const back = scrim(DESIGN_W, DESIGN_H, 0.72);
+    back.eventMode = "static";
+    box.addChild(back);
+    const den = makeDenBox({
+      getRun: () => ctx.run!,
+      setRun: (r) => {
+        ctx.run = r;
+      },
+      // the cards behind the modal track HP/points as they change
+      onChanged: () => this.refreshAll(),
+      onClose: () => this.toggleDen(false),
+    });
+    box.addChild(den.view);
+    view.addChild(box);
+    this.denBox = box;
+    this.denPanel = den;
+  }
+
   private refreshStock(): void {
-    const layer = this.stockLayer;
+    const host = this.stockLayer;
     const stock = this.stock;
     const run = this.ctx?.run;
-    if (!layer || !stock || !run) return;
-    for (const c of layer.removeChildren()) c.destroy({ children: true });
+    if (!host || !stock || !run) return;
+    for (const c of host.removeChildren()) c.destroy({ children: true });
 
+    const rowW = PEDDLER_W - (SPACE.lg + NPC_COL_W + SPACE.lg) - SPACE.lg;
     let y = 0;
+
     stock.slots.forEach((slot, i) => {
       const isEquipSlot = slot.kind === "equip";
-      const h = isEquipSlot ? 50 : 38;
       const row = new Container();
       row.position.set(0, y);
       row.addChild(
-        new Graphics()
-          .roundRect(0, 0, 568, h - 4, RADIUS.button)
-          .fill(PAL.hpBack)
-          .stroke({ width: 1, color: PAL.border }),
+        panel(rowW, ROW_H, {
+          variant: "solid",
+          radius: RADIUS.button,
+          ...(isEquipSlot
+            ? { accent: RARITY_COLOR[slot.item.rarity] }
+            : { accent: PAL.energy }),
+        }),
       );
 
       const artId =
         slot.kind === "consumable"
           ? `item:${slot.defId}`
           : itemSpriteId(slot.item);
-      const artSize = isEquipSlot ? 38 : 26;
+      const artSize = 32;
       const art = makeSpriteIcon(artId, artSize);
       if (art) {
-        art.position.set(24, (h - 4) / 2);
+        art.position.set(SPACE.md + artSize / 2, ROW_H / 2);
         row.addChild(art);
-        if (slot.kind === "equip") {
-          row.addChild(
-            new Graphics()
-              .roundRect(
-                24 - artSize / 2,
-                (h - 4 - artSize) / 2,
-                artSize,
-                artSize,
-                RADIUS.chip,
-              )
-              .stroke({ width: 2, color: RARITY_COLOR[slot.item.rarity] }),
-          );
-        }
       } else {
-        const icon = new Text({
-          text:
-            slot.kind === "consumable"
-              ? CONSUMABLES[slot.defId].icon
-              : EQUIP_DEFS[slot.item.defId].icon,
-          style: mono(18, {
+        const icon = label(
+          slot.kind === "consumable"
+            ? CONSUMABLES[slot.defId].icon
+            : EQUIP_DEFS[slot.item.defId].icon,
+          {
+            mono: true,
+            size: TYPE.h3,
+            center: true,
             fill:
               slot.kind === "equip" ? RARITY_COLOR[slot.item.rarity] : PAL.text,
-          }),
-        });
-        icon.position.set(12, 6);
+          },
+        );
+        icon.position.set(SPACE.md + artSize / 2, ROW_H / 2);
         row.addChild(icon);
       }
 
-      const name = new Text({
-        text:
-          slot.kind === "consumable"
-            ? CONSUMABLES[slot.defId].name
-            : `${equipName(slot.item)} — ${slot.item.rarity} L${slot.item.itemLevel}`,
-        style: ui(14),
-      });
-      name.position.set(44, 6);
+      const textX = SPACE.md + artSize + SPACE.md;
+      const name = label(
+        slot.kind === "consumable"
+          ? CONSUMABLES[slot.defId].name
+          : `${equipName(slot.item)} — ${slot.item.rarity} L${slot.item.itemLevel}`,
+        {
+          bold: true,
+          fill:
+            slot.kind === "equip" ? RARITY_COLOR[slot.item.rarity] : PAL.text,
+        },
+      );
+      name.position.set(textX, slot.kind === "equip" ? 6 : ROW_H / 2 - 9);
       row.addChild(name);
       if (slot.kind === "equip") {
-        const stats = new Text({
-          text: equipStatsText(slot.item),
-          style: mono(10, { fill: PAL.textDim }),
+        const stats = label(equipStatsText(slot.item), {
+          mono: true,
+          dim: true,
+          size: TYPE.tiny,
         });
-        stats.position.set(44, 27);
+        stats.position.set(textX, 26);
         row.addChild(stats);
       }
 
       if (slot.sold) {
-        row.alpha = 0.5;
-        const sold = new Text({
-          text: "SOLD",
-          style: mono(12, { fill: PAL.danger }),
-        });
-        sold.anchor.set(1, 0);
-        sold.position.set(556, 8);
+        row.alpha = 0.45;
+        const sold = label("SOLD", { mono: true, fill: PAL.danger });
+        sold.anchor.set(1, 0.5);
+        sold.position.set(rowW - SPACE.md, ROW_H / 2);
         row.addChild(sold);
       } else {
-        const price = new Text({
-          text: `${slot.price} ✦`,
-          style: mono(14, { fill: PAL.gold }),
+        const buyW = 72;
+        const price = label(`${slot.price} ✦`, {
+          mono: true,
+          fill: PAL.gold,
+          size: TYPE.body,
         });
-        price.anchor.set(1, 0);
-        price.position.set(480, 8);
+        price.anchor.set(1, 0.5);
+        price.position.set(rowW - buyW - SPACE.lg * 2, ROW_H / 2);
         row.addChild(price);
-        const buy = makeButton("Buy", 64, 26, () => this.buy(i), {
-          fontSize: 13,
+        const buy = button("Buy", buyW, 30, () => this.buy(i), {
+          fontSize: TYPE.small,
+          disabled: run.inventory.shinies < slot.price,
         });
-        buy.view.position.set(492, (h - 4 - 26) / 2);
-        buy.setEnabled(run.inventory.shinies >= slot.price);
+        buy.view.position.set(rowW - buyW - SPACE.md, (ROW_H - 30) / 2);
         row.addChild(buy.view);
       }
-      layer.addChild(row);
-      y += h;
+      host.addChild(row);
+      y += ROW_H + ROW_GAP;
     });
 
     // Warm Lap service row (once per landing)
-    const h = 40;
     const row = new Container();
-    row.position.set(0, y + 4);
+    row.position.set(0, y + SPACE.xs);
     row.addChild(
-      new Graphics()
-        .roundRect(0, 0, 568, h - 4, RADIUS.button)
-        .fill(PAL.panelLite)
-        .stroke({ width: 1, color: PAL.border }),
+      panel(rowW, ROW_H, {
+        variant: "solid",
+        radius: RADIUS.button,
+        accent: PAL.heal,
+      }),
     );
-    const label = new Text({
-      text: "Warm Lap — every living cat heals 40% of max HP",
-      style: ui(13),
+    const lapLabel = label("Warm Lap — every living cat heals 40% of max HP", {
+      bold: true,
     });
-    label.position.set(12, 9);
-    row.addChild(label);
+    lapLabel.position.set(SPACE.md, ROW_H / 2 - 9);
+    row.addChild(lapLabel);
     if (stock.warmLapUsed) {
-      const used = new Text({
-        text: "USED",
-        style: mono(12, { fill: PAL.textDim }),
-      });
-      used.anchor.set(1, 0);
-      used.position.set(556, 9);
+      const used = label("USED", { mono: true, dim: true });
+      used.anchor.set(1, 0.5);
+      used.position.set(rowW - SPACE.md, ROW_H / 2);
       row.addChild(used);
     } else {
-      const price = new Text({
-        text: `${stock.warmLapCost} ✦`,
-        style: mono(14, { fill: PAL.gold }),
+      const buyW = 72;
+      const price = label(`${stock.warmLapCost} ✦`, {
+        mono: true,
+        fill: PAL.gold,
+        size: TYPE.body,
       });
-      price.anchor.set(1, 0);
-      price.position.set(480, 9);
+      price.anchor.set(1, 0.5);
+      price.position.set(rowW - buyW - SPACE.lg * 2, ROW_H / 2);
       row.addChild(price);
-      const buy = makeButton("Lap", 64, 26, () => this.warmLap(), {
-        fontSize: 13,
+      const buy = button("Lap", buyW, 30, () => this.warmLap(), {
+        fontSize: TYPE.small,
+        disabled: run.inventory.shinies < stock.warmLapCost,
       });
-      buy.view.position.set(492, 5);
-      buy.setEnabled(run.inventory.shinies >= stock.warmLapCost);
+      buy.view.position.set(rowW - buyW - SPACE.md, (ROW_H - 30) / 2);
       row.addChild(buy.view);
     }
-    layer.addChild(row);
+    host.addChild(row);
   }
 
   private buy(slotIndex: number): void {
@@ -574,7 +740,12 @@ export class LandingScene implements Scene {
       const max = maxHp(cat, run.level);
       const hp = Math.min(max, cat.hp + warmLapHeal(max));
       if (hp > cat.hp) {
-        this.floatText(224, 100 + i * 78 + 18, `+${hp - cat.hp}`, PAL.heal);
+        this.floatText(
+          MARGIN + LEFT_W - 60,
+          CONTENT_Y + 44 + i * 72 + 24,
+          `+${hp - cat.hp}`,
+          PAL.heal,
+        );
       }
       return hp === cat.hp ? cat : { ...cat, hp };
     });
@@ -585,49 +756,49 @@ export class LandingScene implements Scene {
   /* ---- marching-order editor (③) -------------------------------------- */
 
   private refreshMarch(): void {
-    const layer = this.marchLayer;
+    const host = this.marchLayer;
     const run = this.ctx?.run;
-    if (!layer || !run) return;
-    for (const c of layer.removeChildren()) c.destroy({ children: true });
+    if (!host || !run) return;
+    for (const c of host.removeChildren()) c.destroy({ children: true });
 
-    const label = new Text({
-      text: "MARCHING ORDER — front → back (click or 1-4 to swap)",
-      style: ui(13, { fill: PAL.textDim }),
-    });
-    layer.addChild(label);
-
+    const chipW = 68;
+    const chipH = 78;
+    const gap = SPACE.sm;
     run.marchingOrder.forEach((classId, i) => {
-      const slot = new Container();
-      slot.position.set(i * 76, 26);
       const selected = this.marchSelected === i;
-      slot.addChild(
-        new Graphics()
-          .roundRect(0, 0, 64, 78, RADIUS.button)
-          .fill(PAL.panel)
-          .stroke({ width: 2, color: selected ? PAL.gold : PAL.border }),
+      const chip = new Container();
+      chip.position.set(i * (chipW + gap), 0);
+      chip.addChild(
+        panel(chipW, chipH, {
+          variant: selected ? "raised" : "solid",
+          radius: RADIUS.button,
+          ...(selected ? { accent: PAL.gold } : {}),
+        }),
       );
-      const face = new Graphics();
-      drawCatPortrait(face, classId, false);
-      face.position.set(32, 34);
-      slot.addChild(face);
-      const rank = new Text({
-        text: `${i + 1}`,
-        style: mono(12, { fill: PAL.gold }),
+      const face = avatar(classId, 40, {
+        ...(selected ? { ring: PAL.gold } : {}),
       });
-      rank.position.set(4, 2);
-      slot.addChild(rank);
-      const nm = new Text({
-        text: CLASSES[classId].catName,
-        style: ui(10, { fill: PAL[classId].body }),
+      face.position.set(chipW / 2, 30);
+      chip.addChild(face);
+      const rank = label(`${i + 1}`, {
+        mono: true,
+        fill: PAL.gold,
+        size: TYPE.tiny,
       });
-      nm.anchor.set(0.5, 0);
-      nm.position.set(32, 62);
-      slot.addChild(nm);
+      rank.position.set(SPACE.xs, 2);
+      chip.addChild(rank);
+      const nm = label(CLASSES[classId].catName, {
+        size: TYPE.tiny,
+        center: true,
+        fill: catNameColor(classId),
+      });
+      nm.position.set(chipW / 2, 60);
+      chip.addChild(nm);
 
-      slot.eventMode = "static";
-      slot.cursor = "pointer";
-      slot.on("pointertap", () => this.marchTap(i));
-      layer.addChild(slot);
+      chip.eventMode = "static";
+      chip.cursor = "pointer";
+      chip.on("pointertap", () => this.marchTap(i));
+      host.addChild(chip);
     });
   }
 
@@ -667,12 +838,10 @@ export class LandingScene implements Scene {
     }
     if (this.sellBox) return;
     const box = new Container();
-    const scrim = new Graphics()
-      .rect(0, 0, DESIGN_W, DESIGN_H)
-      .fill({ color: PAL.scrim, alpha: 0.6 });
-    scrim.eventMode = "static";
-    box.addChild(scrim);
-    const panel = makeInventoryPanel({
+    const back = scrim(DESIGN_W, DESIGN_H);
+    back.eventMode = "static";
+    box.addChild(back);
+    const inv = makeInventoryPanel({
       mode: "sell",
       getRun: () => ctx.run!,
       setRun: (r) => {
@@ -680,23 +849,21 @@ export class LandingScene implements Scene {
       },
       onChanged: () => this.refreshAll(),
     });
-    panel.view.position.set((DESIGN_W - 960) / 2, 180);
-    box.addChild(panel.view);
-    const close = makeButton(
-      "[Esc] Done",
-      160,
-      36,
-      () => this.toggleSell(false),
-      {
-        primary: true,
-        fontSize: 14,
-      },
+    const invY = 176;
+    inv.view.position.set((DESIGN_W - INVENTORY_PANEL_W) / 2, invY);
+    box.addChild(inv.view);
+    const close = button("Done", 200, 44, () => this.toggleSell(false), {
+      primary: true,
+      hotkey: "Esc",
+    });
+    close.view.position.set(
+      (DESIGN_W - 200) / 2,
+      invY + INVENTORY_PANEL_H + SPACE.lg,
     );
-    close.view.position.set((DESIGN_W - 160) / 2, 180 + 340);
     box.addChild(close.view);
     view.addChild(box);
     this.sellBox = box;
-    this.sellPanel = panel;
+    this.sellPanel = inv;
   }
 
   /* ---- Descend (④) ----------------------------------------------------- */

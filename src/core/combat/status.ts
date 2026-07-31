@@ -20,8 +20,8 @@ import type {
   Combatant,
   StatusId,
   StatusInstance,
-} from "../types";
-import { statusesOf, hasStatus } from "./state";
+} from "../types.js";
+import { statusesOf, hasStatus } from "./state.js";
 
 /**
  * Apply a status per the §6 stacking rules. Returns true when a new

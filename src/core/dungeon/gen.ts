@@ -10,12 +10,12 @@
  *   §5.4 partial dead-end trimming (TRIM_PASSES live-grid sweeps)
  *   §5.6 validation & deterministic retry ('gen1'/'pop1', … stream suffixes)
  */
-import { Tile } from "../types";
-import type { FloorConfig, FloorState, Rng, Room } from "../types";
-import { hash, mulberry32 } from "../rng";
-import { shuffle } from "../util";
-import { bfsFlood, idx } from "./floor";
-import { populateFloor } from "./populate";
+import { Tile } from "../types.js";
+import type { FloorConfig, FloorState, Rng, Room } from "../types.js";
+import { hash, mulberry32 } from "../rng.js";
+import { shuffle } from "../util.js";
+import { bfsFlood, idx } from "./floor.js";
+import { populateFloor } from "./populate.js";
 
 /* Fixed generator constants — dungeon.md §4 (not config knobs in v1). */
 const ROOM_WS = [5, 7, 9] as const;

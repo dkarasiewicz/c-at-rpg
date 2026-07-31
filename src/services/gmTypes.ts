@@ -17,7 +17,7 @@ import type {
   Rarity,
   Skill,
   Stats,
-} from "../core/types";
+} from "../core/types.js";
 
 /* ------------------------------------------------------------------------ */
 /* Stand powers (stand-powers.md — canonical DSL from core/combat)           */
@@ -35,8 +35,11 @@ export type {
   PowerScript,
   PowerTargetSel,
   PowerTrigger,
-} from "../core/combat/powerTypes";
-import type { InteractionRule, PowerScript } from "../core/combat/powerTypes";
+} from "../core/combat/powerTypes.js";
+import type {
+  InteractionRule,
+  PowerScript,
+} from "../core/combat/powerTypes.js";
 
 /* ------------------------------------------------------------------------ */
 /* Resonance (stand-powers.md Layer 3 — memoized interaction compilation)    */

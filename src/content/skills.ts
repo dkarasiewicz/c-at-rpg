@@ -15,7 +15,7 @@
  * Consumable battle payloads live on their `ConsumableDef.battleSkill`
  * (content/consumables.ts), per ARCHITECTURE.md §1's file responsibilities.
  */
-import type { Skill, SkillId } from "../core/types";
+import type { Skill, SkillId } from "../core/types.js";
 
 export const SKILLS: Record<SkillId, Skill> = {
   /* ---------------------------------------------------------------------- */
@@ -194,6 +194,205 @@ export const SKILLS: Record<SkillId, Skill> = {
     power: 60,
     kind: "heal",
     applies: [{ status: "mending", chance: 1.0, value: 3 }],
+  },
+
+  /* ---------------------------------------------------------------------- */
+  /* Milestone unlocks — L2 / L6 / L8 (docs/design/progression.md §2)        */
+  /*                                                                         */
+  /* Twelve skills, three per class, authored to CHANGE the loadout question */
+  /* rather than out-stat the L1 kit: each one gives its cat a tool its      */
+  /* starting three do not have (Bruno pulls and shields, Pixel marks and    */
+  /* sweeps, Mora mass-pulls and mass-frazzles, Baguette cleanses, pre-buffs */
+  /* and revives twice). Only existing EffectSpec fields are used.           */
+  /* ---------------------------------------------------------------------- */
+
+  /* ---- Bruiser — Bruno, «THE DUMPSTER KING» ----------------------------- */
+  // L2: the King reaches OVER the front line. Bruno's only pull — it drags a
+  // back-line caster into his own threat ranks instead of shoving it away.
+  scruffToss: {
+    id: "scruffToss",
+    name: "Scruff Toss",
+    desc:
+      "«THE DUMPSTER KING» reaches over the front row, takes something by " +
+      "the scruff, and files it at the front. Complaints go to the front.",
+    cost: 3,
+    usableFrom: [1, 2],
+    target: { side: "enemy", ranks: [2, 3, 4], pattern: "single" },
+    power: 80,
+    kind: "damage",
+    moveTarget: -2,
+  },
+  // L6: party protection. Hiss taunts; this one actually armours the front.
+  binLidBulwark: {
+    id: "binLidBulwark",
+    name: "BIN LID BULWARK",
+    desc:
+      "«THE DUMPSTER KING» plants three lids in a row. The front of the " +
+      "party is now, technically, a building.",
+    cost: 5,
+    usableFrom: [1, 2],
+    target: { side: "ally", ranks: [1, 2], pattern: "row" },
+    power: 0,
+    kind: "utility",
+    applies: [{ status: "guarded", chance: 1.0 }],
+  },
+  // L8: the mass-displacement finisher — the whole enemy front row goes back.
+  trashCompactor: {
+    id: "trashCompactor",
+    name: "TRASH COMPACTOR",
+    desc:
+      "«THE DUMPSTER KING» closes. Everything at the front is now everything " +
+      "at the back, and flatter.",
+    cost: 7,
+    usableFrom: [1, 2],
+    target: { side: "enemy", ranks: [1, 2], pattern: "row" },
+    power: 110,
+    kind: "damage",
+    moveTarget: 2,
+  },
+
+  /* ---- Trickster — Pixel, «BOX AMBUSH» ---------------------------------- */
+  // L2: cheap poke that leaves her somewhere else. Pounce dives in; this
+  // one hops out — the hit-and-run half of the kit.
+  bottleCapFlick: {
+    id: "bottleCapFlick",
+    name: "Bottle Cap Flick",
+    desc:
+      "A bottle cap leaves a box that was not there. Pixel is already in a " +
+      "different box, looking innocent.",
+    cost: 2,
+    usableFrom: [1, 2, 3],
+    target: { side: "enemy", ranks: [1, 2, 3], pattern: "single" },
+    power: 70,
+    kind: "damage",
+    moveSelf: 1,
+  },
+  // L6: Off-Balance WITHOUT displacement — the mark stays where the party
+  // can still reach it, and Opportunist reads it. Cat Pile enabler.
+  whiskerFeint: {
+    id: "whiskerFeint",
+    name: "Whisker Feint",
+    desc:
+      "«BOX AMBUSH» opens a lid that is not there. They flinch at nothing " +
+      "and never quite get their paws back under them.",
+    cost: 4,
+    usableFrom: [2, 3, 4],
+    target: { side: "enemy", ranks: [1, 2, 3], pattern: "single" },
+    power: 90,
+    kind: "damage",
+    applies: [{ status: "offBalance", chance: 1.0 }],
+  },
+  // L8: every box in the room at once — her one true AoE, and the reason a
+  // crit-stacked Pixel is terrifying against a full pack.
+  everyBoxAtOnce: {
+    id: "everyBoxAtOnce",
+    name: "EVERY BOX AT ONCE",
+    desc:
+      "«BOX AMBUSH» opens every box in the room simultaneously, including " +
+      "the ones nobody packed. There is no unambushed rank.",
+    cost: 8,
+    usableFrom: [1, 2, 3, 4],
+    target: { side: "enemy", ranks: [1, 2, 3, 4, 5], pattern: "row" },
+    power: 80,
+    kind: "damage",
+  },
+
+  /* ---- Hexer — Mora, «STRING THEORY» ------------------------------------ */
+  // L2: Yank of Yarn is a single pull; this is the ROW pull — the whole back
+  // line comes forward one rank and eats Off-Paw together.
+  snarlOfThreads: {
+    id: "snarlOfThreads",
+    name: "Snarl of Threads",
+    desc:
+      "«STRING THEORY» knots the back of the room together and takes up the " +
+      "slack. Everyone shuffles forward. Nobody agreed to this.",
+    cost: 4,
+    usableFrom: [2, 3, 4],
+    target: { side: "enemy", ranks: [3, 4, 5], pattern: "row" },
+    power: 40,
+    kind: "damage",
+    moveTarget: -1,
+  },
+  // L6: the guaranteed bleed (chance 1.0 draws no roll) — almost no up-front
+  // damage, enormous over three rounds. The patience skill.
+  ninthKnotCurse: {
+    id: "ninthKnotCurse",
+    name: "NINTH KNOT CURSE",
+    desc:
+      "«STRING THEORY» ties the ninth knot. It cannot be untied, only " +
+      "outlived, and it is fraying you either way.",
+    cost: 5,
+    usableFrom: [1, 2, 3, 4],
+    target: { side: "enemy", ranks: [1, 2, 3, 4, 5], pattern: "single" },
+    power: 20,
+    kind: "damage",
+    applies: [{ status: "scratched", chance: 1.0, value: 6 }],
+  },
+  // L8: mass Frazzle + mass pull — the boss-windup answer scaled to a whole
+  // row (Phantom Cucumber, but for the room).
+  fullUnravel: {
+    id: "fullUnravel",
+    name: "FULL UNRAVEL",
+    desc:
+      "«STRING THEORY» pulls the one thread everything else was tied to. " +
+      "The room comes apart in the order it was knitted.",
+    cost: 8,
+    usableFrom: [2, 3, 4],
+    target: { side: "enemy", ranks: [1, 2, 3], pattern: "row" },
+    power: 70,
+    kind: "damage",
+    moveTarget: -1,
+    applies: [{ status: "frazzled", chance: 0.6 }],
+  },
+
+  /* ---- Medic — Baguette, «PURR ENGINE» ---------------------------------- */
+  // L2: the cheap cleanse. Soothing Purr heals big and clears Scratched;
+  // this clears the tempo statuses instead, for a quarter of the energy.
+  kneadTheKnots: {
+    id: "kneadTheKnots",
+    name: "Knead the Knots",
+    desc:
+      "«PURR ENGINE» idles low and kneads until the panic goes out of " +
+      "someone's shoulders. Also fixes posture.",
+    cost: 2,
+    usableFrom: [2, 3, 4],
+    target: { side: "ally", ranks: [1, 2, 3, 4], pattern: "single" },
+    power: 40,
+    kind: "heal",
+    cleanses: ["offBalance", "frazzled"],
+  },
+  // L6: prophylactic support — Mending + Guarded BEFORE the hit lands.
+  // Baguette's first "spend a turn now, save a cat later" button.
+  warmLoafPress: {
+    id: "warmLoafPress",
+    name: "Warm Loaf Press",
+    desc:
+      "She sits on you. «PURR ENGINE» runs at proofing temperature and the " +
+      "next few minutes are survivable.",
+    cost: 4,
+    usableFrom: [2, 3, 4],
+    target: { side: "ally", ranks: [1, 2, 3, 4], pattern: "single" },
+    power: 0,
+    kind: "utility",
+    applies: [
+      { status: "mending", chance: 1.0, value: 5 },
+      { status: "guarded", chance: 1.0 },
+    ],
+  },
+  // L8: the second revive — a battle can now survive two KOs, at a price.
+  ovenSpring: {
+    id: "ovenSpring",
+    name: "OVEN SPRING",
+    desc:
+      "«PURR ENGINE» redlines over a fallen friend. Nothing that has been " +
+      "properly proofed stays down.",
+    cost: 7,
+    usableFrom: [2, 3, 4],
+    target: { side: "ally", ranks: [1, 2, 3, 4], pattern: "single" },
+    power: 0,
+    kind: "utility",
+    revivePct: 0.6,
+    oncePerBattle: true,
   },
 
   /* ---------------------------------------------------------------------- */

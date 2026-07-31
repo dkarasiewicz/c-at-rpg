@@ -19,23 +19,27 @@ import type {
   MewHookId,
   Skill,
   StatusId,
-} from "../../core/types";
-import { hash, mulberry32 } from "../../core/rng";
-import type { Rng } from "../../core/types";
+} from "../../core/types.js";
+import { hash, mulberry32 } from "../../core/rng.js";
+import type { Rng } from "../../core/types.js";
 import type {
   AttachedInteraction,
   PoweredBattleSetup,
   PowerScript,
-} from "../../core/combat/powerTypes";
+} from "../../core/combat/powerTypes.js";
 import {
   getCachedResonance,
   prefetchResonance,
   resonancePairKey,
-} from "../../services/gm";
-import { createBattle } from "../../core/combat/setup";
-import { battleResult, isAutoSkip, startRound } from "../../core/combat/turns";
-import { resolveAction } from "../../core/combat/resolve";
-import { takeEnemyTurn } from "../../core/combat/ai";
+} from "../../services/gm.js";
+import { createBattle } from "../../core/combat/setup.js";
+import {
+  battleResult,
+  isAutoSkip,
+  startRound,
+} from "../../core/combat/turns.js";
+import { resolveAction } from "../../core/combat/resolve.js";
+import { takeEnemyTurn } from "../../core/combat/ai.js";
 import {
   byId,
   hypotheticalDistance,
@@ -46,49 +50,70 @@ import {
   previewDamage,
   wouldMoveDistance,
   type LegalActions,
-} from "../../core/combat/state";
-import { applyBattleResult } from "../../core/run/runState";
+} from "../../core/combat/state.js";
+import { applyBattleResult } from "../../core/run/runState.js";
 import {
   effectiveStats,
-  skillsForLevel,
+  activeSkills,
   traitTier,
-} from "../../core/run/party";
-import { rollBossLoot, rollChest, rollVictory } from "../../core/loot/roll";
-import type { LootCtx } from "../../core/loot/roll";
-import { isStack, removeConsumable } from "../../core/loot/inventory";
-import { applyFlee } from "../../core/dungeon/step";
-import { roundHalfUp } from "../../core/util";
-import { CLASSES } from "../../content/classes";
-import { CONSUMABLES } from "../../content/consumables";
-import { ENEMIES } from "../../content/enemies";
-import { CAT_POWERS, ENEMY_POWERS } from "../../content/powers";
-import { FLOORS } from "../../content/floors";
-import { PAL, THEMES } from "../palette";
-import { DESIGN_H, DESIGN_W, R, RADIUS, rh, rw, rx, ry } from "../layout";
-import { MONO_BITMAP, display, mono, ui } from "../textStyles";
-import { killTweens, shake, tween } from "../tween";
-import { makeBar, makeEnergyPips, makeStatusChip, type Bar } from "../widgets";
-import { drawCat } from "../draw/cats";
-import { drawEnemy } from "../draw/enemies";
-import { catTexture, enemyTexture } from "../sprites";
-import { layer, type GameCtx, type Scene } from "../sceneManager";
-import type { EventWinContext, LootOverlayParams } from "../overlays/loot";
+} from "../../core/run/party.js";
+import { rollBossLoot, rollChest, rollVictory } from "../../core/loot/roll.js";
+import type { LootCtx } from "../../core/loot/roll.js";
+import { isStack, removeConsumable } from "../../core/loot/inventory.js";
+import { applyFlee } from "../../core/dungeon/step.js";
+import { roundHalfUp } from "../../core/util.js";
+import { CLASSES } from "../../content/classes.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { ENEMIES } from "../../content/enemies.js";
+import { CAT_POWERS, ENEMY_POWERS } from "../../content/powers.js";
+import { FLOORS } from "../../content/floors.js";
+import { PAL, mix } from "../palette.js";
+import { DESIGN_H, DESIGN_W, R, SPACE, rw, rx, ry } from "../layout.js";
+import { MONO_BITMAP, TYPE, mono } from "../textStyles.js";
+import { killTweens, shake, tween } from "../tween.js";
+import {
+  bar,
+  heading,
+  label,
+  makeEnergyPips,
+  makeHotkeyChip,
+  makeSpriteIcon,
+  makeStatusChip,
+  panel,
+  type ValueBar,
+} from "../widgets.js";
+import { drawCat } from "../draw/cats.js";
+import { drawEnemy } from "../draw/enemies.js";
+import { catTexture, enemyTexture } from "../sprites.js";
+import { layer, type GameCtx, type Scene } from "../sceneManager.js";
+import type { EventWinContext, LootOverlayParams } from "../overlays/loot.js";
 import {
   drawGhostArrow,
   makeActivePanel,
+  makeBattleStage,
   makeCatPileBanner,
   makeChargeMark,
+  makeContactShadow,
+  makeFleeButton,
+  makeLogStrip,
   makeNameplate,
   makePoisePips,
+  makePresenceAura,
   makePreviewChip,
   makeRankFlood,
   makeRibbon,
+  makeRim,
+  makeRoundChip,
   makeSkillBar,
   makeStatusPreviewChip,
   makeTargetRing,
+  makeUnitGlow,
+  type BattleStage,
   type ChargeMark,
+  type PresenceAura,
+  type RoundChip,
   type SlotSpec,
-} from "./battleWidgets";
+} from "./battleWidgets.js";
 
 /* ---------------------------------------------------------------------- */
 /* Params — accepted from explore (StepTrigger 'battle') and event scenes  */
@@ -119,7 +144,9 @@ interface UnitView {
   body: Container; // idle bob + breathing + Off-Balance tilt
   gfx: Graphics | Sprite; // generated sprite when available, procedural else
   aura: Graphics; // additive Stand-aura flash behind the body
-  hpBar: Bar;
+  shadow: Graphics; // soft contact shadow on the floor plane
+  presence: PresenceAura | null; // elite/boss gold ring + halo
+  hpBar: ValueBar;
   hpNow: number;
   hpMax: number;
   energy?: { set(n: number): void };
@@ -135,6 +162,8 @@ interface UnitView {
   rank: number;
   dead: boolean;
   bobPhase: number;
+  /** y of this unit's crown, relative to its feet — anchors chips/floaters. */
+  headY: number;
 }
 
 const slotX = (side: "cat" | "enemy", rank: number): number =>
@@ -142,21 +171,34 @@ const slotX = (side: "cat" | "enemy", rank: number): number =>
   DESIGN_W / 2;
 
 const HEAD_Y = -104; // status rows / floaters spawn height above the feet
+/** The stage's warm key colour — the bounce light behind every unit. */
+const KEY_LIGHT = mix(PAL.gold, PAL.text, 0.55);
 const TILT = (8 * Math.PI) / 180;
 const ATTACK_TILT = 0.09; // slight lean into the lunge (rad)
 const BREATH_AMP = 0.015; // ±1.5% idle breathing scale
 
 /** Sprite target height (px, feet-aligned), matched to procedural sizes. */
 const GRADE_H: Record<string, number> = {
-  minion: 78,
-  standard: 92,
-  elite: 115,
-  boss: 147,
+  minion: 86,
+  standard: 102,
+  elite: 128,
+  boss: 168,
 };
+
+/** Presentation size grade — cats read as one consistent "standard" tier. */
+const gradeOf = (c: Combatant): string =>
+  c.side === "cat"
+    ? "cat"
+    : (ENEMIES[c.speciesId ?? ""]?.look.sizeGrade ?? "standard");
+
+/**
+ * Apparent height every unit of a grade is normalised to, whatever the art
+ * source (painted sprite or procedural recipe). Normalising here is what
+ * stops a painted crow reading twice the size of a procedural rat.
+ */
 const spriteHeightFor = (c: Combatant): number => {
-  if (c.side === "cat") return c.classId === "bruiser" ? 112 : 100;
-  const grade = ENEMIES[c.speciesId ?? ""]?.look.sizeGrade ?? "standard";
-  return GRADE_H[grade] ?? 92;
+  if (c.side === "cat") return c.classId === "bruiser" ? 124 : 112;
+  return GRADE_H[gradeOf(c)] ?? 102;
 };
 
 /* ---------------------------------------------------------------------- */
@@ -193,8 +235,8 @@ export function createBattleScene(): Scene {
   const skillBar = makeSkillBar();
   const activePanel = makeActivePanel();
   const banner = makeCatPileBanner();
-  let roundText: Text | null = null;
-  let fleeChip: Container | null = null;
+  let stage: BattleStage | null = null;
+  let roundChip: RoundChip | null = null;
   let logText: BitmapText | null = null;
   let activeSlot: Graphics | null = null;
   let scrollPanel: Container | null = null;
@@ -260,6 +302,14 @@ export function createBattleScene(): Scene {
   const standNameOf = (id: string): string | null => {
     const c = bs?.combatants.find((x) => x.id === id);
     if (!c) return null;
+    // Stand Powers carry the canonical Stand name (「THE DUMPSTER KING」)
+    const power =
+      c.side === "cat" && c.classId
+        ? CAT_POWERS[c.classId]
+        : c.speciesId
+          ? ENEMY_POWERS[c.speciesId]
+          : undefined;
+    if (power !== undefined && power.name.length > 0) return power.name;
     const src: unknown =
       c.side === "cat" && c.classId
         ? CLASSES[c.classId]
@@ -285,8 +335,10 @@ export function createBattleScene(): Scene {
     logLines.push(text);
     if (logLines.length > 40) logLines.shift();
     if (logText) {
+      // the strip reserves its right edge for the "L log" hint chip
+      const room = rw(R.combat.logLine) - SPACE.md * 2 - 72;
       logText.text = text;
-      while (logText.width > rw(R.combat.logLine) && logText.text.length > 4) {
+      while (logText.width > room && logText.text.length > 4) {
         logText.text = logText.text.slice(0, -2) + "…";
       }
     }
@@ -351,6 +403,23 @@ export function createBattleScene(): Scene {
     root.position.set(slotX(c.side, c.rank), R.combat.groundY);
     const body = new Container();
     const h = spriteHeightFor(c);
+    const grade = gradeOf(c);
+    // anchors scale WITH the art: a 168px boss must not wear its status
+    // chips across its chest the way a 102px minion's sit above its ears
+    const headY = -(h + 12);
+    const isBossUnit = grade === "boss";
+    const isBig = isBossUnit || grade === "elite";
+
+    /* -- grounding: soft contact shadow on the floor plane -------------- */
+    const shadow = makeContactShadow(h * 0.92, isBossUnit ? 1.5 : 1);
+    root.addChild(shadow);
+
+    /* -- elite / boss presence: gold ground ring + halo ------------------ */
+    let presence: PresenceAura | null = null;
+    if (isBig) {
+      presence = makePresenceAura(h, isBossUnit);
+      root.addChild(presence.view);
+    }
 
     // Stand-aura flash (additive, alpha-tweened on hit) behind the body
     const aura = new Graphics()
@@ -360,17 +429,31 @@ export function createBattleScene(): Scene {
     aura.alpha = 0;
     body.addChild(aura);
 
-    // generated sprite (visual-v2) with the procedural recipe as fallback
-    let gfx: Graphics | Sprite;
+    /* -- bounce light: lifts dark art off a dark backdrop ---------------- */
+    // one warm key colour for everyone so it reads as stage lighting rather
+    // than a per-unit magic aura; enemies get a touch more because their art
+    // is the darkest thing on screen
+    body.addChild(
+      makeUnitGlow(
+        h,
+        KEY_LIGHT,
+        isBossUnit ? 1.7 : isBig ? 1.2 : c.side === "cat" ? 0.7 : 1,
+      ),
+    );
+
+    /* -- the art itself: painted sprite first, procedural recipe else ---- */
     const tex =
       c.side === "cat" && c.classId
         ? catTexture(c.classId)
         : enemyTexture(c.speciesId ?? "");
-    if (tex) {
-      const sp = new Sprite({ texture: tex, anchor: { x: 0.5, y: 1 } });
-      sp.scale.set(h / tex.height); // fit slot height, square = aspect kept
-      gfx = sp;
-    } else {
+    // ONE factory: the rim is literally the same art, offset and blacked out,
+    // so dark enemies keep a readable silhouette on any backdrop.
+    const makeArt = (): Graphics | Sprite => {
+      if (tex && tex.height > 0) {
+        const sp = new Sprite({ texture: tex, anchor: { x: 0.5, y: 1 } });
+        sp.scale.set(h / tex.height); // normalised apparent height per grade
+        return sp;
+      }
       const g = new Graphics();
       if (c.side === "cat" && c.classId) {
         drawCat(g, c.classId, "battle");
@@ -378,20 +461,33 @@ export function createBattleScene(): Scene {
         const def = ENEMIES[c.speciesId ?? ""];
         if (def) drawEnemy(g, def.look);
       }
-      gfx = g;
-    }
+      // the procedural recipes draw at their own scale — normalise them to
+      // the same apparent height the painted art gets, feet on the origin
+      const b = g.getLocalBounds();
+      if (b.height > 1) {
+        const s = h / b.height;
+        g.scale.set(s);
+        g.position.y = -(b.y + b.height) * s;
+      }
+      return g;
+    };
+
+    body.addChild(
+      makeRim(makeArt, isBossUnit ? 4 : 2.5, isBossUnit ? 0.55 : 0.4),
+    );
+    const gfx = makeArt();
     body.addChild(gfx);
     root.addChild(body);
 
-    // HP bar 64×7 below feet (+ mini energy pips for cats)
-    const hpBar = makeBar(64, 7);
-    hpBar.view.position.set(-32, 10);
-    hpBar.set(c.hp / c.stats.hp, false);
+    // HP bar 64×8 below feet (+ mini energy pips for cats)
+    const hpBar = bar(isBig ? 84 : 64, 8, { kind: "hp" });
+    hpBar.view.position.set(isBig ? -42 : -32, 9);
+    hpBar.set(c.hp, c.stats.hp, false);
     root.addChild(hpBar.view);
     let energy: { set(n: number): void } | undefined;
     if (c.side === "cat") {
       const pips = makeEnergyPips(c.stats.enMax || 10, 4, 6, 1);
-      pips.view.position.set(-24, 20);
+      pips.view.position.set(-24, 21);
       pips.set(c.energy);
       energy = pips;
       root.addChild(pips.view);
@@ -399,7 +495,7 @@ export function createBattleScene(): Scene {
 
     // status chips centered above the head
     const statusRow = new Container();
-    statusRow.position.set(0, HEAD_Y - 20);
+    statusRow.position.set(0, headY - 20);
     root.addChild(statusRow);
 
     // Off-Balance orbit stars
@@ -412,7 +508,7 @@ export function createBattleScene(): Scene {
       star.anchor.set(0.5);
       stars.addChild(star);
     }
-    stars.position.set(0, HEAD_Y - 4);
+    stars.position.set(0, headY - 4);
     stars.visible = false;
     root.addChild(stars);
 
@@ -423,6 +519,8 @@ export function createBattleScene(): Scene {
       body,
       gfx,
       aura,
+      shadow,
+      presence,
       hpBar,
       hpNow: c.hp,
       hpMax: c.stats.hp,
@@ -437,13 +535,14 @@ export function createBattleScene(): Scene {
       ring: null,
       rank: c.rank,
       dead: false,
-      bobPhase: c.rank * 0.9,
+      bobPhase: c.rank * 0.9 + (c.side === "cat" ? 0 : 1.7),
+      headY,
     };
 
     // boss: always-visible Poise pips above the status row
     if (c.poiseMax !== undefined) {
       const pips = makePoisePips(c.poiseMax);
-      pips.view.position.set(0, HEAD_Y - 44);
+      pips.view.position.set(0, headY - 44);
       pips.view.pivot.x = (c.poiseMax * 18) / 2 - 6;
       pips.set(c.poise ?? c.poiseMax);
       root.addChild(pips.view);
@@ -462,7 +561,7 @@ export function createBattleScene(): Scene {
       const cc = bs.combatants.find((x) => x.id === u.id);
       if (!cc || u.nameplate) return;
       u.nameplate = makeNameplate(cc);
-      u.nameplate.position.set(0, HEAD_Y - 42 - (u.poise ? 24 : 0));
+      u.nameplate.position.set(0, u.headY - 42 - (u.poise ? 24 : 0));
       root.addChild(u.nameplate);
       if (targeting && targeting.targetIds.includes(u.id)) {
         targeting.idx = targeting.targetIds.indexOf(u.id);
@@ -481,41 +580,35 @@ export function createBattleScene(): Scene {
 
   /* ---------------- battlefield build ---------------- */
 
+  /**
+   * The stage (visual-v3): a painted `scene:battle:<floor>` backdrop when
+   * the art pack has one, a layered procedural stage when it doesn't, then
+   * the grounded floor plane, the rank marks and the units. The old grey
+   * placeholder moon + random silhouettes are gone for good.
+   */
   const buildBattlefield = (run: { floorNum: number }): void => {
     if (!bgC || !worldC || !bs) return;
-    const theme =
-      THEMES[Math.min(THEMES.length - 1, Math.floor((run.floorNum - 1) / 2))];
 
-    const back = new Graphics().rect(0, 0, DESIGN_W, DESIGN_H).fill(PAL.bgDeep);
-    // moon
-    back.circle(640, 150, 70).fill({ color: PAL.text, alpha: 0.12 });
-    // ground band
-    back.rect(0, R.combat.groundY, DESIGN_W, 64).fill(theme.floorA);
-    // alley silhouettes (visual RNG only)
-    for (let i = 0; i < 6; i++) {
-      const px = 90 + Math.random() * 1100;
-      const pw = 40 + Math.random() * 70;
-      const ph = 50 + Math.random() * 130;
-      back
-        .roundRect(px, R.combat.groundY - ph, pw, ph, 8)
-        .fill({ color: theme.wallFace, alpha: 0.5 });
-    }
-    bgC.addChild(back);
+    stage = makeBattleStage(run.floorNum);
+    bgC.addChild(stage.back);
+    worldC.addChild(stage.ground);
 
-    // rank slots: shadow ellipses + numerals
+    // rank marks: a recessed floor plate + numeral per slot
     const slots = new Graphics();
     const numerals = new Container();
     const addSlot = (side: "cat" | "enemy", rank: number): void => {
       const x = slotX(side, rank);
+      const tint = side === "cat" ? PAL.energy : PAL.danger;
       slots
-        .ellipse(x, R.combat.groundY, 34, 9)
-        .fill({ color: PAL.void, alpha: 0.5 });
-      const n = new Text({
-        text: String(rank),
-        style: ui(11, { fill: PAL.textDim }),
-      });
+        .ellipse(x, R.combat.groundY, 38, 10)
+        .fill({ color: PAL.void, alpha: 0.32 });
+      slots
+        .ellipse(x, R.combat.groundY, 38, 10)
+        .stroke({ width: 1, color: tint, alpha: 0.16 });
+      const n = label(String(rank), { size: TYPE.tiny, mono: true, dim: true });
       n.anchor.set(0.5, 0);
-      n.position.set(x, R.combat.groundY + 12);
+      n.alpha = 0.5;
+      n.position.set(x, R.combat.groundY + 30);
       numerals.addChild(n);
     };
     for (let r = 1; r <= 4; r++) addSlot("cat", r);
@@ -524,7 +617,7 @@ export function createBattleScene(): Scene {
 
     // active-unit slot highlight (gold pulsing ellipse)
     activeSlot = new Graphics()
-      .ellipse(0, 0, 34, 9)
+      .ellipse(0, 0, 38, 10)
       .stroke({ width: 3, color: PAL.gold });
     activeSlot.position.set(slotX("cat", 1), R.combat.groundY);
     activeSlot.visible = false;
@@ -540,54 +633,37 @@ export function createBattleScene(): Scene {
   const buildHud = (): void => {
     if (!hudC || !modalC || !bs) return;
     // round chip
-    const rc = new Graphics()
-      .roundRect(0, 0, rw(R.combat.roundChip), rh(R.combat.roundChip), 6)
-      .fill(PAL.panel)
-      .stroke({ width: 2, color: PAL.border });
-    rc.position.set(rx(R.combat.roundChip), ry(R.combat.roundChip));
-    roundText = new Text({
-      text: "ROUND 1",
-      style: ui(14, { fontWeight: "bold" }),
-    });
-    roundText.anchor.set(0.5);
-    roundText.position.set(
-      rx(R.combat.roundChip) + rw(R.combat.roundChip) / 2,
-      ry(R.combat.roundChip) + rh(R.combat.roundChip) / 2,
-    );
-    hudC.addChild(rc, roundText);
+    roundChip = makeRoundChip();
+    roundChip.view.position.set(rx(R.combat.roundChip), ry(R.combat.roundChip));
+    hudC.addChild(roundChip.view);
 
-    // ribbon
+    // turn-order strip
     ribbon.view.position.set(rx(R.combat.ribbon), ry(R.combat.ribbon));
     hudC.addChild(ribbon.view);
 
-    // flee chip — hidden in boss fights
+    // flee button — hidden in boss fights
     if (bs.canFlee) {
-      fleeChip = new Container();
-      const fg = new Graphics()
-        .roundRect(0, 0, rw(R.combat.fleeChip), rh(R.combat.fleeChip), 6)
-        .fill(PAL.panel)
-        .stroke({ width: 2, color: PAL.danger });
-      const ft = new Text({
-        text: "R Scatter!",
-        style: ui(14, { fill: PAL.danger, fontWeight: "bold" }),
-      });
-      ft.anchor.set(0.5);
-      ft.position.set(rw(R.combat.fleeChip) / 2, rh(R.combat.fleeChip) / 2);
-      fleeChip.addChild(fg, ft);
-      fleeChip.position.set(rx(R.combat.fleeChip), ry(R.combat.fleeChip));
-      fleeChip.eventMode = "static";
-      fleeChip.cursor = "pointer";
-      fleeChip.on("pointertap", () => tryFlee());
-      hudC.addChild(fleeChip);
+      const flee = makeFleeButton(() => tryFlee());
+      flee.view.position.set(rx(R.combat.fleeChip), ry(R.combat.fleeChip));
+      hudC.addChild(flee.view);
     }
 
-    // log line
+    // log strip + line
+    const strip = makeLogStrip();
+    strip.position.set(rx(R.combat.logLine), ry(R.combat.logLine));
+    strip.eventMode = "static";
+    strip.cursor = "pointer";
+    strip.on("pointertap", () => toggleScrollback());
+    hudC.addChild(strip);
     logText = new BitmapText({
       text: "",
       style: { fontFamily: MONO_BITMAP, fontSize: 14 },
     });
-    logText.tint = PAL.textDim;
-    logText.position.set(rx(R.combat.logLine), ry(R.combat.logLine) + 4);
+    logText.tint = PAL.text;
+    logText.position.set(
+      rx(R.combat.logLine) + SPACE.md,
+      ry(R.combat.logLine) + 5,
+    );
     logText.eventMode = "static";
     logText.cursor = "pointer";
     logText.on("pointertap", () => toggleScrollback());
@@ -691,6 +767,11 @@ export function createBattleScene(): Scene {
     legal = legalActions(bs);
     activePanel.set(actor);
 
+    // Slots 1-4 ARE the progression engine's loadout: the combatant's
+    // `skills` came from `activeSkills(cat, level)` at setup (buildSetup),
+    // and `legalActions` walks that same list in order. The scene only
+    // renders it — it never picks or reorders skills.
+    const stand = standNameOf(actor.id);
     const slots: (SlotSpec | null)[] = [null, null, null, null, null, null];
     for (let i = 0; i < 4; i++) {
       const opt = legal.skills[i];
@@ -713,6 +794,7 @@ export function createBattleScene(): Scene {
         cost: skill.cost,
         ok: opt.ok,
         reason,
+        ...(stand !== null ? { stand } : {}),
       };
     }
     slots[4] = { kind: "guard", label: "Guard", ok: legal.canGuard };
@@ -795,28 +877,26 @@ export function createBattleScene(): Scene {
       const def = CONSUMABLES[item.defId];
       if (!def) return;
       const row = new Container();
-      const bg = new Graphics()
-        .roundRect(0, 0, rowW, rowH, RADIUS.button)
-        .fill(PAL.panelLite)
-        .stroke({ width: 2, color: PAL.border });
-      row.addChild(bg);
-      const hk = new Text({
-        text: String(i + 1),
-        style: mono(12, { fill: PAL.textDark }),
-      });
-      const hkBg = new Graphics()
-        .roundRect(6, 10, 16, 16, RADIUS.chip)
-        .fill(PAL.gold);
-      hk.anchor.set(0.5);
-      hk.position.set(14, 18);
-      row.addChild(hkBg, hk);
-      const label = new Text({
-        text: `${def.icon} ${def.name} ×${item.count}`,
-        style: ui(14),
-      });
-      label.position.set(30, 9);
-      row.addChild(label);
+      row.addChild(panel(rowW, rowH, { variant: "raised" }));
+      const hk = makeHotkeyChip(String(i + 1), true);
+      hk.view.position.set(SPACE.sm, (rowH - 16) / 2);
+      row.addChild(hk.view);
+      const icon = makeSpriteIcon(`item:${item.defId}`, 22);
+      if (icon) {
+        icon.position.set(38, rowH / 2);
+        row.addChild(icon);
+      } else {
+        const glyph = label(def.icon, { size: TYPE.body, center: true });
+        glyph.position.set(38, rowH / 2);
+        row.addChild(glyph);
+      }
+      const name = label(`${def.name} ×${item.count}`, { size: TYPE.small });
+      name.position.set(54, (rowH - 17) / 2);
+      row.addChild(name);
       row.position.set(0, i * (rowH + 4));
+      row.hitArea = {
+        contains: (x, y) => x >= 0 && x <= rowW && y >= 0 && y <= rowH,
+      };
       row.eventMode = "static";
       row.cursor = "pointer";
       row.on("pointertap", () => pickItem(item.defId));
@@ -915,13 +995,13 @@ export function createBattleScene(): Scene {
       if (sk.kind === "damage" && sk.power > 0) {
         const n = previewDamage(bs, sk.id, actorId, tid);
         const chip = makePreviewChip(`≈${n}`, PAL.text);
-        chip.position.set(u.root.x, u.root.y + HEAD_Y - 6);
+        chip.position.set(u.root.x, u.root.y + u.headY - 6);
         targetFx.addChild(chip);
       } else if (sk.kind === "heal" && sk.power > 0) {
         // display-only estimate: same "power% of atk" reading as the tooltip
         const n = roundHalfUp((sk.power / 100) * actor.stats.atk);
         const chip = makePreviewChip(`≈+${n}`, PAL.heal);
-        chip.position.set(u.root.x, u.root.y + HEAD_Y - 6);
+        chip.position.set(u.root.x, u.root.y + u.headY - 6);
         targetFx.addChild(chip);
       }
       // ghost shove arrow + destination Off-Balance / Poise preview
@@ -933,7 +1013,7 @@ export function createBattleScene(): Scene {
             hypotheticalDistance(target, sk.moveTarget) >= 1
           ) {
             const chip = makePreviewChip("◆-1", PAL.gold);
-            chip.position.set(u.root.x, u.root.y + HEAD_Y - 32);
+            chip.position.set(u.root.x, u.root.y + u.headY - 32);
             targetFx.addChild(chip);
           }
         } else {
@@ -1043,7 +1123,7 @@ export function createBattleScene(): Scene {
   const handleEvent = (e: BattleEvent): number => {
     switch (e.t) {
       case "roundStart": {
-        if (roundText) roundText.text = `ROUND ${e.round}`;
+        roundChip?.set(e.round);
         if (bs) ribbon.setRound(bs);
         pushLog(`— round ${e.round} —`);
         return 280;
@@ -1088,7 +1168,7 @@ export function createBattleScene(): Scene {
           );
         }
         u.hpNow = Math.max(0, u.hpNow - e.amount);
-        u.hpBar.set(u.hpNow / u.hpMax);
+        u.hpBar.set(u.hpNow, u.hpMax);
         // hit flash + jitter + Stand-aura flash
         u.gfx.tint = 0xff9a9a;
         delay(90, () => {
@@ -1110,7 +1190,7 @@ export function createBattleScene(): Scene {
         const txt = `${e.amount}${e.crit ? "!" : ""}${e.offBal ? "✶" : ""}`;
         floater(
           u.root.x,
-          u.root.y + HEAD_Y,
+          u.root.y + u.headY,
           txt,
           e.crit
             ? PAL.crit
@@ -1141,8 +1221,8 @@ export function createBattleScene(): Scene {
         const u = unitOf(e.id);
         if (!u) return 100;
         u.hpNow = Math.min(u.hpMax, u.hpNow + e.amount);
-        u.hpBar.set(u.hpNow / u.hpMax);
-        floater(u.root.x, u.root.y + HEAD_Y, `+${e.amount}`, PAL.heal);
+        u.hpBar.set(u.hpNow, u.hpMax);
+        floater(u.root.x, u.root.y + u.headY, `+${e.amount}`, PAL.heal);
         const healStand =
           e.source !== "mending" ? standNameOf(lastActorId ?? "") : null;
         pushLog(
@@ -1176,9 +1256,9 @@ export function createBattleScene(): Scene {
         rebuildStatusRow(u);
         if (e.status === "offBalance") {
           setTilt(u, true);
-          floater(u.root.x, u.root.y + HEAD_Y, "OFF-BALANCE!", PAL.offBal, 22);
+          floater(u.root.x, u.root.y + u.headY, "OFF-BALANCE!", PAL.offBal, 22);
         } else {
-          const label = e.status.replace(/([A-Z])/g, " $1").toUpperCase();
+          const tag = e.status.replace(/([A-Z])/g, " $1").toUpperCase();
           const colors: Record<StatusId, number> = {
             scratched: PAL.stScratched,
             frazzled: PAL.stFrazzled,
@@ -1187,7 +1267,7 @@ export function createBattleScene(): Scene {
             provoked: PAL.stProvoked,
             mending: PAL.stMending,
           };
-          floater(u.root.x, u.root.y + HEAD_Y, label, colors[e.status], 22);
+          floater(u.root.x, u.root.y + u.headY, tag, colors[e.status], 22);
         }
         pushLog(`${nameOf(e.id)} is ${e.status}.`);
         return 220;
@@ -1219,7 +1299,7 @@ export function createBattleScene(): Scene {
           if (e.delta > 0) {
             floater(
               u.root.x,
-              u.root.y + HEAD_Y,
+              u.root.y + u.headY,
               `+${e.delta}⚡`,
               PAL.energy,
               22,
@@ -1238,7 +1318,7 @@ export function createBattleScene(): Scene {
         if (worldC) shake(worldC, 3);
         floater(
           u?.root.x ?? DESIGN_W / 2,
-          (u?.root.y ?? R.combat.groundY) + HEAD_Y,
+          (u?.root.y ?? R.combat.groundY) + (u?.headY ?? HEAD_Y),
           "POISE",
           PAL.gold,
           22,
@@ -1384,12 +1464,12 @@ export function createBattleScene(): Scene {
           const c = bs.combatants.find((x) => x.id === e.id);
           u.dead = false;
           u.hpNow = e.hp;
-          u.hpBar.set(u.hpNow / u.hpMax, false);
+          u.hpBar.set(u.hpNow, u.hpMax, false);
           u.rank = c?.rank ?? u.rank;
           u.root.position.x = slotX(u.side, u.rank);
           u.body.scale.set(1);
           tween(u.root, { alpha: 1 }, 200);
-          floater(u.root.x, u.root.y + HEAD_Y, "REVIVED!", PAL.heal, 22);
+          floater(u.root.x, u.root.y + u.headY, "REVIVED!", PAL.heal, 22);
         }
         pushLog(`${nameOf(e.id)} is back on their paws!`);
         return 250;
@@ -1417,7 +1497,7 @@ export function createBattleScene(): Scene {
         const u = unitOf(e.id);
         if (u && worldC) {
           u.charge = makeChargeMark();
-          u.charge.view.position.set(0, HEAD_Y - 40);
+          u.charge.view.position.set(0, u.headY - 40);
           u.root.addChild(u.charge.view);
           u.flood = makeRankFlood(e.ranks);
           worldC.addChild(u.flood);
@@ -1455,7 +1535,7 @@ export function createBattleScene(): Scene {
       case "traitTriggered": {
         const u = unitOf(e.id);
         if (u) {
-          floater(u.root.x, u.root.y + HEAD_Y, e.trait, PAL.gold, 22);
+          floater(u.root.x, u.root.y + u.headY, e.trait, PAL.gold, 22);
         }
         return 150;
       }
@@ -1468,7 +1548,7 @@ export function createBattleScene(): Scene {
         if (!e.ok) {
           const u = unitOf(lastActorId ?? "");
           if (u)
-            floater(u.root.x, u.root.y + HEAD_Y, "FAILED!", PAL.danger, 22);
+            floater(u.root.x, u.root.y + u.headY, "FAILED!", PAL.danger, 22);
         }
         return 250;
       }
@@ -1505,19 +1585,18 @@ export function createBattleScene(): Scene {
     scrollOffset = 0;
     scrollPanel = new Container();
     const [sx, sy, sw, sh] = R.combat.logScrollback;
-    const bg = new Graphics()
-      .roundRect(0, 0, sw, sh, RADIUS.panel)
-      .fill({ color: PAL.panel, alpha: 0.95 })
-      .stroke({ width: 2, color: PAL.border });
-    scrollPanel.addChild(bg);
+    scrollPanel.addChild(panel(sw, sh, { variant: "raised" }));
+    const title = heading("BATTLE LOG", 3);
+    title.position.set(SPACE.md, SPACE.sm);
+    scrollPanel.addChild(title);
     const txt = new Text({
       text: "",
       style: mono(12, { fill: PAL.textDim, lineHeight: 16 }),
     });
-    txt.position.set(10, 8);
+    txt.position.set(SPACE.md, 30);
     scrollPanel.addChild(txt);
     const render = (): void => {
-      const perPage = Math.floor((sh - 16) / 16);
+      const perPage = Math.floor((sh - 38) / 16);
       const start = Math.max(0, logLines.length - perPage - scrollOffset);
       txt.text = logLines.slice(start, start + perPage).join("\n");
     };
@@ -1556,11 +1635,16 @@ export function createBattleScene(): Scene {
     if (result.outcome === "defeat") {
       // 1.5s "the clowder scatters…" beat (gameloop §6)
       if (modalC) {
-        const beat = new Text({
-          text: "the clowder scatters…",
-          style: display(32, { fill: PAL.danger }),
+        const veil = new Graphics()
+          .rect(0, 0, DESIGN_W, DESIGN_H)
+          .fill({ color: PAL.void, alpha: 0.5 });
+        veil.alpha = 0;
+        modalC.addChild(veil);
+        tween(veil, { alpha: 1 }, 600);
+        const beat = heading("the clowder scatters…", 1, {
+          fill: PAL.danger,
+          center: true,
         });
-        beat.anchor.set(0.5);
         beat.position.set(DESIGN_W / 2, DESIGN_H / 2 - 60);
         beat.alpha = 0;
         modalC.addChild(beat);
@@ -1654,7 +1738,7 @@ export function createBattleScene(): Scene {
       const tier = traitTier(classId, run.level);
       const traits = tier >= 2 ? [cls.trait.id, cls.trait.id] : [cls.trait.id];
       const hooks: MewHookId[] = [];
-      for (const item of [cat.weapon, cat.trinket]) {
+      for (const item of [cat.weapon, cat.trinket, cat.collar]) {
         if (item?.hook && !item.hookSpent) hooks.push(item.hook);
       }
       cats.push({
@@ -1663,7 +1747,7 @@ export function createBattleScene(): Scene {
         stats,
         hp: Math.min(cat.hp, stats.hp),
         lives: cat.lives,
-        skills: skillsForLevel(classId, run.level),
+        skills: activeSkills(cat, run.level),
         traits,
         hooks,
         startEnergyBonus: cat.energyNextBattle,
@@ -1743,28 +1827,21 @@ export function createBattleScene(): Scene {
     const [bx, by, bw] = R.combat.catPileBanner;
     const bh = 64 + lines.length * 26;
     const view = new Container();
-    view.addChild(
-      new Graphics()
-        .roundRect(0, 0, bw, bh, RADIUS.panel)
-        .fill({ color: PAL.panel, alpha: 0.96 })
-        .stroke({ width: 3, color: PAL.gold }),
-    );
-    const title = new Text({
-      text: "STAND RESONANCE DISCOVERED",
-      style: display(26, { fill: PAL.gold }),
+    view.addChild(panel(bw, bh, { variant: "raised", accent: PAL.gold }));
+    const title = heading("STAND RESONANCE DISCOVERED", 2, {
+      fill: PAL.gold,
+      center: true,
     });
     title.anchor.set(0.5, 0);
-    title.position.set(bw / 2, 10);
+    title.position.set(bw / 2, 12);
     view.addChild(title);
     lines.forEach((line, i) => {
-      const t = new Text({
-        text: line.replace(/^STAND RESONANCE DISCOVERED:\s*/, ""),
-        style: ui(14, {
-          fill: PAL.textDim,
-          wordWrap: true,
-          wordWrapWidth: bw - 40,
-          align: "center",
-        }),
+      const t = label(line.replace(/^STAND RESONANCE DISCOVERED:\s*/, ""), {
+        size: TYPE.small,
+        dim: true,
+        wrap: bw - 40,
+        align: "center",
+        center: true,
       });
       t.anchor.set(0.5, 0);
       t.position.set(bw / 2, 50 + i * 26);
@@ -1850,6 +1927,10 @@ export function createBattleScene(): Scene {
         }
       }
       bgC = worldC = fxC = hudC = floatC = modalC = null;
+      stage = null;
+      roundChip = null;
+      logText = null;
+      activeSlot = null;
       units.clear();
       logLines.length = 0;
       log.length = 0;
@@ -1878,15 +1959,26 @@ export function createBattleScene(): Scene {
         fn();
       }
 
+      // stage: backdrop parallax drift + stage-light breathing (the backdrop
+      // is NOT shaken with the world layer — that difference IS the parallax)
+      stage?.update(elapsed);
+
       // ambience: idle bob + breathing, star orbits, slot pulse, charge bounce
       const t = elapsed / 1000;
       for (const u of units.values()) {
         if (u.dead) continue;
-        u.body.y = Math.sin((t * Math.PI * 2) / 1.6 + u.bobPhase) * 2;
+        const bob = Math.sin((t * Math.PI * 2) / 1.6 + u.bobPhase);
+        u.body.y = bob * 2;
         // slow breathing: ±1.5% vertical scale, slight inverse horizontal
         const br = Math.sin((t * Math.PI * 2) / 2.8 + u.bobPhase) * BREATH_AMP;
         u.body.scale.y = 1 + br;
         u.body.scale.x = 1 - br * 0.5;
+        // the contact shadow tightens as the unit rises: the tell that the
+        // sprite is standing ON the floor plane rather than floating over it
+        const lift = 1 - bob * 0.05;
+        u.shadow.scale.set(lift, lift);
+        u.shadow.alpha = 0.75 + 0.25 * lift;
+        u.presence?.update(elapsed);
         if (u.stars.visible) {
           u.stars.children.forEach((star, i) => {
             const a = t * 0.8 * Math.PI * 2 + (i * Math.PI * 2) / 3;

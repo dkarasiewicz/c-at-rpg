@@ -33,11 +33,11 @@ import type {
   Scalar,
   TargetSel,
   TempMod,
-} from "../types";
-import { clamp, pickWeightedFloat } from "../util";
-import { CLASSES } from "../../content/classes";
-import { CONSUMABLES } from "../../content/consumables";
-import { EQUIP_DEFS } from "../../content/equipment";
+} from "../types.js";
+import { clamp, pickWeightedFloat } from "../util.js";
+import { CLASSES } from "../../content/classes.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { EQUIP_DEFS } from "../../content/equipment.js";
 
 /* ------------------------------------------------------------------------ */
 /* Public shapes                                                             */

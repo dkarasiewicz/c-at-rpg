@@ -11,7 +11,7 @@
  * unit-testable headless.
  */
 import type { Container } from "pixi.js";
-import type { MetaFile, RunState } from "../core/types";
+import type { MetaFile, RunState } from "../core/types.js";
 
 /* ---------------------------------------------------------------------- */
 /* Contract types (ARCHITECTURE.md §3.1 — UI-layer, not in core/types.ts)  */

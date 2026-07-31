@@ -7,8 +7,10 @@
  *
  * This is the ONLY file in the repo allowed to touch localStorage, behind a
  * tiny adapter so tests inject a stub (ARCHITECTURE.md §0 rule 5).
- * Version-mismatched or unparseable saves are silently deleted (no
- * migrations in v1 — gameloop.md §9).
+ * Unparseable or unknown-version saves are silently deleted; KNOWN older
+ * versions migrate forward instead (progression.md §5 — a v1 save loads with
+ * no loss and simply starts with 0 points spent, no loadouts and empty
+ * collars).
  */
 import type {
   FloorDelta,
@@ -16,15 +18,28 @@ import type {
   MetaFile,
   RunState,
   SaveFile,
-} from "../types";
-import { decodeBitset, encodeBitset } from "../util";
-import { FLOORS } from "../../content/floors";
-import { generateFloor } from "../dungeon/gen";
-import { recomputeVisibility } from "../dungeon/floor";
+  SaveVersion,
+} from "../types.js";
+import { decodeBitset, encodeBitset } from "../util.js";
+import { FLOORS } from "../../content/floors.js";
+import { generateFloor } from "../dungeon/gen.js";
+import { recomputeVisibility } from "../dungeon/floor.js";
 
 export const SAVE_KEY = "catrpg.save.v1";
 export const META_KEY = "catrpg.meta.v1";
-export const SAVE_VERSION = 1;
+
+/**
+ * Current save schema (docs/design/progression.md §5).
+ *   v1 — pre-progression: no Whisker Points, no loadouts, no collar slot.
+ *   v2 — current. Every progression field is OPTIONAL, so a v1 payload is
+ *        already a valid v2 payload: the migration only stamps the version.
+ * The localStorage KEY deliberately keeps its `.v1` name — it is a key, not a
+ * schema tag, and renaming it would orphan every save on disk.
+ */
+export const SAVE_VERSION = 2;
+
+/** Versions `loadRun` will accept and migrate forward. */
+export const READABLE_SAVE_VERSIONS: readonly SaveVersion[] = [1, 2];
 
 /* ------------------------------------------------------------------ */
 /* storage adapter                                                     */
@@ -130,6 +145,24 @@ export function serializeRun(run: RunState): SaveFile {
   return { version: SAVE_VERSION, run: rest, floorDelta: floorToDelta(floor) };
 }
 
+/**
+ * Bring a stored payload up to `SAVE_VERSION`, or return `null` when it is
+ * from an unknown (future / corrupt) schema and must be discarded.
+ *
+ * v1 → v2 (progression.md §5): every progression field is optional and the
+ * "absent" behaviour is the v1 behaviour — cats keep their weapon/trinket and
+ * simply have no collar (`undefined`), no spent Whisker Points (all 7 of them
+ * unspent and waiting) and no custom loadout (the legacy default kit). So the
+ * migration adds NOTHING: it only re-stamps the version, which keeps the
+ * conversion lossless in both directions of a same-session reload.
+ */
+export function migrateSave(sf: SaveFile): SaveFile | null {
+  if (!sf || typeof sf !== "object" || !sf.run) return null;
+  if (!READABLE_SAVE_VERSIONS.includes(sf.version)) return null;
+  if (sf.version === SAVE_VERSION) return sf;
+  return { ...sf, version: SAVE_VERSION };
+}
+
 /** Regenerate the floor from the seed and overlay the saved delta. */
 export function deserializeRun(sf: SaveFile): RunState {
   const { floorNum, runSeed } = sf.run;
@@ -162,8 +195,8 @@ export function loadRun(
   const raw = storage.get(SAVE_KEY);
   if (raw === null) return null;
   try {
-    const sf = JSON.parse(raw) as SaveFile;
-    if (sf.version !== SAVE_VERSION) {
+    const sf = migrateSave(JSON.parse(raw) as SaveFile);
+    if (sf === null) {
       storage.remove(SAVE_KEY);
       return null;
     }

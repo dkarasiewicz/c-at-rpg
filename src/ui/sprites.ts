@@ -20,9 +20,9 @@
  * charge. This module never throws.
  */
 import { Assets, Texture } from "pixi.js";
-import type { ClassId } from "../core/types";
-import { CLASSES } from "../content/classes";
-import { ENEMIES } from "../content/enemies";
+import type { ClassId } from "../core/types.js";
+import { CLASSES } from "../content/classes.js";
+import { ENEMIES } from "../content/enemies.js";
 
 interface ManifestSprite {
   file: string;

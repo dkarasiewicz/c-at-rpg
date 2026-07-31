@@ -6,9 +6,9 @@
  * Cross-references to skills/enemies tables belong to tests/content.spec.ts.
  */
 import { describe, expect, it } from "vitest";
-import type { Effect, EventOption, MewHookId } from "../src/core/types";
-import { EQUIP_DEFS, RARITY_TABLE } from "../src/content/equipment";
-import { CONSUMABLES } from "../src/content/consumables";
+import type { Effect, EventOption, MewHookId } from "../src/core/types.js";
+import { EQUIP_DEFS, RARITY_TABLE } from "../src/content/equipment.js";
+import { CONSUMABLES } from "../src/content/consumables.js";
 import {
   BOSS_RARITY,
   BUNDLES,
@@ -18,8 +18,8 @@ import {
   RARITY_WEIGHTS,
   SHOP_GEAR_RARITY,
   STARTING_KIT,
-} from "../src/content/lootTables";
-import { EVENTS } from "../src/content/events";
+} from "../src/content/lootTables.js";
+import { EVENTS } from "../src/content/events.js";
 
 /* ------------------------------------------------------------------------ */
 /* Equipment — loot.md §§2-4                                                 */
@@ -29,13 +29,26 @@ describe("EQUIP_DEFS", () => {
   const defs = Object.values(EQUIP_DEFS);
   const weapons = defs.filter((d) => d.slot === "weapon");
   const trinkets = defs.filter((d) => d.slot === "trinket");
+  const collars = defs.filter((d) => d.slot === "collar");
 
-  it("has exactly 10 defs: 4 weapons + 6 trinkets, keyed by id", () => {
-    expect(defs).toHaveLength(10);
+  it("has 18 defs: 4 weapons + 6 trinkets + 8 collars, keyed by id", () => {
+    expect(defs).toHaveLength(18);
     expect(weapons).toHaveLength(4);
-    expect(trinkets).toHaveLength(6);
+    expect(trinkets).toHaveLength(6); // loot.md §2, unchanged
+    expect(collars).toHaveLength(8); // progression.md §4, the third slot
     for (const [key, def] of Object.entries(EQUIP_DEFS)) {
       expect(def.id).toBe(key);
+    }
+  });
+
+  it("collars are universal, defensive/utility, and never roll atk or crt", () => {
+    for (const c of collars) {
+      expect(c.classId).toBeUndefined();
+      expect(["hp", "def", "spd", "enMax"]).toContain(c.primary);
+      for (const s of c.secondaryPool) {
+        expect(["hp", "def", "spd", "enMax"]).toContain(s);
+      }
+      expect(c.secondaryPool).not.toContain(c.primary);
     }
   });
 
@@ -68,7 +81,9 @@ describe("EQUIP_DEFS", () => {
   });
 
   it("carries the 8 Mewthical uniques (all hooks once) and none on Cuirass/Spiked Collar", () => {
-    const hooks = defs.flatMap((d) => (d.uniqueId ? [d.uniqueId] : []));
+    const hooks = [...weapons, ...trinkets].flatMap((d) =>
+      d.uniqueId ? [d.uniqueId] : [],
+    );
     const allHooks: MewHookId[] = [
       "poiseChip2",
       "critOffBalance",
@@ -95,6 +110,25 @@ describe("EQUIP_DEFS", () => {
     expect(EQUIP_DEFS.tinBell.uniqueName).toBe("The Ninth Bell");
     expect(EQUIP_DEFS.driedLuckyBeetle.uniqueName).toBe("Alpha Beetle");
     expect(EQUIP_DEFS.yarnBangle.uniqueName).toBe("Ball of Pure Yarn");
+  });
+
+  it("collar uniques reuse the SAME eight-hook menu (no new engine hooks)", () => {
+    const collarUniques = collars.filter((c) => c.uniqueId);
+    expect(collarUniques).toHaveLength(3);
+    const known = new Set(
+      [...weapons, ...trinkets].flatMap((d) =>
+        d.uniqueId ? [d.uniqueId] : [],
+      ),
+    );
+    for (const c of collarUniques) {
+      // progression.md §4: a collar unique is mutually exclusive with its
+      // trinket counterpart (loot.md §5 unique-or-downgrade, keyed by hook).
+      expect(known.has(c.uniqueId!)).toBe(true);
+      expect(c.uniqueName).toBeTruthy();
+    }
+    expect(EQUIP_DEFS.wardCollar.uniqueId).toBe("ninthBell");
+    expect(EQUIP_DEFS.bubbleWrapRuff.uniqueId).toBe("moverOffBalance");
+    expect(EQUIP_DEFS.batteryCollar.uniqueId).toBe("startEnergy6");
   });
 
   it("rarity table matches loot.md §3 (mult and secondary lines)", () => {

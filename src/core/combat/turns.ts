@@ -12,9 +12,9 @@ import type {
   BattleState,
   QueueEntry,
   Rng,
-} from "../types";
-import { ENEMIES } from "../../content/enemies";
-import { clamp } from "../util";
+} from "../types.js";
+import { ENEMIES } from "../../content/enemies.js";
+import { clamp } from "../util.js";
 import {
   byId,
   cloneState,
@@ -22,10 +22,14 @@ import {
   living,
   nextActor,
   hasStatus,
-} from "./state";
-import { clearStatuses, roundEndPhase } from "./status";
-import { bossDataOf } from "./boss";
-import { consultBattleStart, reclonePowers, resetRoundCharges } from "./powers";
+} from "./state.js";
+import { clearStatuses, roundEndPhase } from "./status.js";
+import { bossDataOf } from "./boss.js";
+import {
+  consultBattleStart,
+  reclonePowers,
+  resetRoundCharges,
+} from "./powers.js";
 
 export { nextActor };
 

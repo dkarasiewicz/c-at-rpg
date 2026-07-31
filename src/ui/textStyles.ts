@@ -5,7 +5,7 @@
  * (size varies).
  */
 import { BitmapFont, TextStyle, type TextStyleOptions } from "pixi.js";
-import { PAL } from "./palette";
+import { PAL } from "./palette.js";
 
 /** DISPLAY — title logo, screen headers, banners, VICTORY/DEFEAT. */
 export const FONT_DISPLAY = "'Trebuchet MS', Verdana, sans-serif";
@@ -58,6 +58,73 @@ export function mono(size: number, opts: TextStyleOptions = {}): TextStyle {
     fontSize: size,
     fill: PAL.text,
     ...opts,
+  });
+}
+
+/* ---------------------------------------------------------------------- */
+/* Shared chrome kit — the typographic scale (widgets.heading / .label)    */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * The ONE type scale every screen uses through `heading()` / `label()`.
+ * h1 screen banner, h2 panel title, h3 section/eyebrow; body/small/tiny for
+ * running copy, secondary lines and numerals.
+ */
+export const TYPE = {
+  h1: 34,
+  h2: 22,
+  h3: 15,
+  body: 16,
+  small: 14,
+  tiny: 11,
+} as const;
+
+/** Heading style for level 1|2|3 (h1/h2 DISPLAY bold, h3 UI bold eyebrow). */
+export function headingStyle(
+  level: 1 | 2 | 3 = 1,
+  opts: TextStyleOptions = {},
+): TextStyle {
+  if (level === 3) {
+    return ui(TYPE.h3, {
+      fontWeight: "bold",
+      letterSpacing: 1.4,
+      fill: PAL.textDim,
+      ...opts,
+    });
+  }
+  return display(level === 1 ? TYPE.h1 : TYPE.h2, opts);
+}
+
+/** Options accepted by `widgets.label()` / `labelStyle()`. */
+export interface LabelOpts {
+  /** px; defaults to TYPE.small. */
+  size?: number;
+  /** PAL.textDim instead of PAL.text. */
+  dim?: boolean;
+  /** MONO preset (numerals, tables, seeds) instead of UI. */
+  mono?: boolean;
+  bold?: boolean;
+  /** Explicit fill; wins over `dim`. */
+  fill?: number;
+  /** Word-wrap width in px. */
+  wrap?: number;
+  align?: "left" | "center" | "right";
+}
+
+/** TextStyle for a body/secondary label on the shared type scale. */
+export function labelStyle(opts: LabelOpts = {}): TextStyle {
+  const size = opts.size ?? TYPE.small;
+  const extra: TextStyleOptions = {
+    fill: opts.fill ?? (opts.dim === true ? PAL.textDim : PAL.text),
+    ...(opts.wrap !== undefined
+      ? { wordWrap: true, wordWrapWidth: opts.wrap }
+      : {}),
+    ...(opts.align !== undefined ? { align: opts.align } : {}),
+  };
+  if (opts.mono === true) return mono(size, extra);
+  return ui(size, {
+    fontWeight: opts.bold === true ? "bold" : "normal",
+    ...extra,
   });
 }
 

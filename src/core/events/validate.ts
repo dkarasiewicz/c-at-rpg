@@ -18,11 +18,11 @@
  *  7. `restoreLife` amounts are >= 1 (its runtime graying — disabled when no
  *     living cat is below 9 Lives — lives in resolve.isOptionAvailable).
  */
-import type { Effect, EventOption, GameEvent } from "../types";
-import { resolveScalar } from "./resolve";
-import { ENEMIES } from "../../content/enemies";
-import { CONSUMABLES } from "../../content/consumables";
-import { EQUIP_DEFS } from "../../content/equipment";
+import type { Effect, EventOption, GameEvent } from "../types.js";
+import { resolveScalar } from "./resolve.js";
+import { ENEMIES } from "../../content/enemies.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { EQUIP_DEFS } from "../../content/equipment.js";
 
 export interface ValidateDeps {
   enemyIds?: ReadonlySet<string>;

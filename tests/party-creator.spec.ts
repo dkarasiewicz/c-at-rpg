@@ -16,35 +16,35 @@
  *  - customParty survives the serializeRun/deserializeRun roundtrip.
  */
 import { afterEach, describe, expect, it } from "vitest";
-import type { Stats } from "../src/core/types";
+import type { Stats } from "../src/core/types.js";
 import {
   generateCurrentFloor,
   newRun,
   PARTY_ORDER,
-} from "../src/core/run/runState";
+} from "../src/core/run/runState.js";
 import {
   effectiveStats,
   growthStats,
   maxHp,
   skillsForLevel,
-} from "../src/core/run/party";
-import { deserializeRun, serializeRun } from "../src/core/run/save";
-import { lookupSkill } from "../src/core/combat/state";
-import { createBattle } from "../src/core/combat/setup";
-import { startRound } from "../src/core/combat/turns";
+} from "../src/core/run/party.js";
+import { deserializeRun, serializeRun } from "../src/core/run/save.js";
+import { lookupSkill } from "../src/core/combat/state.js";
+import { createBattle } from "../src/core/combat/setup.js";
+import { startRound } from "../src/core/combat/turns.js";
 import type {
   PoweredBattleSetup,
   PoweredBattleState,
-} from "../src/core/combat/powerTypes";
-import { mulberry32 } from "../src/core/rng";
-import { CLASSES } from "../src/content/classes";
-import { SKILLS } from "../src/content/skills";
-import { CAT_POWERS } from "../src/content/powers";
-import type { GeneratedCatKit, GmRole } from "../src/services/gmTypes";
+} from "../src/core/combat/powerTypes.js";
+import { mulberry32 } from "../src/core/rng.js";
+import { CLASSES } from "../src/content/classes.js";
+import { SKILLS } from "../src/content/skills.js";
+import { CAT_POWERS } from "../src/content/powers.js";
+import type { GeneratedCatKit, GmRole } from "../src/services/gmTypes.js";
 import {
   applyPartyContent,
   mapKitsToCustomParty,
-} from "../src/ui/scenes/partyCreator";
+} from "../src/ui/scenes/partyCreator.js";
 
 /* ------------------------------------------------------------------ */
 /* fixtures                                                            */

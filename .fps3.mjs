@@ -1,0 +1,14 @@
+import { chromium } from "playwright";
+const url = process.argv[2];
+const browser = await chromium.launch();
+const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
+page.on("pageerror", e => console.log("PAGEERROR", e.message));
+page.on("framenavigated", f => console.log("NAV", f.url()));
+await page.goto(url, { waitUntil: "networkidle" });
+await page.waitForTimeout(1500);
+await page.mouse.click(640, 360); await page.waitForTimeout(800);
+console.log("scene", await page.evaluate(() => window.__scene && window.__scene()));
+await page.keyboard.press("Enter");
+await page.waitForTimeout(2500);
+console.log("scene", await page.evaluate(() => window.__scene && window.__scene()));
+await browser.close();

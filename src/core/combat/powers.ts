@@ -56,7 +56,7 @@ import type {
   Combatant,
   Rng,
   StatusId,
-} from "../types";
+} from "../types.js";
 import type {
   EffectSpec,
   InteractionRule,
@@ -68,9 +68,9 @@ import type {
   PowersState,
   PowerTargetSel,
   PowerTrigger,
-} from "./powerTypes";
-import { ENEMIES } from "../../content/enemies";
-import { roundHalfUp } from "../util";
+} from "./powerTypes.js";
+import { ENEMIES } from "../../content/enemies.js";
+import { roundHalfUp } from "../util.js";
 import {
   byId,
   hasStatus,
@@ -79,9 +79,9 @@ import {
   living,
   opposite,
   repositionWithin,
-} from "./state";
-import { applyStatus, cleanseOne } from "./status";
-import { checkPhase, chipPoise, isBoss } from "./boss";
+} from "./state.js";
+import { applyStatus, cleanseOne } from "./status.js";
+import { checkPhase, chipPoise, isBoss } from "./boss.js";
 
 /* ------------------------------------------------------------------------ */
 /* Budget lint — powerBudget() + caps (stand-powers.md §Balance)             */

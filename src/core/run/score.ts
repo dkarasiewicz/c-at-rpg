@@ -6,7 +6,7 @@
  * ×300, shinies×5, catPiles×20, livesRemaining×25 (victory only), victory
  * bonus 1000. Time is shown, never scored.
  */
-import type { ScoreCounters } from "../types";
+import type { ScoreCounters } from "../types.js";
 
 export const SCORE_MULT = {
   floorsCleared: 100,

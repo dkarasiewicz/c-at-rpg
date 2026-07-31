@@ -5,7 +5,7 @@
  * Request: { pairKey, powers: [PowerScript, PowerScript], sessionId? }.
  *  - pool hit  → the stored InteractionRule|null row, no model call;
  *  - pool miss → compile via structured outputs (GM_MODEL, default
- *    claude-haiku-4-5), validate with the core power budget lint at the
+ *    anthropic/claude-haiku-4.5), validate with the core power budget lint at the
  *    resonance cap, store { pairKey, version, json|null, flavor, announce,
  *    first_discovered_by } in the keyed `interactions` table.
  *
@@ -19,22 +19,23 @@ import type {
   InteractionRule,
   PowerScript,
   StoredInteraction,
-} from "../../src/services/gmTypes";
-import { getAnthropicGen, gmModel } from "../_lib/anthropic";
+} from "../../src/services/gmTypes.js";
+import { getAnthropicGen, gmModel } from "../_lib/anthropic.js";
 import {
   GmGenerationError,
   generateValidated,
   type LintResult,
   type StructuredGenClient,
-} from "../_lib/generate";
+} from "../_lib/generate.js";
 import {
   errorJson,
   json,
   rateLimit,
   readJson,
   requirePost,
-} from "../_lib/http";
-import { getPool, type PoolStore } from "../_lib/pool";
+  vercelHandler,
+} from "../_lib/http.js";
+import { getPool, type PoolStore } from "../_lib/pool.js";
 import {
   BUDGET_CAPS,
   EFFECT_CAPS,
@@ -44,7 +45,7 @@ import {
   normalizePower,
   POWER_FRAMEWORK_VERSION,
   resonancePairKey,
-} from "../_lib/powers";
+} from "../_lib/powers.js";
 
 /* ------------------------------------------------------------------------ */
 /* JSON schema                                                               */
@@ -292,7 +293,7 @@ export function createResonanceHandler(deps: ResonanceDeps) {
 
 let deps: ResonanceDeps | null = null;
 
-export default async function handler(req: Request): Promise<Response> {
+export default vercelHandler(async (req) => {
   deps ??= { gen: getAnthropicGen(), pool: getPool() };
   return createResonanceHandler(deps)(req);
-}
+});

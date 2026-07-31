@@ -8,11 +8,11 @@
  * wearer at 6 Energy instead of 4; `energyNextBattle` bonuses stack on top,
  * capped at the cat's enMax).
  */
-import type { BattleSetup, BattleState, Combatant } from "../types";
-import type { PoweredBattleState } from "./powerTypes";
-import { initPowersState } from "./powers";
-import { ENEMIES } from "../../content/enemies";
-import { clamp } from "../util";
+import type { BattleSetup, BattleState, Combatant } from "../types.js";
+import type { PoweredBattleState } from "./powerTypes.js";
+import { initPowersState } from "./powers.js";
+import { ENEMIES } from "../../content/enemies.js";
+import { clamp } from "../util.js";
 
 export function createBattle(setup: BattleSetup): BattleState {
   const combatants: Combatant[] = [];

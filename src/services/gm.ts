@@ -14,8 +14,8 @@
  *
  * Not wired into any scene yet — see docs/GM-DEPLOY.md "UI wiring plan".
  */
-import type { Effect, GameEvent, Skill, Stats } from "../core/types";
-import { validateEvents } from "../core/events/validate";
+import type { Effect, GameEvent, Skill, Stats } from "../core/types.js";
+import { validateEvents } from "../core/events/validate.js";
 import type {
   GeneratedCatKit,
   GeneratedEquip,
@@ -30,7 +30,7 @@ import type {
   GmSteerRequest,
   InteractionRule,
   PowerScript,
-} from "./gmTypes";
+} from "./gmTypes.js";
 
 const TIMEOUT_MS = 8000;
 

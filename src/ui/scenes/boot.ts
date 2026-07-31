@@ -1,22 +1,32 @@
 /**
- * WP-09 — boot scene (ARCHITECTURE.md §1, gameloop.md §1): black screen,
- * procedural paw-print logo, "click to start". Satisfies the browser
- * pointer-unlock requirement; no asset loading — everything is procedural.
- * Any click or key → title.
+ * WP-09 — boot scene (ARCHITECTURE.md §1, gameloop.md §1): the pointer-
+ * unlock gate. Palette wash + vignette from the shared chrome kit, the gold
+ * paw mark, the wordmark and a pulsing "click to start" prompt. No asset
+ * loading; any click or key → title.
+ *
+ * Chrome comes entirely from the kit (widgets.ts): `sceneBackdrop`,
+ * `vignette`, `heading`, `label`. Nothing here draws its own rectangle or
+ * invents a type style — see scenes/results.ts for the reference shape.
  */
-import { Container, Graphics, Text } from "pixi.js";
-import { PAL } from "../palette";
-import { ui, mono } from "../textStyles";
-import { drawPaw } from "../draw/cats";
-import { DESIGN_H, DESIGN_W } from "../layout";
-import { layer, type GameCtx, type Scene } from "../sceneManager";
+import { Container, Graphics } from "pixi.js";
+import { PAL } from "../palette.js";
+import { drawPaw } from "../draw/cats.js";
+import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
+import { TYPE } from "../textStyles.js";
+import { heading, label, sceneBackdrop, vignette } from "../widgets.js";
+import { layer, type GameCtx, type Scene } from "../sceneManager.js";
+
+/** Vertical rhythm (design px) — the paw mark is the optical center. */
+const PAW_Y = DESIGN_H / 2 - 56;
+const WORDMARK_Y = DESIGN_H / 2 + 44;
+const PROMPT_Y = DESIGN_H / 2 + 116;
 
 export function createBootScene(): Scene {
   const view = new Container();
   let ctx: GameCtx | null = null;
   let started = false;
   let t = 0;
-  let prompt: Text | null = null;
+  let prompt: Container | null = null;
 
   const start = (): void => {
     if (started || !ctx) return;
@@ -28,40 +38,49 @@ export function createBootScene(): Scene {
     mount(root, gameCtx) {
       ctx = gameCtx;
 
-      const black = new Graphics()
-        .rect(0, 0, DESIGN_W, DESIGN_H)
-        .fill(PAL.void);
-      black.eventMode = "static";
-      black.cursor = "pointer";
-      black.on("pointerdown", start);
-      view.addChild(black);
+      // 'scene:boot' is intentionally unpublished: the kit falls back to the
+      // palette wash, which IS the boot look (fail-soft by design).
+      const backdrop = sceneBackdrop("scene:boot", DESIGN_W, DESIGN_H);
+      view.addChild(backdrop, vignette(DESIGN_W, DESIGN_H, 0.9));
 
-      // big gold paw logo (drawPaw is a 7×7 glyph at scale 1 → ~12× here)
+      // the whole screen is the click target (browser pointer unlock)
+      const hit = new Graphics()
+        .rect(0, 0, DESIGN_W, DESIGN_H)
+        .fill({ color: PAL.void, alpha: 0.001 });
+      hit.eventMode = "static";
+      hit.cursor = "pointer";
+      hit.on("pointerdown", start);
+      view.addChild(hit);
+
+      // gold paw mark (drawPaw is a 7×7 glyph at scale 1 → ~12× here)
       const paw = new Graphics();
       drawPaw(paw, 0, 0, 12, true);
-      paw.position.set(DESIGN_W / 2, DESIGN_H / 2 - 40);
+      paw.position.set(DESIGN_W / 2, PAW_Y);
       view.addChild(paw);
 
-      const title = new Text({
-        text: "c(at)rpg",
-        style: mono(22, { fill: PAL.textDim }),
+      const wordmark = heading("c(at)rpg", 2, {
+        center: true,
+        fill: PAL.textDim,
       });
-      title.anchor.set(0.5);
-      title.position.set(DESIGN_W / 2, DESIGN_H / 2 + 52);
-      view.addChild(title);
+      wordmark.position.set(DESIGN_W / 2, WORDMARK_Y);
 
-      prompt = new Text({
-        text: "click to start",
-        style: ui(18, { fill: PAL.text }),
+      const eyebrow = heading("A CRPG OF CONSIDERABLE FLUFFINESS", 3, {
+        center: true,
       });
-      prompt.anchor.set(0.5);
-      prompt.position.set(DESIGN_W / 2, DESIGN_H / 2 + 110);
-      view.addChild(prompt);
+      eyebrow.position.set(DESIGN_W / 2, WORDMARK_Y + SPACE.xl);
+
+      prompt = label("click to start", {
+        center: true,
+        size: TYPE.body,
+      });
+      prompt.position.set(DESIGN_W / 2, PROMPT_Y);
+      view.addChild(wordmark, eyebrow, prompt);
 
       layer(root, "hud").addChild(view);
     },
 
     unmount() {
+      prompt = null;
       view.destroy({ children: true });
     },
 

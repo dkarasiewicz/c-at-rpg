@@ -28,10 +28,10 @@ import type {
   Rng,
   Skill,
   StatusId,
-} from "../types";
-import { SKILLS } from "../../content/skills";
-import { CONSUMABLES } from "../../content/consumables";
-import { roundHalfUp } from "../util";
+} from "../types.js";
+import { SKILLS } from "../../content/skills.js";
+import { CONSUMABLES } from "../../content/consumables.js";
+import { roundHalfUp } from "../util.js";
 import {
   byId,
   cloneState,
@@ -45,8 +45,8 @@ import {
   swapRanks,
   traitTier,
   validTargets,
-} from "./state";
-import { applyStatus, removeStatus, turnStartStatusPhase } from "./status";
+} from "./state.js";
+import { applyStatus, removeStatus, turnStartStatusPhase } from "./status.js";
 import {
   bossDataOf,
   canSummon,
@@ -54,9 +54,9 @@ import {
   chipPoise,
   doSummon,
   isBoss,
-} from "./boss";
-import { fleeChance, processDeathsAndOutcome } from "./turns";
-import { consultAllyKOs, consultPower, reclonePowers } from "./powers";
+} from "./boss.js";
+import { fleeChance, processDeathsAndOutcome } from "./turns.js";
+import { consultAllyKOs, consultPower, reclonePowers } from "./powers.js";
 
 export interface ResolveResult {
   state: BattleState;
