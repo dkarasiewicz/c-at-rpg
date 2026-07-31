@@ -134,13 +134,56 @@ export function isDmAvailable(): boolean {
 }
 
 /**
- * Give up on the DM for the rest of the session (a turn timed out, a session
- * 404'd, the deployment vanished mid-run). The affordance disappears; the
- * encounter carries on with authored content.
+ * Consecutive transport failures. ONE bad turn must not kill the DM for the
+ * rest of the run: a player reported the typed-action button and the narration
+ * area both vanishing mid-session, and the cause was a single turn exceeding
+ * the client budget while the deployed agent legitimately takes 13-21s. The
+ * affordance disappearing is correct when the DM is genuinely gone and
+ * infuriating when it is merely slow, and from the player's side those look
+ * identical — so require corroboration before giving up.
+ */
+let consecutiveFailures = 0;
+const FAILURES_BEFORE_GIVING_UP = 2;
+/** After this long, a written-off DM earns one more chance. */
+const DM_RETRY_AFTER_MS = 90_000;
+let gaveUpAt = 0;
+
+/**
+ * Report a failed turn. The DM is only written off after
+ * `FAILURES_BEFORE_GIVING_UP` in a row; a single timeout or blip is forgiven,
+ * because the next turn usually succeeds.
  */
 export function markDmUnreachable(): void {
+  consecutiveFailures += 1;
+  if (consecutiveFailures < FAILURES_BEFORE_GIVING_UP) return;
   reachable = false;
+  gaveUpAt = Date.now();
   probeResult = Promise.resolve(false);
+}
+
+/** A turn came back. Forgive the earlier stumbles. */
+export function markDmAlive(): void {
+  consecutiveFailures = 0;
+  reachable = true;
+}
+
+/**
+ * Should we re-probe a DM we previously wrote off? Called by the UI when it is
+ * about to decide whether to offer the typed-action affordance, so a run that
+ * lost the DM to a slow patch can get it back rather than staying mute to the
+ * end.
+ */
+export function dmDeservesAnotherChance(): boolean {
+  return (
+    !reachable && gaveUpAt !== 0 && Date.now() - gaveUpAt > DM_RETRY_AFTER_MS
+  );
+}
+
+/** Clear the write-off so the next `probeDm()` actually asks. */
+export function retryDm(): void {
+  consecutiveFailures = 0;
+  gaveUpAt = 0;
+  probeResult = null;
 }
 
 /** Test hook: forget the cached probe verdict. */
@@ -246,6 +289,13 @@ export function collectToolCalls(
     if (name === "") continue;
     out.push({ name, input: isRecord(a.input) ? a.input : {} });
   }
+}
+
+/** Does this schema describe an encounter verdict (allowed + narration)? */
+export function wantsVerdict(schema: Record<string, unknown>): boolean {
+  const props = schema.properties;
+  if (!isRecord(props)) return false;
+  return "allowed" in props && "narration" in props;
 }
 
 /**
@@ -452,8 +502,20 @@ export async function sendDmTurn(
     // correct answer — the caller re-lints it either way, so a wrong guess
     // costs exactly what a missing result costs.
     if (data === undefined && turn.outputSchema !== undefined) {
-      data = parseEmbeddedJson(text) ?? verdictFromToolCalls(toolCalls, text);
+      data = parseEmbeddedJson(text);
+      // The tool-call reconstruction below can only produce a VERDICT, so it
+      // must only run for a verdict request. A party or resonance one-shot
+      // asks for a completely different shape, and handing its lint a verdict
+      // would waste a regeneration round on data that was never going to fit.
+      if (
+        data === undefined &&
+        isRecord(turn.outputSchema) &&
+        wantsVerdict(turn.outputSchema)
+      ) {
+        data = verdictFromToolCalls(toolCalls, text);
+      }
     }
+    markDmAlive(); // a turn came back: forgive any earlier stumble
     return { data, text, session: next };
   } catch {
     return null;

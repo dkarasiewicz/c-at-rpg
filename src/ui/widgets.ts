@@ -9,10 +9,13 @@
  *
  *   panel(w, h, opts)                  the one panel look
  *   avatar(classId, size, opts)        the one cat face (painted first!)
- *   enemyAvatar(speciesId, size, opts) the one enemy face
+ *   enemyAvatar(speciesId, size, opts) the one enemy face (+ `unknown`)
  *   bar(w, h, { kind })                the one HP/Energy/XP/Poise bar
  *   heading(text, level) / label(text) the one type scale
  *   button(label, w, h, onTap, opts)   the one interactive button
+ *   iconTile(id, size, opts)           the one framed art tile
+ *   statusGlyph(id, size)              the one status mark
+ *   makeStatusChip(id, value, opts)    the one status chip
  *   vignette / scrim / sceneBackdrop   cheap full-screen atmosphere
  *
  * Rules the kit keeps for you:
@@ -47,7 +50,12 @@ import { isTouch, padHit } from "./touch.js";
 import { drawCatPortrait, drawPaw } from "./draw/cats.js";
 import { drawEnemy } from "./draw/enemies.js";
 import { makeBustSprite } from "./draw/spriteFrame.js";
-import { enemyTexture, portraitTexture, spriteTextureFor } from "./sprites.js";
+import {
+  enemyTexture,
+  hasSprite,
+  portraitTexture,
+  spriteTextureFor,
+} from "./sprites.js";
 
 /** Status chip glyphs + fills (ui-art §2). */
 export const STATUS_STYLE: Record<StatusId, { glyph: string; color: number }> =
@@ -59,8 +67,15 @@ export const STATUS_STYLE: Record<StatusId, { glyph: string; color: number }> =
     provoked: { glyph: ">", color: PAL.stProvoked },
     mending: { glyph: "+", color: PAL.stMending },
     // balance-and-meta.md §1: post-Off-Balance immunity window
-    braced: { glyph: "=", color: PAL.stGuarded },
+    braced: { glyph: "=", color: PAL.stBraced },
   };
+
+/**
+ * Manifest id of a status's painted glyph. The art pack draws these at 256²
+ * in the same hues as `STATUS_STYLE`, so a chip can swap the MONO letter for
+ * the picture without changing its colour language. Absent art = the letter.
+ */
+export const statusSpriteId = (id: StatusId): string => `status:${id}`;
 
 /**
  * What each status MEANS, in one line (enemy-intel.md §5: "never a bare icon
@@ -230,27 +245,74 @@ export interface StatusChipOpts {
 }
 
 /**
- * Status chip (ui-art §6): rounded-rect, status-colored fill, 1px darkened
- * outline, MONO glyph. Scratched/Mending show their stacked value as a small
- * numeral bottom-right; `duration` adds an `Nr` tail; `explain` makes the chip
- * tell you what it does instead of assuming you memorised the glyph.
+ * A status's mark at `size`×`size`, centered on the returned container's
+ * ORIGIN: the painted `status:*` glyph when the art pack has it, the MONO
+ * letter from `STATUS_STYLE` when it does not. Anything that today prints a
+ * bare status letter (turn-strip markers, threat previews) should call this
+ * so the two never disagree.
+ */
+export function statusGlyph(
+  id: StatusId,
+  size: number,
+  opts: { fill?: number } = {},
+): Container {
+  const view = new Container();
+  const tex = spriteTextureFor(statusSpriteId(id));
+  if (tex && tex.width > 0 && tex.height > 0) {
+    const sp = new Sprite({ texture: tex, anchor: 0.5 });
+    sp.width = size;
+    sp.height = size;
+    view.addChild(sp);
+    return view;
+  }
+  const t = new Text({
+    text: STATUS_STYLE[id].glyph,
+    style: mono(Math.max(7, Math.round(size * 0.92)), {
+      fill: opts.fill ?? PAL.text,
+    }),
+  });
+  t.anchor.set(0.5);
+  view.addChild(t);
+  return view;
+}
+
+/**
+ * Status chip (ui-art §6). Two looks, one silhouette:
+ *
+ *  • PAINTED (art pack present) — a dark plate in the status's own hue with a
+ *    1px lit edge of it, and the `status:*` glyph on top at full colour. The
+ *    picture is what carries the meaning; the plate is only there so the
+ *    glyph sits on a consistent value and reads over any backdrop.
+ *  • FALLBACK (no art) — exactly today's chip: solid status-coloured fill,
+ *    darkened outline, MONO letter.
+ *
+ * Both share geometry, so `duration`, the stacked numeral and the tap-to-
+ * explain tooltip are identical either way. Scratched/Mending show their
+ * stacked value as a small numeral bottom-right; `duration` adds an `Nr`
+ * tail; `explain` makes the chip tell you what it does instead of assuming
+ * you memorised the glyph.
  */
 export function makeStatusChip(
   id: StatusId,
   value?: number,
   opts: StatusChipOpts = {},
 ): Container {
-  const { glyph, color } = STATUS_STYLE[id];
+  const { color } = STATUS_STYLE[id];
   const s = opts.size ?? 16;
   const chip = new Container();
+  const painted = hasSprite(statusSpriteId(id));
   chip.addChild(
-    new Graphics()
-      .roundRect(0, 0, s, s, RADIUS.chip)
-      .fill(color)
-      .stroke({ width: 1, color: darken(color) }),
+    painted
+      ? new Graphics()
+          .roundRect(0, 0, s, s, RADIUS.chip)
+          .fill({ color: mix(color, PAL.void, 0.74), alpha: 0.96 })
+          .stroke({ width: 1, color: mix(color, PAL.void, 0.25) })
+      : new Graphics()
+          .roundRect(0, 0, s, s, RADIUS.chip)
+          .fill(color)
+          .stroke({ width: 1, color: darken(color) }),
   );
-  const g = new Text({ text: glyph, style: mono(Math.round(s * 0.75)) });
-  g.anchor.set(0.5);
+  const g = statusGlyph(id, painted ? s : Math.round(s * 0.82));
   g.position.set(s / 2, s / 2);
   chip.addChild(g);
   const stacked = value ?? opts.value;
@@ -258,6 +320,17 @@ export function makeStatusChip(
     const v = new Text({ text: String(stacked), style: mono(9) });
     v.anchor.set(1, 1);
     v.position.set(s, s + 1);
+    // A painted glyph fills the whole chip, so the stacked numeral needs its
+    // own ground to stay readable on top of it (the flat fallback fill has
+    // plenty of contrast already).
+    if (painted) {
+      const wv = Math.ceil(v.width) + 3;
+      chip.addChild(
+        new Graphics()
+          .roundRect(s - wv, s - 10, wv, 11, 2)
+          .fill({ color: PAL.void, alpha: 0.72 }),
+      );
+    }
     chip.addChild(v);
   }
   if (opts.duration !== undefined && opts.duration > 0) {
@@ -464,6 +537,66 @@ export function makeSpriteIcon(id: string, size: number): Sprite | null {
   icon.width = size;
   icon.height = size;
   return icon;
+}
+
+export interface IconTileOpts {
+  /** Plate + border colour (default PAL.border). */
+  accent?: number;
+  /** Dim the whole tile — unusable skills, unequippable gear. */
+  dim?: boolean;
+  /** Draw the dark plate behind the art (default true). */
+  plate?: boolean;
+  radius?: number;
+}
+
+/**
+ * THE art tile: a generated icon (`skill:*`, `equip:*`, `item:*`…) sitting on
+ * a small dark plate with a 1px edge, origin at the TOP-LEFT and spanning
+ * `size`×`size`.
+ *
+ * This is the one "art in a box" look — skill cards use it, and anything else
+ * that wants a framed icon rather than a bare floating sprite should too, so
+ * the icons in the busiest screen in the game all share a silhouette and the
+ * eye can scan the column instead of re-parsing each card.
+ *
+ * Returns NULL when the id has no texture, which is the caller's cue to keep
+ * its pre-art layout (the icons land incrementally; a missing one is normal).
+ */
+export function iconTile(
+  id: string,
+  size: number,
+  opts: IconTileOpts = {},
+): Container | null {
+  const tex = spriteTextureFor(id);
+  if (!tex || tex.width <= 0 || tex.height <= 0) return null;
+  const view = new Container();
+  const r = opts.radius ?? RADIUS.button;
+  if (opts.plate !== false) {
+    // Deliberately faint. The plate exists to line the icons up into a
+    // scannable column, not to draw a second border inside a card that
+    // already has one — anything heavier and six cards read as a grid of
+    // boxes instead of a row of pictures.
+    const plate = new Graphics()
+      .roundRect(0, 0, size, size, r)
+      .fill({ color: PAL.void, alpha: 0.26 });
+    if (opts.accent !== undefined) {
+      plate
+        .roundRect(0, 0, size, size, r)
+        .stroke({ width: 1, color: opts.accent, alpha: 0.85, alignment: 1 });
+    }
+    view.addChild(plate);
+  }
+  const sp = new Sprite({ texture: tex, anchor: 0.5 });
+  // 0.98 keeps the keyed art just clear of the plate's rounded corners
+  sp.width = size * 0.98;
+  sp.height = size * 0.98;
+  sp.position.set(size / 2, size / 2);
+  view.addChild(sp);
+  if (opts.dim === true) {
+    sp.tint = PAL.textDim;
+    view.alpha = 0.7;
+  }
+  return view;
 }
 
 /**
@@ -675,7 +808,19 @@ export interface AvatarOpts {
   frame?: boolean;
   /** 'circle' (default) or 'rounded' square. */
   shape?: "circle" | "rounded";
+  /**
+   * `enemyAvatar` only: this species has not been MET. Draws the shared
+   * `bestiary:unknown` silhouette instead of the real art, so an unearned
+   * bestiary entry is a shape with a question in it rather than an empty
+   * plate — and never a recognisable spoiler of the thing you have not
+   * fought. Falls back to a voided tint of the real art when that texture
+   * is missing (today's rendering).
+   */
+  unknown?: boolean;
 }
+
+/** Manifest id of the shared "not met yet" bestiary silhouette. */
+export const UNKNOWN_SPRITE_ID = "bestiary:unknown";
 
 /**
  * Shared avatar shell: backing disc, masked art, frame, ring, KO wash.
@@ -771,6 +916,15 @@ export function enemyAvatar(
   opts: AvatarOpts = {},
 ): Container {
   const content = new Container();
+  if (opts.unknown === true) {
+    const q = spriteTextureFor(UNKNOWN_SPRITE_ID);
+    if (q && q.width > 0 && q.height > 0) {
+      const sp = new Sprite({ texture: q, anchor: 0.5 });
+      sp.scale.set(size / Math.min(q.width, q.height));
+      content.addChild(sp);
+      return avatarShell(size, opts, content);
+    }
+  }
   const tex = enemyTexture(speciesId);
   // head-and-shoulders crop, not the whole aura-padded battle frame — fitting
   // the frame is what made turn-strip chips read as purple smudges

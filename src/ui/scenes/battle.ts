@@ -1225,16 +1225,29 @@ export function createBattleScene(): Scene {
         cost: skill.cost,
         ok: opt.ok,
         reason,
+        // one icon per skillId — the card art IS the skill (see the icon pack)
+        icon: `skill:${skill.id}`,
         ...(stand !== null ? { stand } : {}),
       };
     }
-    slots[4] = { kind: "guard", label: "Guard", ok: legal.canGuard };
-    const anyItem = listUsableItems().length > 0;
+    // Guard wears the status it applies, so the row of six cards never has a
+    // hole in the icon column and the mark on the card matches the mark that
+    // lands on the cat's head a moment later.
+    slots[4] = {
+      kind: "guard",
+      label: "Guard",
+      ok: legal.canGuard,
+      icon: "status:guarded",
+    };
+    const usable = listUsableItems();
+    const anyItem = usable.length > 0;
     slots[5] = {
       kind: "item",
       label: "Item",
       ok: anyItem,
       reason: "no usable items",
+      // the belt shows what is at the top of it; the flyout still lists all
+      ...(usable[0] ? { icon: `item:${usable[0].defId}` } : {}),
     };
     skillBar.set(slots);
     skillBar.setSelected(null);

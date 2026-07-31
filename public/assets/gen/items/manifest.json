@@ -191,6 +191,246 @@
    "w": 512,
    "h": 512
   },
+  "skill:binLidBulwark": {
+   "file": "skill-binLidBulwark.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:bite": {
+   "file": "skill-bite.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:bodySlam": {
+   "file": "skill-bodySlam.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:bottleCapFlick": {
+   "file": "skill-bottleCapFlick.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:boxAmbush": {
+   "file": "skill-boxAmbush.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:clawSwipe": {
+   "file": "skill-clawSwipe.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:dampSlap": {
+   "file": "skill-dampSlap.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:dumpsterDunk": {
+   "file": "skill-dumpsterDunk.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:dustBlast": {
+   "file": "skill-dustBlast.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:everyBoxAtOnce": {
+   "file": "skill-everyBoxAtOnce.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:fullUnravel": {
+   "file": "skill-fullUnravel.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:grizzledCuff": {
+   "file": "skill-grizzledCuff.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:hairballHex": {
+   "file": "skill-hairballHex.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:hex": {
+   "file": "skill-hex.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:hiss": {
+   "file": "skill-hiss.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:hoseWhack": {
+   "file": "skill-hoseWhack.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:junkyardToss": {
+   "file": "skill-junkyardToss.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:kneadTheKnots": {
+   "file": "skill-kneadTheKnots.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:laserZap": {
+   "file": "skill-laserZap.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:lidBash": {
+   "file": "skill-lidBash.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:maul": {
+   "file": "skill-maul.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:maxSuction": {
+   "file": "skill-maxSuction.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:nibble": {
+   "file": "skill-nibble.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:nineLivesNudge": {
+   "file": "skill-nineLivesNudge.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:ninthKnotCurse": {
+   "file": "skill-ninthKnotCurse.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:ovenSpring": {
+   "file": "skill-ovenSpring.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:peck": {
+   "file": "skill-peck.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:phantomCucumber": {
+   "file": "skill-phantomCucumber.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:pounce": {
+   "file": "skill-pounce.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:purrquake": {
+   "file": "skill-purrquake.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:ram": {
+   "file": "skill-ram.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:scepterBonk": {
+   "file": "skill-scepterBonk.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:scruffToss": {
+   "file": "skill-scruffToss.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:shiv": {
+   "file": "skill-shiv.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:snarlOfThreads": {
+   "file": "skill-snarlOfThreads.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:soothingPurr": {
+   "file": "skill-soothingPurr.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:spray": {
+   "file": "skill-spray.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:squirt": {
+   "file": "skill-squirt.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:summonVermin": {
+   "file": "skill-summonVermin.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:swoop": {
+   "file": "skill-swoop.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:theBigBark": {
+   "file": "skill-theBigBark.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:trashCompactor": {
+   "file": "skill-trashCompactor.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:trashToss": {
+   "file": "skill-trashToss.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:tripWire": {
+   "file": "skill-tripWire.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:warmLoafPress": {
+   "file": "skill-warmLoafPress.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:whiskerFeint": {
+   "file": "skill-whiskerFeint.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:yankOfYarn": {
+   "file": "skill-yankOfYarn.png",
+   "w": 512,
+   "h": 512
+  },
+  "skill:yarnSlam": {
+   "file": "skill-yarnSlam.png",
+   "w": 512,
+   "h": 512
+  },
   "status:braced": {
    "file": "status-braced.png",
    "w": 256,

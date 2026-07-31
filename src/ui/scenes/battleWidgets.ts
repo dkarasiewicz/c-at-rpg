@@ -42,11 +42,13 @@ import {
   button,
   enemyAvatar,
   heading,
+  iconTile,
   label,
   makeHotkeyChip,
   makePawRow,
   makeStatusChip,
   panel,
+  statusGlyph,
   vignette,
   sceneBackdrop,
   STATUS_STYLE,
@@ -876,11 +878,10 @@ export function makeRibbon(): Ribbon {
         wash.visible = false;
         box.addChild(wash);
         const frazzle = new Container();
-        const fz = new Text({
-          text: STATUS_STYLE.frazzled.glyph,
-          style: mono(16, { fill: PAL.stFrazzled }),
-        });
-        fz.anchor.set(0.5);
+        // the painted glyph when the art pack has it, the MONO 'z' when not —
+        // `statusGlyph` picks, so the strip can never disagree with the chip
+        // on the unit's own head
+        const fz = statusGlyph("frazzled", 18, { fill: PAL.stFrazzled });
         fz.position.set(CHIP / 2, CHIP / 2);
         frazzle.addChild(fz);
         frazzle.visible = false;
@@ -1080,6 +1081,13 @@ export interface SlotSpec {
   reason?: string;
   /** the owner's Stand name, shown as the card's eyebrow line. */
   stand?: string;
+  /**
+   * Manifest id of the card's art tile. Skills pass `skill:<skillId>`, Guard
+   * passes `status:guarded` (it is literally what the card applies) and the
+   * belt slot passes the top consumable's `item:*`. Absent art (or an absent
+   * id) simply means the pre-art full-width text layout.
+   */
+  icon?: string;
 }
 
 export interface SkillBar {
@@ -1138,8 +1146,20 @@ export function makeSkillBar(): SkillBar {
 }
 
 /**
- * One skill card (128×112). Reads top-down: hotkey + cost/cooldown, the
- * Stand eyebrow, the skill name, then the rank/range strip.
+ * One skill card (128×112).
+ *
+ * PRE-ART it reads straight down: hotkey + cost/cooldown, the Stand eyebrow,
+ * the skill name across the full width, then the rank/range strip.
+ *
+ * WITH ART the middle band is re-cut into two columns rather than having an
+ * icon shoved into the text: a 40px `iconTile` on the left at a FIXED
+ * baseline (y 44 on all six cards, so the row of icons is a single scannable
+ * column), the name beside it in a 66px column auto-fitted from 12px down so
+ * "TRASH COMPACTOR" never spills into the range strip. The header row and the
+ * strip are untouched, so cost, cooldown and rank legality stay exactly where
+ * a player's eye already knows to find them.
+ *
+ * No texture ⇒ the pre-art layout, verbatim.
  */
 function buildSlot(
   spec: SlotSpec | null,
@@ -1232,14 +1252,40 @@ function buildSlot(
     slot.addChild(eyebrow);
   }
 
-  // name (wraps to 2 lines)
+  // art tile + name. The tile is the card's anchor when it exists; without
+  // one the name keeps the full width it has always had.
+  const ART = 44;
+  const ART_X = SPACE.sm;
+  const ART_Y = 44;
+  const tile =
+    spec.icon !== undefined && spec.icon !== ""
+      ? iconTile(spec.icon, ART, {
+          dim: !spec.ok,
+          ...(selected ? { accent: PAL.gold } : {}),
+        })
+      : null;
+  if (tile) {
+    tile.position.set(ART_X, ART_Y);
+    slot.addChild(tile);
+  }
+  const nameX = tile ? ART_X + ART + 6 : SPACE.sm;
   const name = label(spec.label, {
-    size: 13,
+    size: tile ? 12 : 13,
     bold: true,
-    wrap: w - SPACE.sm * 2,
+    wrap: w - nameX - SPACE.sm,
     ...(spec.ok ? {} : { fill: PAL.textDim }),
   });
-  name.position.set(SPACE.sm, 44);
+  if (tile) {
+    // the two-column band is ART tall: shrink the type rather than let a
+    // three-line name run into the range strip, then centre what is left
+    // against the icon so a one-line and a two-line card look like siblings
+    for (let size = 12; size >= 9 && name.height > ART; size -= 0.5) {
+      name.style.fontSize = size;
+    }
+    name.position.set(nameX, ART_Y + Math.max(0, (ART - name.height) / 2));
+  } else {
+    name.position.set(nameX, 44);
+  }
   slot.addChild(name);
 
   // bottom row: range strip for skills, a one-liner for guard/item

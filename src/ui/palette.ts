@@ -86,6 +86,10 @@ export const PAL = {
   stGuarded: 0x5b7a9a, // glyph 'O'  (take -50%)
   stProvoked: 0xd9744f, // glyph '>'  (must target provoker)
   stMending: 0x5fd068, // glyph '+'  (regen)
+  // Braced (the post-Off-Balance immunity window) used to borrow stGuarded,
+  // which made the two chips the same colour on the same unit. Teal separates
+  // them and matches the painted `status:braced` glyph.
+  stBraced: 0x3fc1c9, // glyph '='  (immune to Off-Balance for a beat)
 
   // ---- shared chrome kit (widgets.ts panel/bar/avatar/backdrop) ----
   // Derived chrome tones, not new art colors: they only ever appear at low

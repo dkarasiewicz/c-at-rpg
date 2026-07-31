@@ -67,12 +67,13 @@ import {
   panel,
   scrim,
   sceneBackdrop,
+  UNKNOWN_SPRITE_ID,
   vignette,
 } from "../widgets.js";
 import { isTouch, padHit } from "../touch.js";
 import { makeIntelBlock, makeLevelChip, makeTierPill } from "../draw/intel.js";
 import { drawCat } from "../draw/cats.js";
-import { catTexture } from "../sprites.js";
+import { catTexture, hasSprite } from "../sprites.js";
 import { tween } from "../tween.js";
 import { randomSeed } from "./title.js";
 import { applyPartyContent } from "./partyCreator.js";
@@ -1021,15 +1022,21 @@ export class CatTownScene implements Scene {
         }),
       );
 
-      const face = enemyAvatar(id, 58, { shape: "rounded" });
+      // A SILHOUETTE, not a blank: you can see there is something there. With
+      // the art pack that is the painted `bestiary:unknown` plate (which
+      // carries its own question mark, so we do not stack a second one on
+      // it); without it, the old voided tint of the real art plus a "?".
+      const face = enemyAvatar(id, 58, {
+        shape: "rounded",
+        ...(seen ? {} : { unknown: true }),
+      });
       face.position.set(TILE_W / 2, 42);
-      if (!seen) {
-        // a SILHOUETTE, not a blank: you can see there is something there
+      if (!seen && !hasSprite(UNKNOWN_SPRITE_ID)) {
         face.tint = PAL.void;
         face.alpha = 0.75;
       }
       tile.addChild(face);
-      if (!seen) {
+      if (!seen && !hasSprite(UNKNOWN_SPRITE_ID)) {
         const q = label("?", { size: 28, bold: true, center: true, dim: true });
         q.position.set(TILE_W / 2, 42);
         tile.addChild(q);
@@ -1086,9 +1093,12 @@ export class CatTownScene implements Scene {
     const left = SPACE.lg;
     const top = 96;
 
-    const face = enemyAvatar(id, 148, { shape: "rounded" });
+    const face = enemyAvatar(id, 148, {
+      shape: "rounded",
+      ...(seen ? {} : { unknown: true }),
+    });
     face.position.set(left + 74, top + 74);
-    if (!seen) {
+    if (!seen && !hasSprite(UNKNOWN_SPRITE_ID)) {
       face.tint = PAL.void;
       face.alpha = 0.75;
     }

@@ -75,6 +75,7 @@ import {
   bar,
   button,
   heading,
+  iconTile,
   label,
   makePawRow,
   makeSpriteIcon,
@@ -1217,15 +1218,30 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
         fill: locked ? PAL.textDim : PAL.gold,
       });
       num.position.set(SPACE.sm, 6);
+      // The loadout chip is a skill card, so it wears the same art the battle
+      // bar will show — that is the whole point of picking here and fighting
+      // there. No art ⇒ the pre-art centred text block, unchanged.
+      const ART = 32;
+      const tile =
+        skillId !== null ? iconTile(`skill:${skillId}`, ART, {}) : null;
+      let textCx = sw / 2;
+      let textW = sw - SPACE.sm * 2;
+      if (tile) {
+        tile.position.set(SPACE.sm, (62 - ART) / 2);
+        chip.addChild(tile);
+        const left = SPACE.sm + ART + SPACE.sm;
+        textW = sw - left - SPACE.sm;
+        textCx = left + textW / 2;
+      }
       const nm = label(skillId ? skillName(skillId) : "— empty —", {
         bold: true,
         size: TYPE.small,
         center: true,
         fill: skillId ? PAL.text : PAL.textDim,
-        wrap: sw - SPACE.sm * 2,
+        wrap: textW,
         align: "center",
       });
-      nm.position.set(sw / 2, 24);
+      nm.position.set(textCx, 24);
       chip.addChild(num, nm);
       if (skillId) {
         const def = SKILLS[skillId];
@@ -1235,7 +1251,7 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
           dim: true,
           center: true,
         });
-        cost.position.set(sw / 2, 46);
+        cost.position.set(textCx, 46);
         chip.addChild(cost);
       }
       if (!locked && editable) {
@@ -1304,6 +1320,19 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
         : r.slot !== null
           ? PAL.gold
           : PAL.textDim;
+      // 24px art in front of every known skill: the list is 20+ rows long and
+      // the icon is what lets you find "the one with the box" without reading
+      // it. Unknown skills stay a dim plate — you have not learned the trick.
+      const ART = 24;
+      const tile = iconTile(`skill:${r.skillId}`, ART, { dim: !r.known });
+      let stateX = 40;
+      let nameX = 76;
+      if (tile) {
+        tile.position.set(SPACE.sm, (rh - 4 - ART) / 2);
+        row.addChild(tile);
+        stateX = 40 + ART;
+        nameX = 76 + ART;
+      }
       const state = label(stateText, {
         mono: true,
         size: TYPE.tiny,
@@ -1311,13 +1340,13 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
         fill: stateFill,
         center: true,
       });
-      state.position.set(40, 9);
+      state.position.set(stateX, 9);
       const nm = label(r.name, {
         bold: true,
         size: TYPE.small,
         fill: r.known ? PAL.text : PAL.textDim,
       });
-      nm.position.set(76, 7);
+      nm.position.set(nameX, 7);
       const cost = label(
         r.cooldown !== undefined
           ? `${r.cost} EN · CD ${r.cooldown}`
