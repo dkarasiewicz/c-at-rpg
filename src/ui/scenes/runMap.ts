@@ -136,7 +136,7 @@ import {
 import { isTouch, padHit, padHitCircle } from "../touch.js";
 import { drawChest, drawStairs } from "../draw/glyphs.js";
 import { catNameColor } from "../overlays/inventoryPanel.js";
-import { spriteTextureFor } from "../sprites.js";
+import { hasSprite, spriteTextureFor } from "../sprites.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 import type { LootOverlayParams } from "../overlays/loot.js";
 import type { BattleSceneParams } from "./battle.js";
@@ -1545,6 +1545,7 @@ export class RunMapScene implements Scene {
       enemies,
       encounterIndex: encounterIndexOf(node),
       isBoss: node.type === "boss",
+      isElite: node.type === "elite",
       nodeId: node.id,
     };
     this.ctx.scenes.goto("battle", params);
@@ -1585,7 +1586,19 @@ export class RunMapScene implements Scene {
     const w = 520;
     const h = 300;
     const box = new Container();
-    box.addChild(scrim(DESIGN_W, DESIGN_H, 0.55));
+    // The catnap gets its own warm room (`scene:treasure`'s sibling backdrop,
+    // fail-soft): the map behind it is a cold board, and "safe for a moment"
+    // is the whole point of the beat. Over it a lighter scrim than the bare
+    // one so the warmth survives, plus the standard vignette.
+    if (hasSprite("scene:rest")) {
+      box.addChild(
+        sceneBackdrop("scene:rest", DESIGN_W, DESIGN_H),
+        scrim(DESIGN_W, DESIGN_H, 0.42),
+        vignette(DESIGN_W, DESIGN_H, 0.85),
+      );
+    } else {
+      box.addChild(scrim(DESIGN_W, DESIGN_H, 0.55));
+    }
     const card = panel(w, h, { variant: "raised", accent: PAL.heal });
     card.position.set((DESIGN_W - w) / 2, (DESIGN_H - h) / 2);
     box.addChild(card);

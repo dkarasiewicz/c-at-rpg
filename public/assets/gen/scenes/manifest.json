@@ -51,6 +51,31 @@
       "w": 1600,
       "h": 907
     },
+    "scene:treasure": {
+      "file": "treasure.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:rest": {
+      "file": "rest.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:elite": {
+      "file": "elite.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:partyCreator": {
+      "file": "partyCreator.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:floorgen": {
+      "file": "floorgen.webp",
+      "w": 1600,
+      "h": 900
+    },
     "scene:landing": {
       "file": "landing.webp",
       "w": 1600,
@@ -128,8 +153,8 @@
     },
     "npc:peddler": {
       "file": "npc-peddler.png",
-      "w": 640,
-      "h": 640
+      "w": 384,
+      "h": 384
     },
     "scene:catTown": {
       "file": "catTown.webp",

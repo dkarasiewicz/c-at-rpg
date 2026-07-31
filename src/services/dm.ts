@@ -56,7 +56,7 @@ import {
 } from "./tabletop.js";
 
 /** One turn of the DM, including a subagent delegation. */
-export const DM_TURN_TIMEOUT_MS = 20_000;
+export const DM_TURN_TIMEOUT_MS = 35_000;
 /** The liveness probe. Short: a slow DM is an absent DM. */
 export const DM_PROBE_TIMEOUT_MS = 3_000;
 
@@ -224,6 +224,80 @@ function parseEvent(line: string): EveEvent | null {
  * its partner, ignoring braces inside strings, so a fenced ```json block, a
  * bare object, or an object with a sentence in front of it all parse.
  */
+/** One tool the agent invoked during a turn, as seen on the event stream. */
+export interface DmToolCall {
+  name: string;
+  input: Record<string, unknown>;
+}
+
+/**
+ * Harvest tool calls out of any stream event that carries an `actions` array
+ * (eve reports them on `step.started` / `step.completed`).
+ */
+export function collectToolCalls(
+  d: Record<string, unknown>,
+  out: DmToolCall[],
+): void {
+  const actions = d.actions;
+  if (!Array.isArray(actions)) return;
+  for (const a of actions) {
+    if (!isRecord(a)) continue;
+    const name = typeof a.toolName === "string" ? a.toolName : "";
+    if (name === "") continue;
+    out.push({ name, input: isRecord(a.input) ? a.input : {} });
+  }
+}
+
+/**
+ * Reconstruct an encounter verdict from the tools the agent called.
+ *
+ * WHY THIS EXISTS. The DM's system prompt is emphatically tools-first ("you may
+ * only change the world through your tools"), and that instruction reliably
+ * beats a requested `outputSchema`: measured against the deployed agent, 0 of 5
+ * structured turns produced a schema result — every one ended on `narrate` or
+ * an effect tool instead, and eve then failed the turn with
+ * OUTPUT_SCHEMA_NOT_FULFILLED. Upgrading the model did not help (Sonnet 5 was
+ * also 0/5, just slower and more consistently tool-happy), because a stronger
+ * model follows the dominant instruction *better*.
+ *
+ * The tool calls, however, carry exactly the information the verdict needs. So
+ * rather than fight the agent's nature, read what it actually did. Everything
+ * here is re-linted by the caller (`validateEncounterVerdict`), so a wrong
+ * guess costs precisely what a dropped turn costs — nothing extra.
+ */
+export function verdictFromToolCalls(
+  calls: readonly DmToolCall[],
+  text: string,
+): unknown {
+  if (calls.length === 0) return undefined;
+  const narrateCall = calls.find((c) => c.name === "narrate");
+  const narration =
+    typeof narrateCall?.input.text === "string" && narrateCall.input.text !== ""
+      ? narrateCall.input.text
+      : text.trim();
+  if (narration === "") return undefined;
+
+  const effects: unknown[] = [];
+  for (const call of calls) {
+    if (effects.length >= 3) break;
+    if (call.name === "apply_effect" && Array.isArray(call.input.effects)) {
+      // Already the engine's improvised-effect shape; the caller re-lints.
+      effects.push(...call.input.effects.slice(0, 3 - effects.length));
+    } else if (call.name === "adjust_shinies") {
+      const amount = call.input.amount;
+      // Only gains: the verdict's `shinies` member is non-negative, and a
+      // silently-dropped loss is safer than a sign flip that pays the player.
+      if (typeof amount === "number" && amount > 0) {
+        effects.push({ kind: "shinies", amount: Math.round(amount) });
+      }
+    }
+  }
+
+  // `narrate` carries the refusal signal in its tone.
+  const allowed = narrateCall?.input.tone !== "refusal";
+  return { allowed, narration, effects };
+}
+
 export function parseEmbeddedJson(text: string): unknown {
   const start = text.indexOf("{");
   if (start < 0) return undefined;
@@ -337,9 +411,11 @@ export async function sendDmTurn(
     let data: unknown = undefined;
     let text = "";
     let read = 0;
+    const toolCalls: DmToolCall[] = [];
     for await (const ev of ndjson(stream)) {
       read += 1;
       const d = ev.data ?? {};
+      collectToolCalls(d, toolCalls);
       switch (ev.type) {
         case "message.appended": {
           const delta =
@@ -376,7 +452,7 @@ export async function sendDmTurn(
     // correct answer — the caller re-lints it either way, so a wrong guess
     // costs exactly what a missing result costs.
     if (data === undefined && turn.outputSchema !== undefined) {
-      data = parseEmbeddedJson(text);
+      data = parseEmbeddedJson(text) ?? verdictFromToolCalls(toolCalls, text);
     }
     return { data, text, session: next };
   } catch {
@@ -591,7 +667,11 @@ export function encounterVerdictSchema(): Record<string, unknown> {
     required: string[] = Object.keys(props),
   ): Record<string, unknown> => ({
     type: "object",
-    properties: { kind: { type: "string", const: kind }, ...props },
+    // `enum: [kind]`, not `const: kind`. They mean the same thing, but the
+    // discriminator sits inside an `anyOf`, and constrained decoders support
+    // enum far more reliably than const there — a `const` discriminator is one
+    // of the ways this schema comes back OUTPUT_SCHEMA_NOT_FULFILLED.
+    properties: { kind: { type: "string", enum: [kind] }, ...props },
     required: ["kind", ...required],
   });
   return {

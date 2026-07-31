@@ -188,6 +188,12 @@ export interface BattleSceneParams {
   encounterIndex: number;
   isBoss?: boolean;
   /**
+   * Elite node fight. Purely presentational: the stage swaps the floor's own
+   * backdrop for the `scene:elite` ambush chokepoint so an elite reads as an
+   * ambush the moment the screen paints, before a single intent is declared.
+   */
+  isElite?: boolean;
+  /**
    * Run-map node this fight belongs to. Passed to `applyBattleResult`, which
    * ticks `floorsCleared` only on a victory at the floor's terminal node.
    * Event fights own no node and leave it out.
@@ -947,7 +953,9 @@ export function createBattleScene(): Scene {
   const buildBattlefield = (run: { floorNum: number }): void => {
     if (!bgC || !worldC || !bs) return;
 
-    stage = makeBattleStage(run.floorNum);
+    stage = makeBattleStage(run.floorNum, {
+      elite: params?.isElite === true,
+    });
     bgC.addChild(stage.back);
     worldC.addChild(stage.ground);
 

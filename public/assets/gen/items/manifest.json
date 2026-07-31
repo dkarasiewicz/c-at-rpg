@@ -1,8 +1,23 @@
 {
  "version": 1,
  "sprites": {
+  "bestiary:unknown": {
+   "file": "bestiary-unknown.png",
+   "w": 512,
+   "h": 512
+  },
   "equip:appliesAlwaysHit": {
    "file": "equip-appliesAlwaysHit.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:batteryCollar": {
+   "file": "equip-batteryCollar.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:bubbleWrapRuff": {
+   "file": "equip-bubbleWrapRuff.png",
    "w": 512,
    "h": 512
   },
@@ -31,6 +46,11 @@
    "w": 512,
    "h": 512
   },
+  "equip:flealessBand": {
+   "file": "equip-flealessBand.png",
+   "w": 512,
+   "h": 512
+  },
   "equip:fluffyCollar": {
    "file": "equip-fluffyCollar.png",
    "w": 512,
@@ -38,6 +58,11 @@
   },
   "equip:healsGrantMending": {
    "file": "equip-healsGrantMending.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:leadLinedCollar": {
+   "file": "equip-leadLinedCollar.png",
    "w": 512,
    "h": 512
   },
@@ -56,8 +81,18 @@
    "w": 512,
    "h": 512
   },
+  "equip:noNameTag": {
+   "file": "equip-noNameTag.png",
+   "w": 512,
+   "h": 512
+  },
   "equip:poiseChip2": {
    "file": "equip-poiseChip2.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:quiltedGorget": {
+   "file": "equip-quiltedGorget.png",
    "w": 512,
    "h": 512
   },
@@ -83,6 +118,16 @@
   },
   "equip:tinBell": {
    "file": "equip-tinBell.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:wardCollar": {
+   "file": "equip-wardCollar.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:wovenCollar": {
+   "file": "equip-wovenCollar.png",
    "w": 512,
    "h": 512
   },
@@ -145,6 +190,41 @@
    "file": "item-warmMilk.png",
    "w": 512,
    "h": 512
+  },
+  "status:braced": {
+   "file": "status-braced.png",
+   "w": 256,
+   "h": 256
+  },
+  "status:frazzled": {
+   "file": "status-frazzled.png",
+   "w": 256,
+   "h": 256
+  },
+  "status:guarded": {
+   "file": "status-guarded.png",
+   "w": 256,
+   "h": 256
+  },
+  "status:mending": {
+   "file": "status-mending.png",
+   "w": 256,
+   "h": 256
+  },
+  "status:offBalance": {
+   "file": "status-offBalance.png",
+   "w": 256,
+   "h": 256
+  },
+  "status:provoked": {
+   "file": "status-provoked.png",
+   "w": 256,
+   "h": 256
+  },
+  "status:scratched": {
+   "file": "status-scratched.png",
+   "w": 256,
+   "h": 256
   }
  }
 }

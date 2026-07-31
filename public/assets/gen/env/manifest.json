@@ -1,25 +1,15 @@
 {
   "version": 1,
   "sprites": {
-    "prop:chest": {
-      "file": "prop-chest.png",
-      "w": 512,
-      "h": 512
-    },
     "prop:chestOpen": {
       "file": "prop-chestOpen.png",
-      "w": 512,
-      "h": 512
-    },
-    "prop:eventSparkle": {
-      "file": "prop-eventSparkle.png",
-      "w": 512,
-      "h": 512
+      "w": 256,
+      "h": 256
     },
     "prop:hoardChest": {
       "file": "prop-hoardChest.png",
-      "w": 512,
-      "h": 512
+      "w": 256,
+      "h": 256
     },
     "node:fight": {
       "file": "node-fight.png",

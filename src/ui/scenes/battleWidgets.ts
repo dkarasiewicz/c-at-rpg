@@ -326,9 +326,20 @@ function hudWash(): Graphics {
  * and `ground` to the `world` layer BEFORE any unit, then call `update`
  * every frame.
  */
-export function makeBattleStage(floorNum: number): BattleStage {
+export function makeBattleStage(
+  floorNum: number,
+  opts: { elite?: boolean } = {},
+): BattleStage {
   const theme = themeFor(floorNum);
-  const id = `scene:battle:${floorNum}`;
+  // An elite is an AMBUSH, not another room on the floor: it gets the one
+  // shared `scene:elite` chokepoint (claw-gouged walls, hanging spiked
+  // collar, violet grate light) instead of the floor's own backdrop, so the
+  // fight reads as more dangerous before a single intent is declared.
+  // Fail-soft in the usual way — no elite art means the floor backdrop.
+  const id =
+    opts.elite === true && hasSprite("scene:elite")
+      ? "scene:elite"
+      : `scene:battle:${floorNum}`;
   const painted = hasSprite(id);
   const W = DESIGN_W + PARALLAX * 2;
   const H = DESIGN_H + PARALLAX * 2;

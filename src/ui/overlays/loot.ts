@@ -42,8 +42,11 @@ import {
   makePawRow,
   makeSpriteIcon,
   panel,
+  sceneBackdrop,
   scrim,
+  vignette,
 } from "../widgets.js";
+import { hasSprite } from "../sprites.js";
 import { layer, type GameCtx, type Overlay } from "../sceneManager.js";
 import {
   RARITY_COLOR,
@@ -113,6 +116,16 @@ const EYEBROWS: Record<LootVariant, string> = {
   boss: "THE HOARD IS YOURS",
 };
 
+/**
+ * Header emblem per variant — the keyed `prop:*` chest art from `env/`.
+ * `victory` deliberately has none: a battle's spoils are not a chest.
+ */
+const EMBLEM: Record<LootVariant, string | null> = {
+  chest: "prop:chestOpen",
+  victory: null,
+  boss: "prop:hoardChest",
+};
+
 /* ---- panel geometry (design px) --------------------------------------- */
 const PW = 640;
 const HEADER_H = 104;
@@ -120,6 +133,8 @@ const FOOTER_H = 88;
 const PAD = SPACE.xl;
 const MIN_H = 320;
 const MAX_H = 620;
+/** Header emblem side, design px (the prop art ships at 2× this). */
+const EMBLEM_SIZE = 84;
 
 type OverflowItem = EquipInstance | { defId: ItemId; count: number };
 
@@ -196,13 +211,36 @@ export class LootOverlay implements Overlay {
     this.view = view;
     layer(root, "modal").addChild(view);
 
-    const back = scrim(DESIGN_W, DESIGN_H, 0.72);
+    // A chest / boss hoard is opened AWAY from a battle: there is no painted
+    // stage under the overlay, so those two variants bring their own backdrop
+    // (`scene:treasure`, fail-soft) and lighten the scrim over it. The
+    // `victory` variant keeps the flat scrim — the battle stage behind it is
+    // already art and must not be doubled.
+    const painted = this.variant !== "victory" && hasSprite("scene:treasure");
+    if (painted) {
+      view.addChild(sceneBackdrop("scene:treasure", DESIGN_W, DESIGN_H));
+    }
+    const back = scrim(DESIGN_W, DESIGN_H, painted ? 0.55 : 0.72);
     back.eventMode = "static";
     view.addChild(back);
+    if (painted) view.addChild(vignette(DESIGN_W, DESIGN_H, 0.85));
 
     const card = panel(PW, ph, { variant: "raised", accent: PAL.gold });
     card.position.set(px, py);
     view.addChild(card);
+
+    // Header emblem: the keyed chest props (env/) earn their place here —
+    // the object the panel is about, on the panel. `victory` has none.
+    const emblemId = EMBLEM[this.variant];
+    if (emblemId !== null) {
+      const emblem = makeSpriteIcon(emblemId, EMBLEM_SIZE);
+      if (emblem) {
+        emblem.position.set(PAD + EMBLEM_SIZE / 2 - 6, HEADER_H / 2 - 4);
+        emblem.alpha = 0;
+        card.addChild(emblem);
+        tween(emblem, { alpha: 1 }, 320, "quadOut");
+      }
+    }
 
     const eyebrow = heading(EYEBROWS[this.variant], 3, { center: true });
     eyebrow.position.set(PW / 2, SPACE.lg);

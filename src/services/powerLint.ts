@@ -268,7 +268,7 @@ export const POWER_PREDICATE_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "pct"],
       properties: {
-        kind: { const: "hpBelowPct" },
+        kind: { type: "string", enum: ["hpBelowPct"] },
         pct: { type: "integer" },
       },
     },
@@ -277,7 +277,7 @@ export const POWER_PREDICATE_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "status"],
       properties: {
-        kind: { const: "targetHasStatus" },
+        kind: { type: "string", enum: ["targetHasStatus"] },
         status: { enum: STATUS_ENUM },
       },
     },
@@ -286,7 +286,7 @@ export const POWER_PREDICATE_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "ranks"],
       properties: {
-        kind: { const: "selfRank" },
+        kind: { type: "string", enum: ["selfRank"] },
         ranks: { type: "array", items: { type: "integer" } },
       },
     },
@@ -295,7 +295,7 @@ export const POWER_PREDICATE_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "n"],
       properties: {
-        kind: { const: "roundAtLeast" },
+        kind: { type: "string", enum: ["roundAtLeast"] },
         n: { type: "integer" },
       },
     },
@@ -304,7 +304,7 @@ export const POWER_PREDICATE_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "pct"],
       properties: {
-        kind: { const: "chance" },
+        kind: { type: "string", enum: ["chance"] },
         pct: { type: "integer" },
       },
     },
@@ -318,7 +318,7 @@ export const POWER_EFFECT_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "target", "pct"],
       properties: {
-        kind: { const: "damage" },
+        kind: { type: "string", enum: ["damage"] },
         target: { enum: TARGET_ENUM },
         pct: { type: "integer" },
       },
@@ -328,7 +328,7 @@ export const POWER_EFFECT_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "target", "pct"],
       properties: {
-        kind: { const: "heal" },
+        kind: { type: "string", enum: ["heal"] },
         target: { enum: TARGET_ENUM },
         pct: { type: "integer" },
       },
@@ -338,7 +338,7 @@ export const POWER_EFFECT_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "target", "status"],
       properties: {
-        kind: { const: "status" },
+        kind: { type: "string", enum: ["status"] },
         target: { enum: TARGET_ENUM },
         status: { enum: STATUS_ENUM },
         value: { type: "integer" },
@@ -349,7 +349,7 @@ export const POWER_EFFECT_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "target", "delta"],
       properties: {
-        kind: { const: "move" },
+        kind: { type: "string", enum: ["move"] },
         target: { enum: TARGET_ENUM },
         delta: { type: "integer" },
       },
@@ -359,7 +359,7 @@ export const POWER_EFFECT_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "target", "amount"],
       properties: {
-        kind: { const: "energy" },
+        kind: { type: "string", enum: ["energy"] },
         target: { enum: TARGET_ENUM },
         amount: { type: "integer" },
       },
@@ -369,7 +369,7 @@ export const POWER_EFFECT_SCHEMA = {
       additionalProperties: false,
       required: ["kind", "target", "status"],
       properties: {
-        kind: { const: "cleanse" },
+        kind: { type: "string", enum: ["cleanse"] },
         target: { enum: TARGET_ENUM },
         status: { enum: STATUS_ENUM },
       },
