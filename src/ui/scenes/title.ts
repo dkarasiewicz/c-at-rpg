@@ -104,7 +104,7 @@ export function createTitleScene(): Scene {
     // (Continue skips floorgen, the usual sync point)
     applyPartyContent(savedRun.customParty);
     ctx.run = savedRun;
-    ctx.scenes.goto("explore");
+    ctx.scenes.goto("runMap");
   };
 
   const openPartyCreator = (): void => {

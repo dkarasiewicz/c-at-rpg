@@ -9,14 +9,26 @@
     "lint": "eslint .",
     "dev": "vite",
     "test": "vitest run",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "typecheck:api": "tsc -p api/tsconfig.json",
+    "typecheck:agent": "tsc -p agent/tsconfig.json",
+    "dm:dev": "eve dev",
+    "dm:build": "eve build",
+    "dm:deploy": "eve deploy"
+  },
+  "engines": {
+    "node": ">=24"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.115.0",
-    "pixi.js": "^8.8.1"
+    "ai": "^7.0.44",
+    "eve": "^0.29.2",
+    "pixi.js": "^8.8.1",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@eslint/js": "^9.21.0",
+    "@types/node": "^24.13.3",
     "eslint": "^9.21.0",
     "eslint-config-prettier": "^10.1.2",
     "eslint-plugin-prettier": "^5.2.6",

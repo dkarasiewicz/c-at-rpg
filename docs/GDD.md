@@ -3,20 +3,31 @@
 **Status: CANONICAL.** This is the single source of truth. Where this document and a
 detail doc (`docs/design/*.md`) disagree, **GDD.md wins**. Where the GDD is silent,
 precedence among the detail docs is: `combat.md` first, then the doc that owns the
-system (`classes.md`, `dungeon.md`, `loot.md`, `events.md`, `gameloop.md`,
+system (`classes.md`, `run-map-and-dm.md`, `loot.md`, `events.md`, `gameloop.md`,
 `ui-art.md`). Every known cross-doc contradiction is ruled on below in the
 "Decisions & contradictions resolved" notes — implementers do not re-litigate them.
+
+> **`dungeon.md` is superseded** by `run-map-and-dm.md` §2: the tile maze, fog of
+> war and WASD stepping are gone from both the design and the codebase (§6). It is
+> still cited below for the three things that survived it — its RNG scheme (§2), its
+> per-floor knobs (§7.2) and its pack-building algorithm (§7.3) — and for the
+> enemy/boss stat blocks it authored. Likewise `gameloop.md` §1's FSM is superseded
+> by `run-map-and-dm.md` §5 (§9), and `gm-system.md`'s six stateless endpoints are
+> reframed by `run-map-and-dm.md` §4 into one persistent DM agent (§12).
 
 ---
 
 ## 1. Pitch
 
 A party of 4 named stray cats (Bruiser / Trickster / Hexer / Medic) descends through
-procedurally generated maze-like dungeon floors in a desktop browser. They explore
-tile-based levels with fog of war and visible roaming enemy packs, collect Shinies,
-gear, and snacks, fight turn-based JRPG battles built on a forced-movement combo
-system ("Off-Paw"), and occasionally hit short narrative events with dialog choices.
-One run = one sitting (35–45 min), roguelike restart on defeat.
+six seeded dungeon floors in a desktop browser. Each floor is a **run map** — a small
+painted node graph, entry on the left, boss or stairs on the right — and every step is
+a choice between 2–3 routes whose encounters are advertised by their icons. They
+collect Shinies, gear, and snacks, fight turn-based JRPG battles built on a
+forced-movement combo system ("Off-Paw"), and hit short narrative events with dialog
+choices. At **every** encounter, a fight included, the player may also just type what
+the party does and let the Dungeon Master adjudicate it (§12). One run = one sitting
+(35–45 min), roguelike restart on defeat.
 
 - **Tech:** PixiJS v8 + TypeScript, single player, keyboard + mouse, 60 fps.
 - **Art:** 100% procedural (Graphics + Text) — "Midnight Picture-Book": chunky flat
@@ -30,9 +41,13 @@ Design pillars (the whole game in four lines):
    amplifier for teammates; every class, enemy, and item hooks into it.
 2. **Attrition is the meta-game** — HP persists across a floor; Nine Lives pips only
    tick down; single fights are low-stakes slapstick, the run accumulates dread.
-3. **Everything visible, everything deterministic** — visible turn order, visible
-   roamers, no misses, no invisible random encounters, seeded everything.
-4. **Small but complete** — ~5–6k LoC total, zero assets, zero backend.
+3. **Everything visible, everything deterministic** — visible turn order, every node
+   on the map labelled before you walk into it, no misses, no invisible random
+   encounters, seeded everything.
+4. **Choosing is the gameplay** — walking from A to B is not; picking B is. The map
+   is a set of decisions, and the branches you sealed off stay visible.
+5. **Small but complete** — the game is fully playable with zero generated assets and
+   with no network at all; art and the DM are both enhancements, never requirements.
 
 ---
 
@@ -51,12 +66,14 @@ Design pillars (the whole game in four lines):
 | Currency | Shinies ✦, party-wide, cap 999, reset each run |
 | Equipment | 2 slots per cat (class weapon + universal trinket), rarities stray/sleek/pedigree/mewthical |
 | Inventory | 16 shared slots, consumables stack to 5 |
-| Seeding | `runSeed` is a **string**; `fnv1a` hash + `mulberry32` streams (dungeon.md §2) |
-| Battle RNG | `mulberry32(hash(runSeed, floor, encounterIndex))`, boss = index 0 |
-| Design resolution | 1280×720 virtual px, uniform scale + letterbox; tiles 48 px |
-| Fog | Chebyshev radius 3 whisker-light with Bresenham LOS + full-room light |
-| Descent heal | Free catnap `floor(0.25 × maxHP)` per living cat at each landing |
-| Flee | `clamp(0.4 + 0.05·(avgCatSpd−avgEnemySpd), 0.25, 0.9)`; fled pack stunned 5 steps |
+| Seeding | `runSeed` is a **string**; `fnv1a` hash + `mulberry32` streams (dungeon.md §2 — still canonical) |
+| Run map | 4–7 columns/floor, 1–4 nodes/column, ≤3 outgoing routes/node, no crossings, no dead ends |
+| Map RNG | `mulberry32(hash(runSeed, floor, 'map'))`; each node's payload seed is derived, never drawn |
+| Battle RNG | `mulberry32(hash(runSeed, floor, encounterIndex))`, boss = index 0, `encounterIndex` = node id |
+| Design resolution | 1280×720 virtual px, uniform scale + letterbox |
+| Descent heal | Free catnap `floor(0.25 × maxHP)` per living cat at a rest node and at each landing |
+| Flee | `clamp(0.4 + 0.05·(avgCatSpd−avgEnemySpd), 0.25, 0.9)`; a fled node is spent, not re-fought |
+| Improvisation cap | One typed action is priced as an `activated` power at `(2+floor)/8` of a full Stand power |
 | Item ids | camelCase (`tunaSnack`, `catnip`, `featherWand`, `cucumber`, …) |
 
 ---
@@ -66,21 +83,26 @@ Design pillars (the whole game in four lines):
 ```
         ┌────────────────────────────── run loop ──────────────────────────────┐
         │                                                                      │
- TITLE ─┴─► FLOORGEN ─► EXPLORE ──(touch roamer / lair)──► BATTLE ─victory─► LOOT + XP
+ TITLE ─┴─► FLOORGEN ─► RUN MAP ──(fight/elite/boss node)──► BATTLE ─victory─► LOOT + XP
  (seed)      (seeded     │  ▲                                 │                  │
-              maze +     │  └────────────── flee ─────────────┤                  │
-              entities)  │                                 defeat                │
-                         ├─(step on ? tile)─► EVENT ─► back───┼──────────────────┘
-                         ├─(bump chest)────► LOOT popup ─► back
-                         └─(stairs, floors 1–5)─► LANDING (catnap heal + Peddler
-                                                  + marching order) ─► FLOORGEN n+1
+             node graph) │  └───────── flee (node spent) ─────┤                  │
+                         │                                 defeat                │
+                         ├─(event node)────► EVENT ─────► back┼──────────────────┘
+                         ├─(shop node)─────► LANDING (Peddler only) ─► back
+                         ├─(treasure node)─► LOOT overlay ─► back
+                         ├─(rest node)─────► catnap panel, in place ─► back
+                         └─(terminal node cleared, floors 1–5)─► LANDING (catnap heal
+                                       + Peddler + The Den + marching order) ─► FLOORGEN n+1
                          floor 6 boss dead ─► RESULTS(victory) ─► TITLE / again
                          all cats KO'd or 0 Lives ─► RESULTS(defeat) ─► TITLE / again
 ```
 
-Minute-to-minute: **explore** (route around or bait visible patrols, grab chests in
-dead-end nooks) → **fight** (shove enemies Off-Balance, sequence teammates on the
-visible timeline, cash Cat Piles, spend HP you keep) → **spend** (Shinies at the
+Rest and treasure resolve **inside** the run-map scene, so they are not FSM states.
+
+Minute-to-minute: **choose** (the short path past two elites, or the long one with a
+shop — the branch you don't take closes visibly behind you) → **fight** (shove enemies
+Off-Balance, sequence teammates on the visible timeline, cash Cat Piles, spend HP you
+keep — or type a line and let the DM adjudicate it) → **spend** (Shinies at the
 Peddler, gear swaps, snacks) → **descend** (partial heal, deeper tier, repeat).
 Per-run arc: level 1→8, gear stray→mewthical, Lives 36→whatever's left, boss at 3,
 final boss at 6, score screen.
@@ -184,33 +206,64 @@ Four additive systems layered on top of the above (v1.1). Every new
 
 ---
 
-## 6. Dungeon Generation & Exploration — "Whisker Maze"
+## 6. The Run Map — "A Floor Is a Set of Choices"
 
-**Canonical doc: `dungeon.md` for all mechanics** (generation algorithm, RNG
-plumbing, fog, roamer AI, step loop) — **except its 9-floor run table, replaced
-below.** Floors are odd-sized grids generated by rooms-in-a-maze (scatter odd-aligned
-rooms → flood gaps with a windy perfect maze → spanning-tree doors + 5% loop doors →
-3 dead-end trim passes; surviving nooks get chests). Everything is decided at
-generation time from `genRng`/`popRng`; exploration consumes **zero** runtime RNG.
-The party is one token, 4-directional step movement (WASD/arrows, click-to-path);
-one discrete simulation step per move. Roamer packs patrol pre-rolled waypoints at
-half speed, chase at full speed on LOS (Chebyshev ≤ 6), give up after 6 lost-sight
-steps; contact (Manhattan ≤ 1) starts battle. Fled packs stun 5 party-steps. Fog:
-unseen / explored (dim, remembers static entities) / visible; roamers render only
-while visible. Boss floors: guaranteed 11×7 lair, one west door, boss as landmark,
-stairs locked until it dies, guaranteed `boss_hoard` chest.
+**Canonical doc: `run-map-and-dm.md` §2** (the graph contract, traversal rules,
+per-floor node budgets). `dungeon.md` is **SUPERSEDED** as a description of how a
+floor is laid out and traversed — its maze generator, fog of war and step loop are
+gone from the codebase — but three parts of it remain canonical and are still the
+reference: **§2's RNG design** (string `runSeed`, fnv1a + `mulberry32`, per-entity
+derived seeds), **§7.2's per-floor knobs**, and **§7.3's pack-building algorithm**.
 
-**Canonical 6-floor table** (replaces dungeon.md §1; same columns and semantics —
-chest counts exclude the boss-lair hoard chest):
+Each floor is a small **directed acyclic graph** drawn as a painted map: one entry
+node in column 0, a terminal node in the last column, and only forward edges (column
+n → column n+1). From the node it is standing on the party picks one of the 2–3
+outgoing routes; everything the choice sealed off is greyed and chained, because the
+regret is the point.
 
-| Floor | Name | Grid | roomAttempts | Roamers | Chests | Events | Pool | Threat budget | Boss |
-|---|---|---|---|---|---|---|---|---|---|
-| 1 | The Cellar | 31×21 | 40 | 4 | 2 | 1 | T1 | 3–4 | — |
-| 2 | The Drains | 31×21 | 40 | 5 | 2 | 1 | T1 | 4–5 | — |
-| 3 | The Appliance Graveyard | 27×19 | 30 | 3 | 3 | 1 | T1 ∪ T2 | 5–6 | **Vacuum King** |
-| 4 | The Undergarden | 35×23 | 55 | 6 | 3 | 2 | T2 | 6–8 | — |
-| 5 | The Cold Pantry | 35×23 | 55 | 7 | 3 | 2 | T2 ∪ T3 | 8–10 | — |
-| 6 | The Hollow Throne | 29×19 | 35 | 5 | 4 | 2 | T3 | 10–12 | **The Dogfather** |
+**Node types.** `fight` · `elite` (from floor 2, +3 threat budget) · `event` ·
+`shop` (the Peddler, stock rolled from the node's own seed) · `rest` (the catnap
+heal) · `treasure` (a chest roll) · `boss`. Every node advertises its type with an
+illustrated medallion, a type-coloured rim and a caption, so a route is a legible
+gamble rather than a coin flip.
+
+**Terminal node.** `bossId` is the last node on every floor: type `boss` on floors 3
+and 6, otherwise a stairs-guard `fight`. The way down opens only when it has actually
+fallen (`floorsCleared ≥ floorNum`) — fleeing the guard leaves the stairs shut and
+offers the fight again.
+
+**Graph invariants** (fuzzed over 30 000 generated maps): 4–7 columns; 1–4 nodes per
+column; edges only into the next column; ≤3 routes out of any node; **no crossing
+edges**; no dead ends; no orphans; every node reachable from the entry; every path
+ends at the terminal; ≥1 shop and ≥1 rest per floor; no elite before floor 2; never
+two adjacent rest nodes.
+
+**Determinism.** The graph is drawn on its own RNG stream,
+`mulberry32(hash(runSeed, floor, 'map'))`; each node's payload seed is *derived* from
+its id, never drawn, so what is in a node never depends on the order the party walked
+the map. Traversal itself consumes **zero** RNG. Same seed = same map, and the map is
+not saved — it regenerates from `(runSeed, floorNum)`, and the save carries only
+`currentNodeId` + `visitedNodeIds`.
+
+**Canonical 6-floor table.** Columns/rows are the authored map budget; the pools,
+threat budgets and bosses are unchanged from the tile crawl:
+
+| Floor | Name | Columns | Rows/col | Pool | Threat budget | Boss |
+|---|---|---|---|---|---|---|
+| 1 | The Cellar | 4–5 | 2–3 | T1 | 3–4 | — |
+| 2 | The Drains | 5–6 | 2–3 | T1 | 4–5 | — |
+| 3 | The Appliance Graveyard | 4–5 | 2–3 | T1 ∪ T2 | 5–6 | **Vacuum King** |
+| 4 | The Undergarden | 6–7 | 2–4 | T2 | 6–8 | — |
+| 5 | The Cold Pantry | 6–7 | 2–4 | T2 ∪ T3 | 8–10 | — |
+| 6 | The Hollow Throne | 5–6 | 2–3 | T3 | 10–12 | **The Dogfather** |
+
+Node-type mix is a per-floor weight table (`fight` dominant, `elite` unlocking on
+floor 2 and rising to 16% by floor 6), with `shop` and `rest` guaranteed at least
+once each.
+
+Density is **authored, not emergent**: per-floor node budgets replace the old
+`roamers`/`chests`/`events` counts, so pacing is designed rather than a side-effect
+of maze topology. The exact live numbers are `src/content/floors.ts` (`map` field).
 
 **Canonical enemy roster: dungeon.md §7.1's 10 species + sockWraith summon**
 (ratThug, sewerBat, dustBunny, crowShaman, roombaScout, sprinklerImp, yarnGolem
@@ -242,22 +295,26 @@ pack counts — never stat multipliers.
   heavy): **dungeon.md's block is canonical**; the "heavy preview" teaching job
   belongs to `yarnGolem`. events.md's `rat` id does not exist → **use `ratThug`**
   in the Perfect Box encounter. `elderStray` ships as specified in events.md.
-- **Encounters are roamers, not static entities** (dungeon.md wins over
-  gameloop.md's placed-encounter model) — visible, baitable patrols are the pitch.
-- **Seeding: dungeon.md's scheme wins** (string `runSeed`, fnv1a + mulberry32,
-  per-entity derived seeds `chestSeed`/`victorySeed`/`eventSeed`, gen/pop stream
-  discipline, deterministic retry). gameloop.md's numeric `hash32` tree is
-  superseded. Rationale: per-entity seeds make outcomes independent of play order;
-  gameloop/loot's single sequential "floor loot stream" would not be.
+- **The tile maze is CUT** (`run-map-and-dm.md` §1). A 31×21 grid produced mostly
+  unvisited corridor: the screen was black, the minimap was blank, and WASD travel
+  added time without adding a decision. Encounters are now **nodes the player picks**,
+  not roamers to be baited — which retires dungeon.md's roamer AI, fog of war, step
+  loop, chest-nook placement and the whole `EXPLORE` scene. Pillar 3's "everything
+  visible" is served better by a labelled map than by patrol vision cones.
+- **Seeding: dungeon.md's scheme still wins** (string `runSeed`, fnv1a + mulberry32,
+  per-entity derived seeds `chestSeed`/`victorySeed`/`eventSeed`, deterministic
+  retry). gameloop.md's numeric `hash32` tree remains superseded. The `genRng`/
+  `popRng` stream pair is replaced by a single `map` stream; per-node payload seeds
+  keep outcomes independent of play order, which is the same rationale as before.
 - **Loot/event pre-roll timing:** contents are *derived-seed-fixed at generation,
-  drawn lazily on open/trigger* (dungeon.md's model). This satisfies loot.md's and
-  gameloop.md's "pre-rolled, savescum-proof" intent with smaller saves.
-- **Fog radius 3 + room light + LOS** (dungeon.md) wins over gameloop.md's
-  LOS-less radius 4. BFS neighbor order is always **N, E, S, W** (dungeon.md);
-  gameloop.md's N,S,W,E is superseded.
-- **Flee return point** = pre-contact tile + 5-step stun (dungeon.md's refinement
-  of combat.md's "room entrance"). Marching-order panel (Tab) is blocked while a
-  chaser is within 3 tiles (dungeon.md); otherwise editable free, also from pause.
+  drawn lazily on arrival* — the node's `seed` field is the derived seed, and it is
+  regenerated rather than saved.
+- **Flee** returns to the run map and **spends the node**: a fled fight is over, not
+  re-armed. The 5-step roamer stun has no meaning without a step loop. Fleeing the
+  terminal node is the one exception — the stairs stay shut and the fight is offered
+  again, because `floorsCleared` only ticks on a victory there.
+- **A node is dispatched at most once per floor** (`resolvedNodes`, floor-stamped and
+  saved), so a reload can never re-open an encounter the player already walked out of.
 - Deliberate cuts list of dungeon.md §16 stands (no keys, traps, secret walls,
   diagonals, revisits, respawns, ambush modifiers).
 
@@ -354,25 +411,33 @@ the tile. Balance is governed by the Shiny-value yardstick and role shape
 
 ## 9. Game Loop, Scenes & Persistence — "The Descent of the Clowder"
 
-**Canonical doc: `gameloop.md` for the state machine, pause, results/score, and
-save-file mechanics** — with the overrides already ruled above (6-floor table §6,
-roamers not placed encounters, Landing replaces CAMP's boons, dungeon.md seeding,
-events.md schema, equipment in saves). One flat FSM: `BOOT → TITLE → RUN_INIT →
-FLOORGEN → EXPLORE ⇄ {BATTLE, EVENT, LOOT(overlay), LANDING} → RESULTS`, overlays
-never stack more than one deep, `Esc` = pause anywhere sensible, Abandon Run =
-scored defeat. Scenes communicate only through `RunState`. Battle constructs its
-state from marching order and writes back only per-cat `hp`/`lives`, score
-counters, and loot. Screens: boot, title (seed entry, Continue, records), floorgen
-interstitial, explore, battle, event modal, loot overlay, landing, results, pause.
+**Canonical doc: `gameloop.md` for pause, results/score, and save-file mechanics**
+— with the overrides already ruled above (6-floor table §6, node encounters not
+roamers, Landing replaces CAMP's boons, dungeon.md seeding, events.md schema,
+equipment in saves) and **its §1 FSM superseded by `run-map-and-dm.md`**. One flat
+FSM: `BOOT → TITLE → RUN_INIT → FLOORGEN → RUN MAP ⇄ {BATTLE, EVENT,
+LOOT(overlay), LANDING} → RESULTS`. `EXPLORE` is gone; rest and treasure resolve
+inside the run-map scene and are therefore not states. Overlays never stack more
+than one deep, `Esc` = pause anywhere sensible, Abandon Run = scored defeat. Scenes
+communicate only through `RunState`. Battle constructs its state from marching order
+and writes back only per-cat `hp`/`lives`, score counters, loot, and the node id it
+was launched from. Screens: boot, title (seed entry, Continue, records), floorgen
+interstitial, **run map**, battle, event modal, loot overlay, landing (stairwell or
+Peddler-only shop node), results, pause.
 
-**Persistence.** Autosave to `localStorage` (one JSON blob) after floorgen, battle
-resolution, event outcome, chest loot, and landing descend — never mid-battle
-(reload restores the pre-battle snapshot; retry costs only honesty). Save =
-`runSeed` string, floor number, party (hp, lives), marching order, **inventory +
-equipment + Shinies**, XP/level, score counters, and current-floor deltas (explored
-bitmap, party pos, per-entity state, roamer positions/states, stepCount); tiles
-regenerate from the seed. Save deleted on RESULTS. A tiny `MetaFile` keeps lifetime
-records (best score, fastest win, runs/victories) — records only, no unlocks.
+**Persistence.** Save schema **v3**; v1 and v2 (tile-dungeon) blobs migrate forward
+rather than being discarded. Autosave to `localStorage` (one JSON blob) after
+floorgen, battle resolution, event outcome, chest loot, rest, and landing descend —
+never mid-battle (reload restores the pre-battle snapshot; retry costs only
+honesty). Save = `runSeed` string, floor number, party (hp, lives), marching order,
+**inventory + equipment + Shinies**, XP/level, score counters, the traversal
+(`currentNodeId`, `visitedNodeIds`, `resolvedNodes`) and the DM session handle +
+transcript. The **run map itself is never saved** — it regenerates from
+`(runSeed, floorNum)`. A migrated v1/v2 save keeps its party, gear, wallet and floor
+number and restarts at that floor's entry node; it loses only its position inside a
+dungeon that no longer exists. Save deleted on RESULTS. A tiny `MetaFile` keeps
+lifetime records (best score, fastest win, runs/victories) — records only, no
+unlocks.
 Results screen shows gameloop.md §7's score table (floors, kills, bosses ×300,
 shinies ×5, **Cat Piles ×20**, remaining Lives ×25, victory bonus 1000; time
 displayed, never scored).
@@ -404,8 +469,11 @@ strictly reserved for "act here now". One `drawCat` recipe renders all four cats
 (96×96 Graphics: tail-body-belly-paws-head-ears-eyes-nose-whiskers + per-class
 silhouette markers); four enemy families (vermin / bird / beast / construct) with
 size grades and data-driven props; six status chips with glyphs; Lives as paw-pip
-rows. Screens per ui-art §§7–11: exploration (checkerboard tiles, fog states,
-minimap, 4 cat cards), combat (initiative ribbon, rank slots, 6-slot skill bar with
+rows. Screens per ui-art §§7–11, with **the exploration screen replaced by the run
+map** (painted per-floor backdrop, one illustrated medallion per node with a
+type-coloured rim and caption, inked route curves in four states — taken / live /
+open / closed — a party marker that walks the chosen edge, and the party strip),
+combat (initiative ribbon, rank slots, 6-slot skill bar with
 the range-strip visualization, targeting flow with damage/shove previews, Cat Pile
 banner, floating numbers, log line), event modal, victory/results, title. The whole
 animation budget is one 40-line tween helper (lunges, hit flash, screen shake,
@@ -414,9 +482,12 @@ slide); ambient idle bobs and blinks are free.
 
 **Decisions & contradictions resolved**
 
-- ui-art.md's layouts supersede dungeon.md's exploration viewport numbers (15×11 @
-  720×528 → **1280×632 world area**, camera behavior otherwise per dungeon.md) and
-  its minimap placement details; 48 px tiles and 4 px/tile minimap agree everywhere.
+- ui-art.md's exploration-viewport numbers, minimap and tile metrics are **dead**
+  with the maze; the run-map scene owns its own board/strip geometry (§6). Every
+  other ui-art layout stands.
+- **Art and procedural must never mix on one screen.** Each asset-backed widget is
+  painted-first with a procedural fallback, and the fallbacks are chosen so that a
+  zero-asset run reads as one deliberate style rather than a half-loaded one.
 - Currency labels: "g" → **✦** (§7 ruling). The class palette table in classes.md
   §10 is superseded by ui-art.md §2's `PAL` class entries (same cats, richer spec);
   classes.md's barks/bios/epithets stand.
@@ -442,9 +513,10 @@ slide); ambient idle bobs and blinks are free.
    floaters, log line, Cat Pile prompt, boss telegraphs.
 4. **Classes & leveling:** 4 cats, 13 skills, 4 traits (both tiers), XP/level 1–8,
    victory-screen level-ups.
-5. **Dungeon:** rooms-in-a-maze generator + validation, 6-floor table, population
-   (stairs/chests/events/roamers/packs/waypoints), fog + LOS, step loop, roamer AI,
-   boss lairs, exploration rendering + minimap + party HUD.
+5. **Run map:** graph generator on its own RNG stream + invariant validation,
+   6-floor budget table, node typing and pack building, traversal (`advance` refuses
+   anything that is not one legal step), run-state migration, and the run-map scene
+   (backdrop, medallions, route states, party marker, party strip).
 6. **Enemies:** 10-species roster + sockWraith + elderStray; 2 bosses (Vacuum King,
    Dogfather).
 7. **Loot core:** Shinies, drop tables, 10 consumables, equipment (10 defs, 4
@@ -469,7 +541,8 @@ slide); ambient idle bobs and blinks are free.
 7. **Juice completeness** (Poise-shatter particles, ghost HP segments, toasts) —
    core readability animations (lunge, flash, floaters, corpse slide, Off-Balance
    tilt) are MUST-adjacent; the rest is here.
-8. Click-to-path auto-walk (keyboard steps alone are acceptable for v1.0).
+8. **The tabletop layer** (§12) — the typed-action input and the persistent DM.
+   Strictly a SHOULD: the game is complete and shipped without it.
 
 ### CUT (decided — do not implement, do not re-open)
 
@@ -479,9 +552,13 @@ slide); ambient idle bobs and blinks are free.
 - Elemental affinities, weakness probing, One More / extra actions, accuracy &
   misses, Blind, Stalk, shared Moxie pool, Bruised debuff, bestiary (all per
   combat.md §15 / gameloop.md).
-- Dungeon: locked doors/keys, traps, secret walls, diagonal movement, invisible
-  random encounters, floor revisits, hunger/torch clocks, roamer respawns,
-  shop-as-a-tile, ambush/surprise modifiers, multi-tile bodies.
+- Dungeon: the whole tile crawl (maze generation, fog of war, WASD stepping, roamer
+  patrols, the minimap) — replaced by the run map, §6. With it go locked doors/keys,
+  traps, secret walls, diagonal movement, invisible random encounters, floor
+  revisits, hunger/torch clocks, roamer respawns, ambush/surprise modifiers,
+  multi-tile bodies.
+- Backtracking on the run map: edges are forward-only and a visited node is never
+  re-entered. Regret is content.
 - Loot: armor slot, crafting/sockets/durability, random affix generation,
   permanent stat food, damage consumables, buyback/haggling, Life-restoring items.
 - Mid-battle saves, time-based scoring, typewriter text, portraits in events.
@@ -489,7 +566,62 @@ slide); ambient idle bobs and blinks are free.
 
 ### Budget sanity
 
-Engine ~1500 (combat) + ~1150 (dungeon) + ~470 (loot) + ~770 (events) + ~500
+Engine ~1500 (combat) + ~700 (run map) + ~470 (loot) + ~770 (events) + ~500
 (FSM/run/save/landing) + ~1900 (rendering, includes combat's 550 UI line) ≈
 **5,500–6,000 LoC + data** — at the top of "a few thousand lines", with the SHOULD
-list as the pressure valve.
+list as the pressure valve. The DM agent (`agent/`) and the serverless GM (`api/`)
+are outside this budget and outside the shipped browser bundle.
+
+---
+
+## 12. The Tabletop Layer — "Type What You Do"
+
+**Canonical doc: `run-map-and-dm.md` §§3–4.** At every encounter — a fight
+included — the player may type an action instead of only pressing buttons. The DM
+answers in character and the **engine** applies whatever mechanical consequence the
+DM authorised. Standard skills stay instant buttons; improvisation costs a turn and
+a beat of latency, which is the correct trade.
+
+- **Out of combat** (`event` nodes): the verdict speaks the events vocabulary
+  (`Effect`) and is applied through the shipped `resolveOption`, so damage, heals,
+  statuses, shinies and items all land with every existing clamp intact.
+- **In combat:** an `encounter` subagent adjudicates the line into an `EffectSpec`
+  list + energy cost + target, and `resolveAction` executes it exactly like any other
+  action, through the interpreter's existing effect executor. **Zero RNG is drawn**,
+  so a recorded transcript replays exactly.
+- **The DM may say no.** "You can't fly, you're a cat." Refusal is a legitimate
+  outcome and is rendered as a DM saying no — never as an error.
+
+### Bounds (non-negotiable)
+
+The DM authors *content*; it never computes outcomes. Every number it emits is
+constrained by machinery that already shipped and is already tested:
+
+1. the closed `EffectSpec` union — **no new mechanics, only recombination**;
+2. `powerBudget()` / `validatePowerScript()` and `EFFECT_CAPS` / `BUDGET_CAPS`,
+   applied **server-side at authoring time and again client-side at application
+   time**, and a third time inside the engine — a tampered response is dropped and
+   degrades to pure narration;
+3. a per-floor ramp: one improvisation is worth `(2+floor)/8` of a full Stand power,
+   so floor 1 buys 3/8 and floor 6 exactly one, never more;
+4. ≤3 effects, energy cost 0–6, narration ≤400 characters, prompt ≤200.
+
+**A refused, dropped or unaffordable verdict does not consume the turn.** Nothing
+mechanical happened, so nothing is spent; a model slip never costs the player a turn.
+
+### Determinism & replay
+
+Every adjudication is recorded on the run as
+`{seq, where, floor, nodeId, prompt, narration, allowed, effects, applied, problems,
+rngDraws}`. The transcript rides the ordinary autosave, and the model is never
+re-consulted on replay — the same memoisation principle as Stand resonances.
+
+### Offline-first (a hard rule, not a nice-to-have)
+
+No DM reachable ⇒ the typed-action affordance is **never built**, encounters run on
+authored content, and the game is byte-identically playable. This is verified in the
+release gate by playing a run with the DM pointed at a dead URL. The DM is a Vercel
+**eve** agent with one durable session per run (so it remembers that you bribed the
+rat king on floor 2); the six stateless `api/gm/*` endpoints remain as the fallback
+until the agent reaches full parity. The client keeps one seam
+(`src/services/gm.ts` + `src/services/dm.ts`) so the swap is invisible to the scenes.

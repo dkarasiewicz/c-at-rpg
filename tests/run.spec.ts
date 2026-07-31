@@ -6,11 +6,13 @@
  * capstone at 4 / trait tier 2 at 7, surplus XP ignored), applyBattleResult
  * write-back (hp/lives, deaths + grief loot + marching-order compression,
  * score counters, Ninth Bell), descend (catnap heal + floor-scoped resets),
- * the gameloop.md §7 score table, and the save round-trip (floor regenerated
- * from seed + delta overlay), version gate, and MetaFile records.
+ * the gameloop.md §7 score table, and the save round-trip (run map
+ * regenerated from the seed), version gate, and MetaFile records.
+ *
+ * The run-map engine itself lives in tests/run-map.spec.ts.
  */
 import { describe, expect, it } from "vitest";
-import { recomputeVisibility } from "../src/core/dungeon/floor.js";
+import { advance, optionsForRun } from "../src/core/map/traverse.js";
 import type {
   BattleResult,
   CatRunState,
@@ -36,7 +38,7 @@ import {
   applyLootGrant,
   catnapHeal,
   descend,
-  generateCurrentFloor,
+  generateCurrentFloorMap,
   markEventFired,
   newRun,
   PARTY_ORDER,
@@ -121,9 +123,11 @@ describe("newRun", () => {
     for (const cat of run.cats) expect(cat.hp).toBe(maxHp(cat, run.level));
   });
 
-  it("starts on floor 1 (reached), no floor generated yet, clean books", () => {
+  it("starts on floor 1 (reached), no map generated yet, clean books", () => {
     expect(run.floorNum).toBe(1);
-    expect(run.floor).toBeNull();
+    expect(run.floorMap).toBeNull();
+    expect(run.currentNodeId).toBeNull();
+    expect(run.visitedNodeIds).toEqual([]);
     expect(run.score).toEqual({
       floorsCleared: 0,
       floorsReached: 1,
@@ -350,26 +354,26 @@ describe("applyBattleResult", () => {
     expect(after.cats[0].trinket!.hookSpent).toBe(true);
   });
 
-  it("kills the pack on the floor and ticks floorsCleared on the last one", () => {
-    const run = generateCurrentFloor(newRun(SEED));
-    const floor = run.floor!;
-    const packs = floor.entities.filter(
-      (e) => e.kind === "roamer" || e.kind === "boss",
-    );
-    expect(packs.length).toBeGreaterThan(1);
-    // all but the last already dead
-    for (const p of packs.slice(0, -1)) (p as { dead: boolean }).dead = true;
-    const last = packs[packs.length - 1];
+  it("ticks floorsCleared only for a win on the terminal node", () => {
+    const run = generateCurrentFloorMap(newRun(SEED));
+    const map = run.floorMap!;
 
-    let out = applyBattleResult(run, battleResult(run), last.id);
-    expect((out.run.floor!.entities[last.id] as { dead: boolean }).dead).toBe(
-      true,
-    );
-    expect(out.run.score.floorsCleared).toBe(1);
-
-    // an event fight afterwards (no roamerId) must not double-count
+    // a mid-floor pack: no tick
+    let out = applyBattleResult(run, battleResult(run), map.entryId);
+    expect(out.run.score.floorsCleared).toBe(0);
+    // an event fight (no node id at all): no tick
     out = applyBattleResult(out.run, battleResult(out.run));
+    expect(out.run.score.floorsCleared).toBe(0);
+    // the boss / stairs-guard: the floor is cleared
+    out = applyBattleResult(out.run, battleResult(out.run), map.bossId);
     expect(out.run.score.floorsCleared).toBe(1);
+    // a defeat at the same node never ticks it
+    const lost = applyBattleResult(
+      run,
+      battleResult(run, { outcome: "defeat" }),
+      map.bossId,
+    );
+    expect(lost.run.score.floorsCleared).toBe(0);
   });
 });
 
@@ -435,7 +439,7 @@ describe("descend", () => {
   });
 
   it("advances the floor: heal, floor-mod expiry, event-id reset, gen", () => {
-    let run = generateCurrentFloor(newRun(SEED));
+    let run = generateCurrentFloorMap(newRun(SEED));
     run = {
       ...run,
       cats: run.cats.map((c, i) =>
@@ -460,7 +464,9 @@ describe("descend", () => {
     };
     const after = descend(run);
     expect(after.floorNum).toBe(2);
-    expect(after.floor!.floor).toBe(2);
+    expect(after.floorMap!.floor).toBe(2);
+    expect(after.currentNodeId).toBe(after.floorMap!.entryId);
+    expect(after.visitedNodeIds).toEqual([after.floorMap!.entryId]);
     expect(after.score.floorsReached).toBe(2);
     expect(after.floorFiredEventIds).toEqual([]);
     expect(after.firedEventIds).toEqual(["pawShrine"]); // run-scoped persists
@@ -534,9 +540,9 @@ describe("score", () => {
 /* ---------------------------------------------------------------------- */
 
 describe("save", () => {
-  /** A mid-floor fixture: generated floor with real play-state mutations. */
+  /** A mid-floor fixture: a generated run map, walked a couple of nodes in. */
   function midFloorRun(): RunState {
-    let run = generateCurrentFloor(newRun(SEED));
+    let run = generateCurrentFloorMap(newRun(SEED));
     // enrich the run side
     run = applyLootGrant(run, {
       shinies: 42,
@@ -545,29 +551,10 @@ describe("save", () => {
     }).run;
     run = markEventFired(run, "strangeBox");
     run = { ...run, xp: 45, level: 2, playTimeMs: 123456 };
-    // mutate the floor like real play would
-    const f = run.floor!;
-    f.stepCount = 42;
-    const chest = f.entities.find((e) => e.kind === "chest");
-    if (chest && chest.kind === "chest") chest.opened = true;
-    const roamers = f.entities.filter((e) => e.kind === "roamer");
-    const r0 = roamers[0];
-    if (r0.kind === "roamer") {
-      r0.dead = true;
-    }
-    const r1 = roamers[1];
-    if (r1.kind === "roamer") {
-      r1.state = "chase";
-      r1.lostSightFor = 2;
-      r1.wpIndex = 1;
-      r1.x += 1;
-    }
-    // move the party somewhere else and refresh fog
-    if (chest) {
-      f.party = { x: chest.x, y: chest.y };
-    }
-    f.explored[0] = 1; // an extra hand-explored tile
-    recomputeVisibility(f); // refresh fog for the moved party
+    // walk the map like real play would: two committed route choices
+    run = advance(run, optionsForRun(run)[0].node.id);
+    const onward = optionsForRun(run);
+    run = advance(run, onward[onward.length - 1].node.id);
     return run;
   }
 
@@ -601,15 +588,24 @@ describe("save", () => {
     expect(storage.get(SAVE_KEY)).toBeNull();
   });
 
-  it("a v1 save migrates forward and loads without loss (progression.md §5)", () => {
+  it("a v1/v2 save migrates forward into a fresh map on the same floor", () => {
     const storage = memoryStorage();
     const run = midFloorRun();
     const sf = serializeRun(run);
-    // a pre-progression payload: version 1, and no optional cat fields
-    storage.set(SAVE_KEY, JSON.stringify({ ...sf, version: 1 }));
-    const loaded = loadRun(storage);
-    expect(loaded).toEqual(run);
+    // a pre-run-map payload: version 2, no traversal fields
+    const legacy = JSON.parse(JSON.stringify({ ...sf, version: 2 }));
+    delete legacy.run.currentNodeId;
+    delete legacy.run.visitedNodeIds;
+    storage.set(SAVE_KEY, JSON.stringify(legacy));
+    const loaded = loadRun(storage)!;
     expect(storage.get(SAVE_KEY)).not.toBeNull(); // not deleted
+    // the party, the wallet and the floor survive; the position resets
+    expect(loaded.cats).toEqual(run.cats);
+    expect(loaded.inventory).toEqual(run.inventory);
+    expect(loaded.floorNum).toBe(run.floorNum);
+    expect(loaded.floorMap).toEqual(run.floorMap);
+    expect(loaded.currentNodeId).toBe(loaded.floorMap!.entryId);
+    expect(loaded.visitedNodeIds).toEqual([loaded.floorMap!.entryId]);
   });
 
   it("corrupt JSON silently deletes the save; empty storage loads null", () => {

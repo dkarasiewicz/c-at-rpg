@@ -6,7 +6,7 @@
  *
  *   turn-start phase: Guarded expiry → DoT/Mending ticks → Frazzled skip →
  *                     energy regen (cats) / cooldown tick (enemies)
- *   action:           skill | move | guard | item | flee | advance
+ *   action:           skill | move | guard | item | flee | advance | improvise
  *   skill pipeline:   1 damage/heal → 2 forced movement (Off-Balance /
  *                     Poise chip) → 3 applies + cleanses → 4 self movement →
  *                     5 Cat Pile check → 6 death/victory check
@@ -56,11 +56,47 @@ import {
   isBoss,
 } from "./boss.js";
 import { fleeChance, processDeathsAndOutcome } from "./turns.js";
-import { consultAllyKOs, consultPower, reclonePowers } from "./powers.js";
+import type { EffectSpec } from "./powerTypes.js";
+import {
+  consultAllyKOs,
+  consultImprovisation,
+  consultPower,
+  lintImprovisation,
+  reclonePowers,
+} from "./powers.js";
 
 export interface ResolveResult {
   state: BattleState;
   events: BattleEvent[];
+}
+
+/**
+ * The tabletop layer's in-combat action (docs/design/run-map-and-dm.md §3
+ * "In combat"): an ALREADY-AUTHORISED improvisation, resolved as an ordinary
+ * turn — turn-start phase, energy cost, effects, Cat Pile check, death sweep.
+ *
+ * It deliberately does NOT join `BattleAction` in core/types.ts: that union
+ * predates `EffectSpec`, and importing `EffectSpec` there would put a cycle
+ * between types.ts and powerTypes.ts. `resolveAction` widens its parameter
+ * instead, so an improvisation travels the same code path as any other action
+ * and a caller that never builds one sees byte-identical behaviour.
+ *
+ * Nothing here is a new mechanic: the effects run through the Stand-power
+ * interpreter's own `executeEffect`, and `consultImprovisation` re-runs the
+ * budget lint before executing a single one of them.
+ */
+export interface ImproviseAction {
+  type: "improvise";
+  /** 1..3 bounded `EffectSpec`s, priced as one `activated` power. */
+  effects: EffectSpec[];
+  /** Energy the actor spends, priced like a skill cost. */
+  energyCost: number;
+  /** Combatant the `other` selector resolves to (absent = nobody). */
+  targetId?: string;
+  /** The DM's line, logged through the existing `log` event. */
+  narration: string;
+  /** Floor-ramped budget ceiling; the lint clamps it to `BUDGET_CAPS.cat`. */
+  budgetCap: number;
 }
 
 /**
@@ -85,7 +121,7 @@ function sweepWithPowers(
 
 export function resolveAction(
   state: BattleState,
-  action: BattleAction,
+  action: BattleAction | ImproviseAction,
   rng: Rng,
 ): ResolveResult {
   const s = cloneState(state);
@@ -284,6 +320,34 @@ export function resolveAction(
           forced: false,
         });
       }
+      break;
+    }
+
+    case "improvise": {
+      if (actor.side !== "cat") {
+        throw new Error("combat: improvise is a cat action");
+      }
+      // The DM's line lands first, whatever the mechanics turn out to be —
+      // a refused or budget-dropped improvisation is still a told beat.
+      events.push({ t: "log", text: action.narration });
+      const cost = Math.max(0, Math.round(action.energyCost));
+      if (actor.energy < cost) {
+        throw new Error("combat: not enough energy to improvise");
+      }
+      // Spend only for an improvisation that will actually land: a list the
+      // lint drops costs the turn (the cat tried) but not the energy.
+      if (lintImprovisation(action.effects, action.budgetCap).ok && cost > 0) {
+        actor.energy -= cost;
+        events.push({ t: "energy", id: actor.id, delta: -cost });
+      }
+      consultImprovisation(
+        s,
+        actor.id,
+        action.targetId,
+        action.effects,
+        action.budgetCap,
+        events,
+      );
       break;
     }
 

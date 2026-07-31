@@ -259,6 +259,99 @@ export function capForCombatantId(id: string): number {
 }
 
 /* ------------------------------------------------------------------------ */
+/* Improvisation — the tabletop layer's `activated` consult                  */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The synthetic `PowerScript` an improvised action is priced as
+ * (run-map-and-dm.md §3 "Bounds"): a conditionless, chargeless `activated`
+ * power. This is THE wrapper — the DM service prices the model's proposal
+ * with it server-side, the client re-prices the response with it before
+ * applying, and `resolveAction`'s improvise case prices it a third time.
+ * One shape, one price, no re-implementation anywhere.
+ */
+export function improvisationScript(effects: EffectSpec[]): PowerScript {
+  const script: PowerScript = {
+    id: "power:improvisation",
+    version: POWER_FRAMEWORK_VERSION,
+    name: "GM",
+    flavor: "an improvised action",
+    budget: 0,
+    trigger: "activated",
+    conditions: [],
+    effects,
+  };
+  script.budget = powerBudget(script);
+  return script;
+}
+
+export interface ImprovisationLint {
+  ok: boolean;
+  /** Human-readable reasons, empty when ok. */
+  problems: string[];
+  /** `powerBudget()` of the effects, priced as an activated power. */
+  budget: number;
+  /** The cap actually applied (never above `BUDGET_CAPS.cat`). */
+  cap: number;
+}
+
+/**
+ * Price + validate an improvised effect list with the ENGINE'S own lint. An
+ * improvisation can never outprice a shipped cat Stand power, whatever cap
+ * the caller passes (the floor ramp only ever makes it *tighter*).
+ */
+export function lintImprovisation(
+  effects: EffectSpec[],
+  cap: number,
+): ImprovisationLint {
+  const capped = Math.min(cap, BUDGET_CAPS.cat);
+  const script = improvisationScript(effects);
+  const { problems } = validatePowerScript(script, capped);
+  return {
+    ok: problems.length === 0,
+    problems,
+    budget: script.budget,
+    cap: capped,
+  };
+}
+
+/**
+ * Execute an authorised improvisation as a one-shot chargeless power of
+ * `ownerId`, through the SAME `executeEffect` pipeline every Stand power
+ * runs (run-map-and-dm.md §3: "no new mechanics, only recombination of
+ * shipped ones").
+ *
+ * Defence in depth: the lint runs here too, and a failing list is DROPPED
+ * (`{ applied: false, problems }`) rather than thrown — the caller keeps the
+ * narration and the player simply gets the smaller thing that happened.
+ * Draws ZERO RNG (no conditions ⇒ no `chance` predicate), so a recorded
+ * transcript replays a run exactly.
+ */
+export function consultImprovisation(
+  state: BattleState,
+  ownerId: string,
+  otherId: string | undefined,
+  effects: EffectSpec[],
+  cap: number,
+  events: BattleEvent[],
+): { applied: boolean; problems: string[] } {
+  const lint = lintImprovisation(effects, cap);
+  if (!lint.ok) return { applied: false, problems: lint.problems };
+  const owner = state.combatants.find((c) => c.id === ownerId);
+  if (!owner || !isAlive(owner)) {
+    return { applied: false, problems: ["owner is not alive"] };
+  }
+  const other =
+    otherId === undefined
+      ? undefined
+      : state.combatants.find((c) => c.id === otherId);
+  for (const e of effects) {
+    executeEffect(state, e, owner, other, "power:improvisation", events);
+  }
+  return { applied: true, problems: [] };
+}
+
+/* ------------------------------------------------------------------------ */
 /* Powers state lifecycle                                                    */
 /* ------------------------------------------------------------------------ */
 

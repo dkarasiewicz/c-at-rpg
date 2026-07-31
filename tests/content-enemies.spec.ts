@@ -179,92 +179,61 @@ describe("FLOORS — GDD §6 canonical 6-floor table exactly", () => {
   const T2 = ["roombaScout", "sprinklerImp", "yarnGolem"];
   const T3 = ["porcelainHound", "laserGhost", "trashPanda"];
 
-  it("is byte-for-byte the GDD table", () => {
-    expect(FLOORS).toEqual([
-      {
-        name: "The Cellar",
-        w: 31,
-        h: 21,
-        roomAttempts: 40,
-        roamers: 4,
-        chests: 2,
-        events: 1,
-        pool: T1,
-        budgetLo: 3,
-        budgetHi: 4,
-      },
-      {
-        name: "The Drains",
-        w: 31,
-        h: 21,
-        roomAttempts: 40,
-        roamers: 5,
-        chests: 2,
-        events: 1,
-        pool: T1,
-        budgetLo: 4,
-        budgetHi: 5,
-      },
-      {
-        name: "The Appliance Graveyard",
-        w: 27,
-        h: 19,
-        roomAttempts: 30,
-        roamers: 3,
-        chests: 3,
-        events: 1,
-        pool: [...T1, ...T2],
-        budgetLo: 5,
-        budgetHi: 6,
-        boss: { bossId: "vacuumKing", encounter: ["vacuumKing"] },
-      },
-      {
-        name: "The Undergarden",
-        w: 35,
-        h: 23,
-        roomAttempts: 55,
-        roamers: 6,
-        chests: 3,
-        events: 2,
-        pool: T2,
-        budgetLo: 6,
-        budgetHi: 8,
-      },
-      {
-        name: "The Cold Pantry",
-        w: 35,
-        h: 23,
-        roomAttempts: 55,
-        roamers: 7,
-        chests: 3,
-        events: 2,
-        pool: [...T2, ...T3],
-        budgetLo: 8,
-        budgetHi: 10,
-      },
-      {
-        name: "The Hollow Throne",
-        w: 29,
-        h: 19,
-        roomAttempts: 35,
-        roamers: 5,
-        chests: 4,
-        events: 2,
-        pool: T3,
-        budgetLo: 10,
-        budgetHi: 12,
-        boss: {
-          bossId: "dogfather",
-          encounter: ["dogfather", "porcelainHound"],
-        },
-      },
+  it("keeps the GDD table's names, pools, threat budgets and bosses", () => {
+    expect(FLOORS.map((f) => f.name)).toEqual([
+      "The Cellar",
+      "The Drains",
+      "The Appliance Graveyard",
+      "The Undergarden",
+      "The Cold Pantry",
+      "The Hollow Throne",
+    ]);
+    expect(FLOORS.map((f) => f.pool)).toEqual([
+      T1,
+      T1,
+      [...T1, ...T2],
+      T2,
+      [...T2, ...T3],
+      T3,
+    ]);
+    expect(FLOORS.map((f) => [f.budgetLo, f.budgetHi])).toEqual([
+      [3, 4],
+      [4, 5],
+      [5, 6],
+      [6, 8],
+      [8, 10],
+      [10, 12],
+    ]);
+    expect(FLOORS.map((f) => f.boss)).toEqual([
+      undefined,
+      undefined,
+      { bossId: "vacuumKing", encounter: ["vacuumKing"] },
+      undefined,
+      undefined,
+      { bossId: "dogfather", encounter: ["dogfather", "porcelainHound"] },
     ]);
   });
 
-  it("grids are odd-sized (algorithm parity requirement)", () => {
+  it("carries an authored run-map budget instead of tile-maze columns", () => {
+    // the tile maze is gone (run-map-and-dm.md §2) — so are its columns
     for (const f of FLOORS) {
-      expect(f.w % 2).toBe(1);
-      expect(f.h % 2).toBe(1);
+      for (const gone of [
+        "w",
+        "h",
+        "roomAttempts",
+        "roamers",
+        "chests",
+        "events",
+      ]) {
+        expect(gone in f).toBe(false);
+      }
+      expect(f.map.guaranteed).toEqual(["shop", "rest"]);
+      expect(Object.keys(f.map.weights).length).toBeGreaterThan(3);
+    }
+    // elites are authored from floor 2 on, never on floor 1
+    expect(FLOORS[0].map.weights.elite).toBeUndefined();
+    for (const f of FLOORS.slice(1)) {
+      expect(f.map.weights.elite).toBeGreaterThan(0);
     }
   });
 

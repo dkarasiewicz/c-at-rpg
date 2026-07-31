@@ -1,5 +1,23 @@
 # Game Master System — dynamic content service
 
+> ## ⚠️ REFRAMED — `run-map-and-dm.md` §4 is now canonical
+>
+> The six **stateless** endpoints described below have become **one persistent
+> agent with a durable session per run** (`agent/`, Vercel eve), so the GM
+> remembers the whole adventure instead of each request in isolation. The
+> capability set, the schemas and — critically — the *bounds* on this page are
+> unchanged and still canonical; only the transport and the memory model moved.
+>
+> `api/gm/*` keeps working and is still the fallback. Each capability migrates
+> behind the single client seam (`src/services/gm.ts` beside
+> `src/services/dm.ts`), and the endpoints are deleted last. See
+> `docs/DM-DEPLOY.md` for the agent, `docs/GM-DEPLOY.md` for these endpoints.
+>
+> **New in the agent, not described here:** the tabletop layer — a typed action
+> at *any* encounter, a fight included, adjudicated into the engine's own
+> `EffectSpec` vocabulary and applied through `resolveAction`
+> (`run-map-and-dm.md` §3, GDD §12).
+
 A lightweight AI Game Master that steers runs and generates content on the fly.
 The core game stays fully playable offline (static content = fallback); the GM
 service is an enhancement layer.

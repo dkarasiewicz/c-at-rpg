@@ -68,14 +68,39 @@ export const RARITY_COLOR: Record<Rarity, number> = {
   mewthical: PAL.stFrazzled,
 };
 
+/** Perceptual luminance 0..255 of a packed 0xRRGGBB colour. */
+function lum(c: number): number {
+  return (
+    0.299 * ((c >> 16) & 0xff) + 0.587 * ((c >> 8) & 0xff) + 0.114 * (c & 0xff)
+  );
+}
+
+/**
+ * Every cat name must clear this luminance, so no name can read dimmer
+ * than a disabled label (PAL.textDim sits at ~153). Soot-black Pixel is the
+ * cat this exists for: a flat lift left it at textDim's brightness, i.e.
+ * looking switched-off next to its three siblings.
+ */
+const NAME_MIN_LUM = 170;
+
+/** Floor lift, so a bright class colour still reads as type and not paint. */
+const NAME_MIN_LIFT = 0.4;
+
 /**
  * Readable name color for a cat: the class body color lifted toward
- * PAL.text, because two of the four cats (soot-black Pixel, dusk Mora) are
- * darker than the panel fill and vanish when their raw body color is used
- * as type. Shared by every screen that prints a cat's name on a panel.
+ * PAL.text far enough to clear `NAME_MIN_LUM`, because two of the four cats
+ * (soot-black Pixel, dusk Mora) are darker than the panel fill and vanish
+ * when their raw body color is used as type. `mix` is linear per channel, so
+ * the needed lift solves exactly. Shared by every screen that prints a cat's
+ * name on a panel.
  */
 export function catNameColor(classId: ClassId): number {
-  return mix(PAL[classId].body, PAL.text, 0.4);
+  const body = PAL[classId].body;
+  const lo = lum(body);
+  const hi = lum(PAL.text);
+  const needed = hi > lo ? (NAME_MIN_LUM - lo) / (hi - lo) : 0;
+  const t = Math.max(NAME_MIN_LIFT, Math.min(0.85, needed));
+  return mix(body, PAL.text, t);
 }
 
 const STAT_LABEL: Record<StatKey, string> = {

@@ -5,13 +5,20 @@ Audited 2026-07-31. Source dirs: `public/assets/gen/{env,items,scenes}/` (each w
 Contact sheets: [`contact-env.png`](contact-env.png), [`contact-items.png`](contact-items.png),
 [`contact-scenes.png`](contact-scenes.png) (this folder).
 
+> **Superseded in part, 2026-07-31 (run-map cleanup).** The tile crawl is gone, and with it
+> the nine `tile:*` textures and five `token:*` map tokens listed below — files deleted,
+> `env/manifest.json` entries removed. The `env/` section is kept as the historical record of
+> what that pack contained; `prop:*` survives. What replaces them is at the bottom of this
+> file: [Run-Map Backdrops + Node Medallions](#run-map-backdrops--node-medallions-added-2026-07-31).
+> The live per-id ledger is [`ASSET-AUDIT.md`](ASSET-AUDIT.md).
+
 **Audit verdict: GREEN.** All 60 assets share the v2 bible style (cel-shading, ink outlines,
 deep purple/near-black base, gold/amber accents, spectral purple glow). No text, watermarks,
 frames, photoreal drift, or pixel-art drift found. No regenerations were needed. Downscale
 checks passed: all tokens/props read at 48 px, all icons read at 64 px, floors/wall tile
 cleanly at game scale (48 px).
 
-## env/ — tiles, props, tokens (18, all 512x512)
+## env/ — tiles, props, tokens (18, all 512x512) — DELETED except `prop:*`
 
 | id | description | weaknesses |
 |---|---|---|
@@ -194,3 +201,133 @@ transparent corner still carries the estimated bg colour — same as the existin
   jar/box labels and appliance panels are blank shapes — no letters, numbers or logos anywhere.
 - Peddler keyed sprite composited over flat red and a checkerboard: clean silhouette, no interior
   bleed-through, no halo.
+
+---
+
+# Run-Map Backdrops + Node Medallions (added 2026-07-31)
+
+The tile crawl's replacement art, per the shared asset contract in
+[`docs/design/run-map-and-dm.md`](../design/run-map-and-dm.md) §2: one painted backdrop per
+floor and one illustrated medallion per node type, plus two state overlays. 15 files,
+1,669,378 B added; the 14 `tile:*` / `token:*` files they replace were 5,595,556 B.
+Contact sheet: [`contact-runmap.png`](contact-runmap.png) (this folder).
+
+## scenes/ — per-floor run-map backdrops (6, all 1600x900 WebP q82)
+
+Each is an inked **cutaway diorama** of its floor: the ground sliced open side-on, staggered
+chambers and ledges stepping left→right (entry to boss/stairs), a dark silhouetted foreground
+lip, lit mid-ground, hazy back wall. Deliberately dark, desaturated and low-contrast with a
+single small distant light, so medallions and route lines composite over them and still read.
+Uninhabited by design — no characters anywhere in the set.
+
+| id | file | size | the floor it paints (`src/content/floors.ts`) |
+|---|---|---:|---|
+| `scene:map:1` | map-1.webp | 82 KB | **The Cellar** — flagstone ledges, crates, preserve jars, coal heap, cobwebs, wooden stair right, one bare bulb as the only warm light |
+| `scene:map:2` | map-2.webp | 72 KB | **The Drains** — brick culverts at three heights, dripping cast-iron pipes, ladder rungs, a black runoff channel, one grated moonshaft far right |
+| `scene:map:3` | map-3.webp | 93 KB | **The Appliance Graveyard** — stepped heap of gutted washers and fridges, arcing blue sparks, purple burn-off flames, smoke ridge on the horizon, the Vacuum King's hull half-buried top right |
+| `scene:map:4` | map-4.webp | 176 KB | **The Undergarden** — concrete terraces split by pale roots, shelf mushrooms, still black pools, teal bioluminescence, a collapsed greenhouse frame right |
+| `scene:map:5` | map-5.webp | 80 KB | **The Cold Pantry** — frost-rimed steel tiers, ice-glazed jars, hanging cured meat, icicle curtains, freezer door cracked open right leaking pale blue |
+| `scene:map:6` | map-6.webp | 111 KB | **The Hollow Throne** — broken galleries, torn banners, bone-and-brass chandeliers, gnawed bones and collars, the Dogfather's throne of smashed furniture right, red votives the only warm light |
+
+`map-4.webp` is twice the size of its siblings — its teal fungus glow is the one high-frequency
+element in the set and WebP q82 spends bits on it. Left as-is; 176 KB is still under every
+event scene except `event-catnipPatch`.
+
+## env/ — node medallions + state overlays (9, all 256x256 keyed PNG)
+
+One matched family, struck from the same die: a beveled ring of tarnished pewter with a
+hammered-gold inner bevel and four rivets at the compass points, a dusty plum inner plate, one
+chunky emblem, key light from the upper left. Every emblem is distinct in silhouette *and*
+hue, so the type is legible at 64 px and still guessable at 48 px.
+
+| id | file | size | emblem | reads as |
+|---|---|---:|---|---|
+| `node:fight` | node-fight.png | 110 KB | tabby paw mid-strike behind three gold claw slashes | gold diagonal slashes |
+| `node:elite` | node-elite.png | 124 KB | paw + spiked collar + jagged crown in purple spectral flame | the purple-flame one |
+| `node:event` | node-event.png | 114 KB | yarn ball caught in a spiral of purple wisps | the purple sphere |
+| `node:shop` | node-shop.png | 115 KB | hooded peddler's lantern over spilled coins and trinkets | the only warm gold glow |
+| `node:rest` | node-rest.png | 108 KB | cat curled asleep under a thin crescent moon | low horizontal mass + crescent |
+| `node:treasure` | node-treasure.png | 119 KB | open banded chest spilling gold | brown box + gold pile |
+| `node:boss` | node-boss.png | 121 KB | crowned dog skull, spiked collar, lit from below in blood red | the only red field — unmistakable |
+| `node:locked` | node-locked.png | 104 KB | rusted chain wrapped round a **hollow** ring, padlock hanging | overlay: route closed |
+| `node:visited` | node-visited.png | 100 KB | gold laurel on a **hollow** ring, red wax pawprint seal | overlay: already cleared |
+
+**Registration.** The two overlays are cropped so their ring occupies the same fraction of the
+256² box as a medallion's ring (0.918 / 0.923 vs 0.931). Draw an overlay at the same size and
+centre as the medallion underneath and the chain / laurel lands exactly on the pewter band —
+verified by compositing all four combinations at 128 px and 64 px. Their centres are genuinely
+transparent, so the node type stays visible through a locked or visited marker.
+
+## Generation recipe
+
+- Prompts composed from `src/content/artStyle.ts` as usual:
+  `ART_STYLE.framing.<category>` + `ART_STYLE.basePrompt` + `"Avoid: " + ART_STYLE.negative`
+  (plus per-asset scenery/emblem text and per-asset negatives).
+- **Backdrops:** `gemini-3-pro-image-preview`, `--dimension 2752x1536`, framing `scene`.
+  Same single documented deviation as the battle backdrops — `basePrompt`'s "flat #1a1626
+  background for clean keying" sentence is replaced by "deep desaturated purple-indigo
+  palette, muted low-contrast values…", because a full-bleed environment has no background to
+  key. Floors 1 and 2 used `docs/art/style-anchor-bruno.png` as `--ref`; floors 3 and 4 used
+  the **accepted `map-1`** as `--ref` instead (see rejections), floors 5 and 6 used the anchor.
+  Export: centre-crop to exactly 16:9, LANCZOS to 1600x900, WebP q82.
+- **Medallions:** generated as ONE 3x3 sheet (`gemini-3-pro-image-preview`, 2048²) so the nine
+  badges are necessarily a family, then a `gpt-image-2` img2img pass on that sheet for the two
+  fixes below, then sliced on the detected grid and downscaled to 256².
+- **State overlays:** a separate two-up render (`gemini-3-pro-image-preview`, 2528x1696,
+  `--ref` the medallion sheet) so the ring interiors could be specified as *empty background*
+  and key through to transparent.
+
+## Chroma-key (unchanged recipe, reused as-is)
+
+`/tmp/catrpg-tools/softkey.py`, byte-identical to the pass that keyed `cat-*.png` and
+`npc-peddler.png`: per-image median of the 4px border ring as the background estimate →
+border-seeded flood fill at colour tolerance 8 → soft alpha ramp from 8 out to colour distance
+24 → interior-pocket cleanup (enclosed background-coloured components ≥100 px). RGB of keyed
+pixels untouched. Backdrops are opaque WebP and are not keyed.
+
+Keyed-fraction sanity check: the seven medallions all land at 31.8–32.2 % transparent, which
+is exactly the corner area outside a disc of 0.93 × the box — i.e. the flood stopped at the
+ring on every one. The two overlays land at 47.3 % / 52.4 %, the extra being their hollow
+centres, which is the intended result.
+
+## Rejections and retries (looked at every render at full size)
+
+- **Backdrop 2 v1 and v2 — rejected.** Both came back with hard-edged flat black rectangles
+  floating in the middle band (the "solid rectangle" failure already documented for the battle
+  backdrops). Fixed by prompt, not by paint: "every tunnel mouth, doorway, pipe opening and
+  platform is fully PAINTED with visible interior depth — receding brickwork, grime streaks,
+  faint reflected light and a lit top edge — never a flat black shape… no floating slabs and
+  no hard-edged rectangles anywhere". v3 accepted.
+- **Backdrop 4 v2 — rejected: anchor bleed.** Re-rolled at 2752x1536 with
+  `style-anchor-bruno.png` as `--ref`, it painted **Bruno and his Stand** dead centre in the
+  Undergarden. Same trap as the first enemy batch. Fix: drop the anchor and pass the already
+  accepted `map-1` as the style ref instead — it carries the identical ink/palette language
+  and contains no figure to copy. Backdrop 3 was re-rolled the same way and improved too.
+- **Medallion sheet v1 — background wrong.** Perfect nine-badge grid, but the model painted it
+  on **white** despite the flat-#1a1626 clause. Keying white is fine, but the recipe leaves
+  keyed pixels' RGB untouched, so every badge would ship with a white fringe on a dark map.
+  Fixed at the art level with a `gpt-image-2` img2img background swap (the documented
+  "iterate on the background alone" pass) — emblems preserved pixel-faithfully.
+- **Background swap, first attempt — rejected.** The same instruction sent to
+  `gemini-3-pro-image-preview` (and to `gpt-image-2` with a looser prompt) replaced all nine
+  cat emblems with generic fantasy sword/shield/helmet heraldry. Only the tightly worded
+  `gpt-image-2` pass that re-lists every emblem preserved the set.
+- **Medallion sheet v2 — rejected after keying.** With the dark background in place, the
+  badges' *inner* plate was still nearly background-valued, so the flood ate straight through
+  it: `fight`, `rest` and `treasure` keyed out to hollow rings with a floating emblem (52.9 %,
+  47.5 %, 42.0 % transparent instead of ~32 %). Fixed at the art level again, never at the key
+  level — one more `gpt-image-2` pass that repaints only the inner disc a clearly lighter
+  dusty plum. v3 keys correctly on all seven.
+
+## Verification
+
+- Every backdrop viewed at full size: no text, no letters or logos on any jar, panel or
+  banner; no characters or creatures in any of the six; no flat unpainted region survives.
+- All nine medallions composited over a red/green checkerboard at 256 px: clean silhouettes,
+  no interior bleed-through, no halo, no keyed-away emblem.
+- All nine downscaled to 64 px and 48 px over `map-6` (the darkest backdrop): every type
+  distinguishable at 64, all but `event`/`rest` still crisp at 48.
+- Overlay registration checked by compositing `locked` and `visited` over `fight`, `treasure`,
+  `boss` and `shop` at 128 px and 64 px.
+- Manifests re-validated programmatically after the edit: every entry resolves to a file, every
+  file is listed, no orphans in any of the four directories.

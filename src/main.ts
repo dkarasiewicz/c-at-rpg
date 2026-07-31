@@ -25,7 +25,7 @@ import { createTitleScene } from "./ui/scenes/title.js";
 import { createPartyCreatorScene } from "./ui/scenes/partyCreator.js";
 import { createFloorgenScene } from "./ui/scenes/floorgen.js";
 import { createResultsScene } from "./ui/scenes/results.js";
-import { createExploreScene } from "./ui/scenes/explore.js";
+import { createRunMapScene } from "./ui/scenes/runMap.js";
 import { createBattleScene } from "./ui/scenes/battle.js";
 import { EventScene } from "./ui/scenes/event.js";
 import { LandingScene } from "./ui/scenes/landing.js";
@@ -37,7 +37,7 @@ import { initSprites } from "./ui/sprites.js";
 /** Scenes whose on-screen time counts as run play time. */
 const RUN_SCENES: readonly SceneId[] = [
   "floorgen",
-  "explore",
+  "runMap",
   "battle",
   "event",
   "landing",
@@ -91,7 +91,7 @@ const RUN_SCENES: readonly SceneId[] = [
     title: createTitleScene,
     partyCreator: createPartyCreatorScene,
     floorgen: createFloorgenScene,
-    explore: createExploreScene,
+    runMap: createRunMapScene,
     battle: createBattleScene,
     event: () => new EventScene(),
     landing: () => new LandingScene(),
@@ -109,7 +109,7 @@ const RUN_SCENES: readonly SceneId[] = [
     meta: loadMeta(), // localStorage probe — records shown on title
     save() {
       // the 5 autosave points call this; a run mid-floor is always present
-      if (ctx.run?.floor) saveRun(ctx.run);
+      if (ctx.run?.floorMap) saveRun(ctx.run);
     },
   };
   manager.bind(ctx);
@@ -145,7 +145,7 @@ const RUN_SCENES: readonly SceneId[] = [
   // ?smoke=battle — dev/CI hook (like ?gallery=1): skip boot/title, start a
   // fresh run and drop straight into a non-boss battle so automated UI
   // smokes can exercise combat deterministically. Follows the FSM legally:
-  // boot → title → floorgen → explore → battle.
+  // boot → title → floorgen → runMap → battle.
   const smoke = new URLSearchParams(window.location.search).get("smoke");
   if (smoke === "battle") {
     manager.goto("boot");
@@ -153,7 +153,7 @@ const RUN_SCENES: readonly SceneId[] = [
     ctx.run = newRun("SMOKE1");
     manager.goto("floorgen");
     const poll = setInterval(() => {
-      if (manager.current === "explore") {
+      if (manager.current === "runMap") {
         clearInterval(poll);
         manager.goto("battle", {
           enemies: ["ratThug", "ratThug", "sewerBat"],

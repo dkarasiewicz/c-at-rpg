@@ -1,18 +1,19 @@
 /**
  * WP-09 — floorgen interstitial (gameloop.md §1): "Descending… Floor N —
- * <floor name>" for a beat while the floor generates from the seed, then
- * autosave (the first of the five autosave points) and hand off to explore.
+ * <floor name>" for a beat while the floor's RUN MAP generates from the seed,
+ * then autosave (the first of the five autosave points) and hand off to the
+ * run map.
  *
- * Entered from title (New Run — floor not yet generated), from the landing
- * (descend() already generated floor n+1) and from results (Again / New
- * Seed). Idempotent: only generates when `run.floor` is null.
+ * Entered from title (New Run — map not yet generated), from the landing
+ * (Descend bumps the floor and clears the map) and from results (Again / New
+ * Seed). Idempotent: only generates when `run.floorMap` is null.
  *
  * All chrome from the shared kit (widgets.ts): backdrop + vignette,
  * heading/label type scale, the kit's XP-colored `bar` as the hold meter.
  */
 import { Container } from "pixi.js";
 import { FLOORS } from "../../content/floors.js";
-import { generateCurrentFloor } from "../../core/run/runState.js";
+import { generateCurrentFloorMap } from "../../core/run/runState.js";
 import { maxHp } from "../../core/run/party.js";
 import { applyPartyContent } from "./partyCreator.js";
 import { PAL } from "../palette.js";
@@ -21,7 +22,7 @@ import { TYPE } from "../textStyles.js";
 import { bar, heading, label, sceneBackdrop, vignette } from "../widgets.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 
-/** How long the interstitial text holds before the explore handoff. */
+/** How long the interstitial text holds before the run-map handoff. */
 const HOLD_MS = 600;
 
 /** Vertical rhythm (design px). */
@@ -115,14 +116,14 @@ export function createFloorgenScene(): Scene {
       // first (it also masks the generation/GC hitch — gameloop.md §1)
       if (!generated && t > 0) {
         generated = true;
-        if (ctx.run && !ctx.run.floor) {
-          ctx.run = generateCurrentFloor(ctx.run);
+        if (ctx.run && !ctx.run.floorMap) {
+          ctx.run = generateCurrentFloorMap(ctx.run);
         }
         ctx.save(); // autosave point 1: after FLOORGEN
       }
       if (t >= HOLD_MS) {
         done = true;
-        ctx.scenes.goto("explore");
+        ctx.scenes.goto("runMap");
       }
     },
   };

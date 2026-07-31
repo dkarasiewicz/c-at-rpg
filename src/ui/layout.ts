@@ -27,24 +27,8 @@ export const RADIUS = {
 export const SPACE = { xs: 4, sm: 8, md: 12, lg: 20, xl: 32 } as const;
 
 export const R = {
-  /* ---- §7 Exploration screen -------------------------------------- */
-  explore: {
-    viewport: [0, 0, 1280, 632] as Rect, // world layer; tiles 48×48, camera on party
-    floorChip: [12, 12, 232, 36] as Rect, // "Floor 2 — Cellars" UI-14 + theme accent dot
-    seedChip: [12, 52, 232, 22] as Rect, // "seed 8F3A21C9" MONO-11 PAL.textDim
-    minimap: [1080, 12, 188, 140] as Rect, // panel; map centered inside at 4px/tile
-    partyStrip: [0, 632, 1280, 88] as Rect, // bottom HUD panel (square corners, full-bleed)
-    catCards: [
-      [16, 644, 244, 68],
-      [272, 644, 244, 68],
-      [528, 644, 244, 68],
-      [784, 644, 244, 68],
-    ] as Rect[],
-    goldChip: [1044, 644, 220, 30] as Rect, // coin + "128g" UI-14
-    itemChips: [1044, 680, 220, 26] as Rect, // consumable glyph chips ×N
-    toast: [340, 560, 600, 48] as Rect, // centered toast, auto-hide 2.5s
-    tileSize: 48,
-  },
+  // (§7's exploration-screen rects went with the tile crawl — the run map
+  // owns its own board/strip geometry in `scenes/runMap.ts`.)
 
   /* ---- §8 Combat screen -------------------------------------------- */
   combat: {

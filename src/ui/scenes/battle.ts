@@ -32,13 +32,36 @@ import {
   prefetchResonance,
   resonancePairKey,
 } from "../../services/gm.js";
+import {
+  ensureDmSession,
+  markDmUnreachable,
+  probeDm,
+  requestCombatVerdict,
+} from "../../services/dm.js";
+import {
+  canAffordImprovisation,
+  improviseActionFor,
+  isLiveTarget,
+  validateCombatVerdict,
+  withAdjudication,
+  withDmSession,
+  type TabletopRun,
+} from "../../services/tabletop.js";
+import {
+  createTabletopBar,
+  createTabletopChip,
+  type TabletopBar,
+} from "../overlays/tabletopBar.js";
 import { createBattle } from "../../core/combat/setup.js";
 import {
   battleResult,
   isAutoSkip,
   startRound,
 } from "../../core/combat/turns.js";
-import { resolveAction } from "../../core/combat/resolve.js";
+import {
+  resolveAction,
+  type ImproviseAction,
+} from "../../core/combat/resolve.js";
 import { takeEnemyTurn } from "../../core/combat/ai.js";
 import {
   byId,
@@ -60,7 +83,6 @@ import {
 import { rollBossLoot, rollChest, rollVictory } from "../../core/loot/roll.js";
 import type { LootCtx } from "../../core/loot/roll.js";
 import { isStack, removeConsumable } from "../../core/loot/inventory.js";
-import { applyFlee } from "../../core/dungeon/step.js";
 import { roundHalfUp } from "../../core/util.js";
 import { CLASSES } from "../../content/classes.js";
 import { CONSUMABLES } from "../../content/consumables.js";
@@ -116,7 +138,7 @@ import {
 } from "./battleWidgets.js";
 
 /* ---------------------------------------------------------------------- */
-/* Params — accepted from explore (StepTrigger 'battle') and event scenes  */
+/* Params — accepted from the run map (a node fight) and the event scene   */
 /* ---------------------------------------------------------------------- */
 
 export interface BattleSceneParams {
@@ -125,8 +147,12 @@ export interface BattleSceneParams {
   /** battleRng stream key: mulberry32(hash(runSeed, floor, encounterIndex)) */
   encounterIndex: number;
   isBoss?: boolean;
-  /** roamer pack fights: floor write-back on victory / flee stun. */
-  roamerId?: number;
+  /**
+   * Run-map node this fight belongs to. Passed to `applyBattleResult`, which
+   * ticks `floorsCleared` only on a victory at the floor's terminal node.
+   * Event fights own no node and leave it out.
+   */
+  nodeId?: number;
   /** event fights (events.md §2.3): victory loot mode. */
   lootMode?: "none" | "normal" | "bonus";
   /** event fights: onWinEffects context, passed to the loot overlay. */
@@ -266,6 +292,12 @@ export function createBattleScene(): Scene {
   let targetFx: Container | null = null;
   let flyout: Container | null = null;
   let flyoutItems: string[] = [];
+
+  // the tabletop layer (run-map-and-dm.md §3) — built ONLY when a DM answers
+  // the probe; offline these three stay null and the scene is unchanged
+  let tabletop: TabletopBar | null = null;
+  let tabletopChip: Container | null = null;
+  let improvising = false;
   let elapsed = 0;
   let finished = false;
 
@@ -681,6 +713,25 @@ export function createBattleScene(): Scene {
 
     // Cat Pile banner lives on the modal layer
     modalC.addChild(banner.view);
+
+    // Tabletop layer: probe once per session, fire-and-forget. Reachable ⇒
+    // the "[T] say what you do" chip and the card appear; unreachable ⇒ this
+    // callback never fires and the battle screen is byte-identical to today.
+    void probeDm().then((ok) => {
+      if (!ok || !alive || !hudC || !modalC || tabletop) return;
+      const chip = createTabletopChip(() => openTabletop());
+      chip.view.position.set(rx(R.combat.roundChip), 54);
+      hudC.addChild(chip.view);
+      tabletopChip = chip.view;
+      tabletop = createTabletopBar({
+        title: "WHAT DO YOU DO?",
+        placeholder: "Pixel throws the lantern at the oil slick…",
+        onSubmit: (text) => submitImprovisation(text),
+        onCancel: () => returnTurn(),
+        onDismiss: () => returnTurn(),
+      });
+      modalC.addChild(tabletop.view);
+    });
   };
 
   /* ---------------- engine driving loop (§3.2) ---------------- */
@@ -734,7 +785,10 @@ export function createBattleScene(): Scene {
     enterInput(actor);
   };
 
-  const resolvePlayer = (action: BattleAction, itemDefId?: string): void => {
+  const resolvePlayer = (
+    action: BattleAction | ImproviseAction,
+    itemDefId?: string,
+  ): void => {
     if (!bs || !rng || !ctx?.run) return;
     clearTargeting();
     closeFlyout();
@@ -807,6 +861,139 @@ export function createBattleScene(): Scene {
     };
     skillBar.set(slots);
     skillBar.setSelected(null);
+  };
+
+  /* ---------------- the tabletop layer (run-map-and-dm.md §3) ---------- */
+
+  /**
+   * Record one adjudication into the run log and autosave it. Every beat is
+   * recorded — told, refused, and dropped-by-the-lint alike — so the run's
+   * transcript is complete and survives a reload (§3 "Determinism & replay").
+   */
+  const recordBeat = (
+    prompt: string,
+    narration: string,
+    allowed: boolean,
+    effects: ImproviseAction["effects"],
+    applied: boolean,
+    problems: string[],
+    energyCost: number,
+    target: string | null,
+  ): void => {
+    if (!ctx?.run) return;
+    ctx.run = withAdjudication(ctx.run as TabletopRun, {
+      where: "combat",
+      floor: ctx.run.floorNum,
+      nodeId: ctx.run.currentNodeId,
+      prompt,
+      narration,
+      allowed,
+      effects,
+      applied,
+      problems,
+      energyCost,
+      target,
+    });
+    ctx.save();
+  };
+
+  /** Back to the skill bar with the turn untouched (nothing was spent). */
+  const returnTurn = (): void => {
+    improvising = false;
+    if (!bs || finished) return;
+    const actor = nextActor(bs);
+    if (actor) enterInput(actor);
+  };
+
+  /**
+   * One improvised turn. The DM's verdict is re-linted here before the engine
+   * sees it (defence in depth, §3): a verdict that fails, or one the actor
+   * cannot pay for, degrades to PURE NARRATION and costs nothing — only an
+   * applied verdict spends the turn.
+   */
+  const submitImprovisation = (text: string): void => {
+    if (!bs || !rng || !ctx?.run || !tabletop || improvising) return;
+    const actorId = legal?.actorId;
+    if (!actorId) return;
+    improvising = true;
+    phase = "anim"; // the skill bar goes quiet while the DM thinks
+    skillBar.set([null, null, null, null, null, null]);
+    tabletop.waiting(text);
+    const floor = ctx.run.floorNum;
+
+    void (async () => {
+      const ensured = await ensureDmSession(ctx!.run as TabletopRun);
+      if (!alive || !bs || !tabletop) return;
+      if (!ensured) {
+        dmWentQuiet(text);
+        return;
+      }
+      ctx!.run = ensured.run;
+      const res = await requestCombatVerdict(ensured.session, {
+        state: bs,
+        actorId,
+        floor,
+        prompt: text,
+        onDelta: (_delta, soFar) => tabletop?.stream(soFar),
+      });
+      if (!alive || !bs || !tabletop || finished) return;
+      if (!res) {
+        dmWentQuiet(text);
+        return;
+      }
+      ctx!.run = withDmSession(ctx!.run as TabletopRun, res.session);
+
+      const check = validateCombatVerdict(res.data, floor);
+      const verdict = check.verdict;
+      if (!verdict) {
+        dmWentQuiet(text);
+        return;
+      }
+      const target = isLiveTarget(bs, verdict.target) ? verdict.target : null;
+      const affordable = canAffordImprovisation(bs, actorId, verdict);
+      const problems = [...check.problems];
+      if (check.applied && !affordable) problems.push("not enough energy");
+      const applied = check.applied && affordable && verdict.effects.length > 0;
+
+      recordBeat(
+        text,
+        verdict.narration,
+        verdict.allowed,
+        verdict.effects,
+        applied,
+        problems,
+        applied ? verdict.energyCost : 0,
+        target,
+      );
+
+      if (!applied) {
+        // A refusal is the DM saying no, in character — never an error. A
+        // dropped verdict reads the same way from the player's chair: the
+        // beat is narrated and the turn is handed straight back.
+        tabletop.reply(verdict.narration, verdict.allowed ? "told" : "refused");
+        return;
+      }
+      const action = improviseActionFor({ ...verdict, target }, floor);
+      tabletop.close();
+      improvising = false;
+      resolvePlayer(action);
+    })();
+  };
+
+  /** The DM did not answer. The moment passes; the turn is handed back. */
+  const dmWentQuiet = (prompt: string): void => {
+    const line = "The DM is elsewhere for a moment. Nothing comes of it.";
+    markDmUnreachable();
+    recordBeat(prompt, line, false, [], false, ["dm unreachable"], 0, null);
+    tabletop?.reply(line, "quiet");
+    if (tabletopChip) tabletopChip.visible = false;
+  };
+
+  const openTabletop = (): void => {
+    if (phase !== "input" || improvising || !tabletop) return;
+    clearTargeting();
+    closeFlyout();
+    tabletop.open();
   };
 
   const listUsableItems = (): { defId: string; count: number }[] => {
@@ -1624,11 +1811,11 @@ export function createBattleScene(): Scene {
     const result = battleResult(bs, log);
 
     if (result.outcome === "fled") {
-      if (params.roamerId !== undefined && run.floor) {
-        applyFlee(run.floor, params.roamerId);
-      }
+      // A fled node fight simply hands the route back: the node is already
+      // marked resolved by the run map, so the party walks on without loot
+      // (and the stairs guard, if that is what they ran from, stays put).
       ctx.save(); // autosave: successful flee (gameloop §9)
-      delay(450, () => ctx?.scenes.goto("explore"));
+      delay(450, () => ctx?.scenes.goto("runMap"));
       return;
     }
 
@@ -1672,13 +1859,13 @@ export function createBattleScene(): Scene {
           livesLeft: e.livesLeft,
         };
       });
-    const out = applyBattleResult(run, result, params.roamerId);
+    const out = applyBattleResult(run, result, params.nodeId);
     ctx.run = out.run;
     const runWon = result.bossDefeated && out.run.floorNum >= FLOORS.length;
     const after = (): void => {
       if (!ctx) return;
       if (runWon) ctx.scenes.goto("results", { victory: true });
-      else ctx.scenes.goto("explore");
+      else ctx.scenes.goto("runMap");
     };
 
     if (params.lootMode === "none" && !params.eventWin) {
@@ -1867,7 +2054,7 @@ export function createBattleScene(): Scene {
       params = (rawParams ?? null) as BattleSceneParams | null;
       if (!params || !ctx.run) {
         // driver bug — nothing to fight; bail to explore next frame
-        delay(0, () => ctx?.scenes.goto("explore"));
+        delay(0, () => ctx?.scenes.goto("runMap"));
         return;
       }
       isBoss = params.isBoss ?? params.encounterIndex === 0;
@@ -1875,7 +2062,7 @@ export function createBattleScene(): Scene {
       pendingAnnounce.length = 0;
       const setup = buildSetup();
       if (!setup || setup.cats.length === 0) {
-        delay(0, () => ctx?.scenes.goto("explore"));
+        delay(0, () => ctx?.scenes.goto("runMap"));
         return;
       }
       bs = createBattle(setup);
@@ -1920,12 +2107,18 @@ export function createBattleScene(): Scene {
       finished = true;
       anim.length = 0;
       onDrained = null;
+      // the tabletop card owns a DOM <input>: it must go before the pixi
+      // layers below it are destroyed (and before the element is orphaned)
+      tabletop?.destroy();
+      tabletop = null;
       for (const c of [bgC, worldC, fxC, hudC, floatC, modalC]) {
         if (c) {
           c.parent?.removeChild(c);
           c.destroy({ children: true });
         }
       }
+      tabletopChip = null;
+      improvising = false;
       bgC = worldC = fxC = hudC = floatC = modalC = null;
       stage = null;
       roundChip = null;
@@ -1945,6 +2138,7 @@ export function createBattleScene(): Scene {
     update(dtMs: number): void {
       if (!alive) return;
       elapsed += dtMs;
+      tabletop?.update(dtMs);
 
       // drain the animation queue at ≥3 events/s (hold cap 333ms)
       holdMs -= dtMs;
@@ -1995,6 +2189,22 @@ export function createBattleScene(): Scene {
 
     onKey(key: string): boolean {
       if (!alive || !bs) return false;
+
+      // The tabletop card owns the keyboard while it is up. While typing the
+      // DOM field swallows everything itself; what reaches here is the reply
+      // beat, where any confirm key dismisses it and hands the turn back.
+      if (tabletop?.isOpen()) {
+        if (
+          key === "e" ||
+          key === "enter" ||
+          key === "space" ||
+          key === "esc"
+        ) {
+          tabletop.close();
+          returnTurn();
+        }
+        return true;
+      }
 
       if (scrollPanel) {
         if (key === "esc" || key === "l") toggleScrollback();
@@ -2053,6 +2263,10 @@ export function createBattleScene(): Scene {
         }
         if (key === "r") {
           tryFlee();
+          return true;
+        }
+        if (key === "t" && tabletop) {
+          openTabletop();
           return true;
         }
         if (key === "right" && legal?.canMoveForward) {

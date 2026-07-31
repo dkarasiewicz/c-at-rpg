@@ -23,3 +23,18 @@ dist-ssr
 *.sln
 *.sw?
 .vercel
+
+# Throwaway harnesses. Playwright smoke/screenshot scripts must run FROM the
+# repo root for bare imports to resolve, so they land here — but they are
+# scratch, never part of the project.
+smoke.tmp.mjs
+dbg.tmp.mjs
+*.tmp.mjs
+.smoke.mjs
+.shot-*.mjs
+.fps*.mjs
+.env.gwtest
+
+# eve agent build artifacts (docs/DM-DEPLOY.md)
+.eve
+.output

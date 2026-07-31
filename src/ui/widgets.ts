@@ -113,9 +113,14 @@ export function makeBar(
       }
       tween(fill.scale, { x: frac }, 200);
       if (frac < prev) {
-        // classic chip-away: PAL.text ghost lingers 300ms then shrinks
+        // classic chip-away: PAL.text ghost lingers 300ms then shrinks.
+        // The scene can unmount inside that 300 ms (a KO that ends the
+        // battle), so the deferred tween re-checks its target.
         ghost.scale.x = prev;
-        setTimeout(() => tween(ghost.scale, { x: frac }, 200), 300);
+        setTimeout(() => {
+          if (ghost.destroyed) return;
+          tween(ghost.scale, { x: frac }, 200);
+        }, 300);
       }
     },
   };
@@ -792,8 +797,12 @@ export function bar(w = 120, h = 10, opts: BarOpts = {}): ValueBar {
       }
       tween(fillWrap.scale, { x: frac }, 200);
       if (frac < prev) {
+        // same 300 ms window as `bar()` — the target can be gone by then
         ghost.scale.x = prev;
-        setTimeout(() => tween(ghost.scale, { x: frac }, 200), 300);
+        setTimeout(() => {
+          if (ghost.destroyed) return;
+          tween(ghost.scale, { x: frac }, 200);
+        }, 300);
       }
     },
   };

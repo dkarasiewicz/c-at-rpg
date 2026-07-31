@@ -1,0 +1,25 @@
+{
+  // Standalone tsconfig for the eve DM agent, exactly like api/tsconfig.json:
+  // the app's root tsconfig includes only src/ (so `npm run typecheck` and
+  // `vite build` never touch agent/), and this package is checked separately
+  // with: npm run typecheck:agent
+  //
+  // The agent imports the SHIPPED validators from src/core (never a copy), so
+  // src/** is pulled in transitively by the import graph.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["**/*.ts"]
+}

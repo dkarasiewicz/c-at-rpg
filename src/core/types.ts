@@ -5,7 +5,7 @@
  * implementers code against these shapes and do not edit them; additive
  * optional fields require tech-lead sign-off recorded in ARCHITECTURE.md.
  *
- * Imports NOTHING. Zero runtime code beyond the `Tile` enum values.
+ * Imports NOTHING. Zero runtime code beyond the `EQUIP_SLOTS` const.
  */
 
 /* ------------------------------------------------------------------------ */
@@ -452,112 +452,92 @@ export interface LootGrant {
 }
 
 /* ------------------------------------------------------------------------ */
-/* §2.7 Dungeon (dungeon.md §3)                                              */
+/* §2.7 Run map (run-map-and-dm.md §2 — SUPERSEDES the dungeon.md tile maze) */
 /* ------------------------------------------------------------------------ */
 
-export const enum Tile {
-  Wall = 0,
-  Floor = 1,
-  Door = 2,
-  StairsUp = 3,
-  StairsDown = 4,
-}
+/**
+ * What an encounter node IS. Every node on a floor map is an encounter; the
+ * type is what the medallion advertises (asset ids `node:<type>`).
+ */
+export type NodeType =
+  "fight" | "elite" | "event" | "shop" | "rest" | "treasure" | "boss";
 
-export interface Room {
+/**
+ * One encounter on the floor's directed graph. `depth` is the column
+ * (0 = entry, `FloorMap.columns - 1` = terminal), `row` the 0-based slot
+ * within that column top→bottom (`rowCount` = how many share the column, so
+ * the UI can lay the column out without scanning).
+ */
+export interface MapNode {
+  /** index into `FloorMap.nodes` — stable, 0-based */
   id: number;
-  x: number;
-  y: number;
-  w: number;
-  h: number;
+  type: NodeType;
+  /** column index, 0 = entry */
+  depth: number;
+  /** 0-based row within the column, top → bottom */
+  row: number;
+  /** how many nodes live in this column */
+  rowCount: number;
+  /**
+   * Payload seed — `hash(runSeed, floor, 'node', id)`. Derived, NOT drawn
+   * from the map stream, so what a node contains never depends on the order
+   * nodes are visited (the per-entity-seed rule, ARCHITECTURE.md §4).
+   */
+  seed: number;
 }
 
-export interface Roamer {
-  kind: "roamer" | "boss";
-  id: number;
-  x: number;
-  y: number;
-  /** 0 = boss, 1..N in placement order */
-  encounterIndex: number;
-  /** front-to-back, 1..5 */
-  enemies: EnemyId[];
-  homeRoom: number;
-  waypoints: [number, number][];
-  wpIndex: number;
-  state: "patrol" | "chase" | "return" | "stunned";
-  stunnedFor: number;
-  lostSightFor: number;
-  dead: boolean;
+/** A one-way step. Always `nodes[from].depth + 1 === nodes[to].depth`. */
+export interface MapEdge {
+  from: number;
+  to: number;
 }
 
-export type Entity =
-  | {
-      kind: "chest";
-      id: number;
-      x: number;
-      y: number;
-      opened: boolean;
-      lootTableId: "chest_t1" | "chest_t2" | "chest_t3" | "boss_hoard";
-      chestSeed: number;
-    }
-  | {
-      kind: "event";
-      id: number;
-      x: number;
-      y: number;
-      used: boolean;
-      eventSeed: number;
-    }
-  | Roamer;
-
-export interface FloorState {
+/**
+ * A floor: a layered DAG, entry on the left, boss (or the stairs-guard on a
+ * non-boss floor) on the right. Every node is reachable from `entryId` and
+ * every maximal path terminates at `bossId`.
+ */
+export interface FloorMap {
   /** 1..6 */
   floor: number;
-  w: number;
-  h: number;
-  /** index = y*w + x */
-  tiles: Uint8Array;
-  rooms: Room[];
-  entranceRoomId: number;
-  exitRoomId: number;
-  /** id = index at creation */
-  entities: Entity[];
-  stairsLocked: boolean;
-  /** 0|1 */
-  explored: Uint8Array;
-  /** recomputed after every step */
-  visible: Set<number>;
-  party: { x: number; y: number };
-  stepCount: number;
+  /** column count, 4..7 */
+  columns: number;
+  /** index === node.id */
+  nodes: MapNode[];
+  /** sorted by (from, to) */
+  edges: MapEdge[];
+  /** the single column-0 node the party starts on */
+  entryId: number;
+  /** the single terminal node — the boss, or the pack guarding the stairs */
+  bossId: number;
+}
+
+/**
+ * Authored per-floor node budget (run-map-and-dm.md §2: "density is authored,
+ * not emergent"). Replaces the tile maze's `roamers`/`chests`/`events`.
+ */
+export interface FloorMapBudget {
+  /** inclusive column range; clamped to 4..7 */
+  columnsLo: number;
+  columnsHi: number;
+  /** inclusive nodes-per-intermediate-column range; clamped to 1..4 */
+  rowsLo: number;
+  rowsHi: number;
+  /** relative weights for intermediate nodes; a missing type is never drawn */
+  weights: Partial<Record<NodeType, number>>;
+  /** types that MUST appear at least once on the floor (shop + rest) */
+  guaranteed: NodeType[];
 }
 
 export interface FloorConfig {
   name: string;
-  w: number;
-  h: number;
-  roomAttempts: number;
-  roamers: number;
-  chests: number;
-  events: number;
   pool: EnemyId[];
   budgetLo: number;
   budgetHi: number;
+  /** the authored run-map budget for this floor */
+  map: FloorMapBudget;
   boss?: { bossId: EnemyId; encounter: EnemyId[] };
 }
-
-/** Step-loop result: what the UI must react to after one step. */
-export type StepTrigger =
-  | {
-      t: "battle";
-      roamerId: number;
-      encounterIndex: number;
-      enemies: EnemyId[];
-      isBoss: boolean;
-    }
-  | { t: "chest"; chestId: number } // bumped an unopened chest
-  | { t: "event"; eventId: number; eventSeed: number }
-  | { t: "stairs"; locked: boolean }
-  | { t: "moved" }
-  | { t: "bump" };
 
 /* ------------------------------------------------------------------------ */
 /* §2.8 Narrative events (events.md §1, verbatim with canonical fixes)       */
@@ -702,48 +682,35 @@ export interface RunState {
   floorFiredEventIds: string[];
   /** mewthical downgrade rule */
   uniquesDropped: MewHookId[];
-  floor: FloorState | null;
+  /** the current floor's run map; null until FLOORGEN generates it */
+  floorMap: FloorMap | null;
+  /** where the party stands on `floorMap`; null while `floorMap` is null */
+  currentNodeId: number | null;
+  /** every node the party has stood on this floor, in arrival order */
+  visitedNodeIds: number[];
   playTimeMs: number;
 }
 
 // ---- persistence (core/run/save.ts) ----
 
-/** Tiles regenerate from the seed; deltas overlay. */
-export interface FloorDelta {
-  partyPos: { x: number; y: number };
-  /** base64 bitset */
-  explored: string;
-  stepCount: number;
-  stairsLocked: boolean;
-  entities: (
-    | { kind: "chest"; id: number; opened: boolean }
-    | { kind: "event"; id: number; used: boolean }
-    | {
-        kind: "roamer" | "boss";
-        id: number;
-        x: number;
-        y: number;
-        dead: boolean;
-        state: Roamer["state"];
-        stunnedFor: number;
-        lostSightFor: number;
-        wpIndex: number;
-      }
-  )[];
-}
-
-/** Save-file schema versions this build can read (save.ts SAVE_VERSION = 2). */
-export type SaveVersion = 1 | 2;
+/** Save-file schema versions this build can read (save.ts SAVE_VERSION = 3). */
+export type SaveVersion = 1 | 2 | 3;
 
 /**
- * localStorage 'catrpg.save.v1' (the KEY keeps its name so v1 saves are still
- * found; `version` is what gates them). v1 = pre-progression saves, migrated
- * forward on load by core/run/save.ts `migrateSave`; v2 = current.
+ * localStorage 'catrpg.save.v1' (the KEY keeps its name so old saves are still
+ * found; `version` is what gates them). v1 = pre-progression, v2 = pre-run-map
+ * (both tile-dungeon saves, migrated forward on load by `migrateSave`);
+ * v3 = current — the run map regenerates from the seed, so the whole floor is
+ * `run.floorMap` + the two traversal fields and there is no delta to store.
  */
 export interface SaveFile {
   version: SaveVersion;
-  run: Omit<RunState, "floor">;
-  floorDelta: FloorDelta;
+  run: Omit<RunState, "floorMap">;
+  /**
+   * Legacy v1/v2 tile-dungeon overlay. Present only on pre-run-map blobs and
+   * ignored on load (the tile maze is gone — run-map-and-dm.md §2).
+   */
+  floorDelta?: unknown;
 }
 
 /** localStorage 'catrpg.meta.v1' — records only, no unlocks */

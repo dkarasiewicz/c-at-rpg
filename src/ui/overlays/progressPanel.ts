@@ -1081,11 +1081,20 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     const left = unspentPoints(cat, run.level);
     const head = heading("SPEND A WHISKER POINT", 3);
     head.position.set(SPACE.md, SPACE.md);
-    const count = label(left > 0 ? `${left} UNSPENT` : "all spent", {
-      mono: true,
-      bold: true,
-      fill: left > 0 ? PAL.gold : PAL.textDim,
-    });
+    // "all spent" is a lie at level 1, where no point has ever been earned
+    const earned = Math.max(0, run.level - 1);
+    const count = label(
+      left > 0
+        ? `${left} UNSPENT`
+        : earned > 0
+          ? "all spent"
+          : "none earned yet",
+      {
+        mono: true,
+        bold: true,
+        fill: left > 0 ? PAL.gold : PAL.textDim,
+      },
+    );
     count.anchor.set(1, 0);
     count.position.set(RIGHT_W - SPACE.md, SPACE.md - 2);
     const sub = label(
@@ -1510,7 +1519,9 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     unspentText.text =
       total > 0
         ? `${total} WHISKER POINT${total === 1 ? "" : "S"} UNSPENT`
-        : "every point spent";
+        : run.level > 1
+          ? "every point spent"
+          : "whisker points arrive at level 2";
     unspentText.style.fill = total > 0 ? PAL.gold : PAL.textDim;
 
     paintTabs(run);

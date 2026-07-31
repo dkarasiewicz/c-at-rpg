@@ -24,6 +24,17 @@ Design pillars:
 
 ## 1. Top-Level State Machine
 
+> **SUPERSEDED IN PART — `run-map-and-dm.md` §2 (the run map).** The `EXPLORE`
+> state below is now `RUN_MAP`: the floor is a route graph, not a tile maze, so
+> "touch an encounter entity / step on an event tile / open a chest / step on the
+> stairs" all become "walk into a node of that type". `CAMP` is the LANDING
+> scene, which a mid-floor **shop node** also borrows (returning to `RUN_MAP`
+> instead of descending). REST and TREASURE nodes resolve inside `RUN_MAP`
+> itself — an in-scene catnap panel and the `LOOT` overlay — so neither is a
+> state. Everything else on this page (overlay rules, autosave points, scoring,
+> pause, save) stands unchanged; the shipped table lives in
+> `src/ui/sceneManager.ts`.
+
 One global `GameStateMachine` owns a single active scene plus at most one overlay.
 States and their complete transition table:
 

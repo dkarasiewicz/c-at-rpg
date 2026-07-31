@@ -1,8 +1,36 @@
 # c(at)rpg Dungeon Generation & Exploration — FINAL DESIGN
 ## "Whisker Maze" (rooms-in-a-maze, step-based exploration)
 
-**Status: FINAL — aligned to `docs/design/combat.md` ("Claws & Ranks: Nine Lives
-Edition").** This document is the single source of truth for floor generation,
+> ## ⚠️ SUPERSEDED — historical reference only
+>
+> **Replaced by [`run-map-and-dm.md`](run-map-and-dm.md) §2 (the run map).**
+> The tile maze generated mostly-empty corridors, WASD travel added no
+> decision, and the minimap was mostly blank. Each floor is now a small
+> directed node graph — entry on the left, boss or stairs on the right, every
+> step a choice between 2-3 routes, every node an encounter.
+>
+> **Gone from the codebase:** `src/core/dungeon/*` (gen, populate, floor,
+> step, roamers), `tests/dungeon.spec.ts`, the `genRng`/`popRng` streams, and
+> `FloorConfig`'s `w`/`h`/`roomAttempts`/`roamers`/`chests`/`events` columns.
+> `FloorState`/`Tile`/`Room`/`Roamer`/`Entity`/`StepTrigger`/`FloorDelta` are
+> gone from `core/types.ts` §2.7, which now holds the run-map contract
+> (`NodeType`, `MapNode`, `MapEdge`, `FloorMap`, `FloorMapBudget`).
+>
+> **Still live, and still canonical, from this document:**
+> - §2's RNG design (fnv1a + mulberry32, per-entity derived seeds) — the run
+>   map just adds its own `mapRng` stream to the table;
+> - §7.2's three difficulty knobs (species pool, threat budget, encounter
+>   count) — `pool`/`budgetLo`/`budgetHi` are unchanged in `content/floors.ts`;
+> - **§7.3's pack composition algorithm, verbatim**, now in
+>   `src/core/map/encounter.ts` running off each node's payload seed;
+> - the boss data and the floor table's names/pools/budgets/bosses (GDD §6).
+>
+> Everything below about grids, rooms, corridors, fog of war, LOS, roamer
+> patrols, the step loop and the minimap describes a system that no longer
+> exists. Read it for the pack/loot/difficulty rules only.
+
+**Status: SUPERSEDED (was: FINAL — aligned to `docs/design/combat.md` "Claws &
+Ranks: Nine Lives Edition").** This document was the source of truth for floor generation,
 exploration, fog of war, roaming encounters, and per-floor difficulty. It produces
 encounters in exactly the shape combat consumes (a front-to-back `string[]` of 1–5
 enemy ids plus an `encounterIndex`), derives the battle RNG stream exactly as combat

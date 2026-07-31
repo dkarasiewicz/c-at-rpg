@@ -61,7 +61,6 @@ import {
   equipName,
   equipStatsText,
   itemSpriteId,
-  INVENTORY_PANEL_H,
   INVENTORY_PANEL_W,
   makeInventoryPanel,
   RARITY_COLOR,
@@ -110,6 +109,14 @@ const BAR_H = 52;
 const SLOT_W = 240;
 const DESCEND_W = 300;
 
+/**
+ * The sell modal's card height. Sell mode shows only the 8×2 grid (which
+ * ends at 188px) plus a three-line tip, so the manage-mode default leaves
+ * the bottom third empty; this is the grid plus room for the Done button
+ * inside the card.
+ */
+const SELL_PANEL_H = 272;
+
 interface CatCard {
   view: Container;
   catIndex: number;
@@ -120,9 +127,26 @@ interface CatCard {
   setPoints(n: number): void;
 }
 
+/**
+ * Mount params. Absent = the between-floors stairwell (the floor is cleared:
+ * catnap, Peddler, Den, Descend). Present = the run map's SHOP NODE, which
+ * borrows the same Peddler: no catnap, no floor bookkeeping, and the primary
+ * action hands the route straight back (run-map-and-dm.md §2).
+ */
+export interface LandingParams {
+  shop?: {
+    /** run-map node id (kept for the header line / future callbacks) */
+    nodeId: number;
+    /** the node's payload seed — the stock stream for THIS shop */
+    seed: number;
+  };
+}
+
 export class LandingScene implements Scene {
   private view: Container | null = null;
   private ctx: GameCtx | null = null;
+  /** Peddler-node mode: no catnap, no descend, back to the map when done. */
+  private shopNode: LandingParams["shop"] = undefined;
   private stock: ShopStock | null = null;
   private stockLayer: Container | null = null;
   private cards: CatCard[] = [];
@@ -140,23 +164,34 @@ export class LandingScene implements Scene {
   private t = 0;
   private descendFn: (() => void) | null = null;
 
-  mount(root: Container, ctx: GameCtx): void {
+  mount(root: Container, ctx: GameCtx, params?: unknown): void {
     this.ctx = ctx;
     const view = new Container();
     this.view = view;
     layer(root, "hud").addChild(view);
 
+    const shop = (params as LandingParams | undefined)?.shop;
+    this.shopNode = shop;
     let run = ctx.run!;
-    const n = run.floorNum; // the floor just cleared
+    const n = run.floorNum; // the floor just cleared (stairwell mode)
 
     // ---- arrival: floor mods expire, free catnap (GDD §7 ①) ------------
-    const expired = run.cats.map((c) => expireFloorMods(c, run.level));
-    const { cats, healed } = catnapHeal(expired, run.level);
-    run = { ...run, cats };
-    ctx.run = run;
+    // A shop NODE is mid-floor: nothing expires and nothing heals there —
+    // the catnap is what the rest node and the stairwell are for.
+    const healed = run.cats.map(() => 0);
+    if (!shop) {
+      const expired = run.cats.map((c) => expireFloorMods(c, run.level));
+      const napped = catnapHeal(expired, run.level);
+      run = { ...run, cats: napped.cats };
+      napped.healed.forEach((h, i) => (healed[i] = h));
+      ctx.run = run;
+    }
 
     // ---- Peddler stock: one roll from the shop stream (loot.md §6) -----
-    const shopRng = mulberry32(hash(run.runSeed, "shop", n));
+    // Stairwell: `hash(runSeed, 'shop', floorJustCleared)` (§4 stream table).
+    // Shop node: the node's own payload seed, so what the Peddler is holding
+    // never depends on the order the party took its routes in.
+    const shopRng = mulberry32(shop ? shop.seed : hash(run.runSeed, "shop", n));
     const stock = rollShopStock(shopRng, {
       floor: n,
       livingClasses: run.cats.filter((c) => c.lives > 0).map((c) => c.classId),
@@ -184,15 +219,21 @@ export class LandingScene implements Scene {
     );
 
     // ---- title zone ----------------------------------------------------
-    const eyebrow = heading(`FLOOR ${n} CLEARED`, 3, { center: true });
+    const eyebrow = heading(
+      shop ? `FLOOR ${n} · A STALL ON THE ROUTE` : `FLOOR ${n} CLEARED`,
+      3,
+      { center: true },
+    );
     eyebrow.position.set(DESIGN_W / 2, EYEBROW_Y);
-    const banner = heading("THE LANDING", 1, {
+    const banner = heading(shop ? "THE PEDDLER" : "THE LANDING", 1, {
       center: true,
       fill: PAL.gold,
     });
     banner.position.set(DESIGN_W / 2, BANNER_Y);
     const sub = label(
-      "The stairwell is quiet. The way up has already collapsed.",
+      shop
+        ? "Blanket down, wares out. He'll be gone by the time you look back."
+        : "The stairwell is quiet. The way up has already collapsed.",
       { dim: true, center: true },
     );
     sub.position.set(DESIGN_W / 2, SUB_Y);
@@ -283,17 +324,19 @@ export class LandingScene implements Scene {
     this.denBadgeHost.position.set(SLOT_W - 46, -8);
     denBtn.view.addChild(this.denBadgeHost);
 
-    const canDescend = n < FLOOR_COUNT;
-    const descendBtn = button(
-      `Descend to Floor ${n + 1}`,
+    // Primary: back to the route (shop node) or down the stairs (stairwell).
+    const goOn = shop ? () => this.backToMap() : () => this.descend();
+    const canGo = shop !== undefined || n < FLOOR_COUNT;
+    const primary = button(
+      shop ? "Back to the route" : `Descend to Floor ${n + 1}`,
       DESCEND_W,
       BAR_H,
-      () => this.descend(),
-      { primary: true, hotkey: "Enter", disabled: !canDescend },
+      goOn,
+      { primary: true, hotkey: "Enter", disabled: !canGo },
     );
-    descendBtn.view.position.set(DESIGN_W - MARGIN - DESCEND_W, BAR_Y);
-    view.addChild(descendBtn.view);
-    this.descendFn = canDescend ? () => this.descend() : null;
+    primary.view.position.set(DESIGN_W - MARGIN - DESCEND_W, BAR_Y);
+    view.addChild(primary.view);
+    this.descendFn = canGo ? goOn : null;
 
     this.refreshAll();
   }
@@ -841,24 +884,31 @@ export class LandingScene implements Scene {
     const back = scrim(DESIGN_W, DESIGN_H);
     back.eventMode = "static";
     box.addChild(back);
+    // Sell mode has no cat cards down the right, so the default height —
+    // sized for the manage-mode column — left the bottom half of the card
+    // empty and pushed 'Done' outside the panel, floating over the stock
+    // list behind it. Size the card to the 8×2 grid instead and seat the
+    // button INSIDE it, the way the Den's Close sits inside the Den.
     const inv = makeInventoryPanel({
       mode: "sell",
+      height: SELL_PANEL_H,
       getRun: () => ctx.run!,
       setRun: (r) => {
         ctx.run = r;
       },
       onChanged: () => this.refreshAll(),
     });
-    const invY = 176;
-    inv.view.position.set((DESIGN_W - INVENTORY_PANEL_W) / 2, invY);
+    const invX = (DESIGN_W - INVENTORY_PANEL_W) / 2;
+    const invY = Math.round((DESIGN_H - SELL_PANEL_H) / 2);
+    inv.view.position.set(invX, invY);
     box.addChild(inv.view);
     const close = button("Done", 200, 44, () => this.toggleSell(false), {
       primary: true,
       hotkey: "Esc",
     });
     close.view.position.set(
-      (DESIGN_W - 200) / 2,
-      invY + INVENTORY_PANEL_H + SPACE.lg,
+      invX + INVENTORY_PANEL_W - 200 - SPACE.lg,
+      invY + SELL_PANEL_H - 44 - SPACE.lg,
     );
     box.addChild(close.view);
     view.addChild(box);
@@ -866,22 +916,34 @@ export class LandingScene implements Scene {
     this.sellPanel = inv;
   }
 
-  /* ---- Descend (④) ----------------------------------------------------- */
+  /* ---- Leaving ---------------------------------------------------------- */
+
+  /** Shop node: nothing to bookkeep — the route is waiting where we left it. */
+  private backToMap(): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    ctx.save(); // autosave: whatever was bought/sold at the stall
+    ctx.scenes.goto("runMap");
+  }
 
   private descend(): void {
     const ctx = this.ctx;
-    if (!ctx) return;
+    if (!ctx || this.shopNode) return;
     const run = ctx.run!;
     if (run.floorNum >= FLOOR_COUNT) return;
     // Arrival already expired floor mods + applied the catnap (mount).
     // Remaining descend bookkeeping (core/run/runState.descend minus the
-    // heal, which would double-apply — see contract notes):
+    // heal, which would double-apply — see contract notes). The next floor's
+    // run map is nulled here and generated by FLOORGEN; traversal resets with
+    // it (run-map-and-dm.md §2).
     ctx.run = {
       ...run,
       floorNum: run.floorNum + 1,
       score: { ...run.score, floorsReached: run.score.floorsReached + 1 },
       floorFiredEventIds: [],
-      floor: null,
+      floorMap: null,
+      currentNodeId: null,
+      visitedNodeIds: [],
     };
     ctx.save(); // autosave point: landing descend
     ctx.scenes.goto("floorgen");

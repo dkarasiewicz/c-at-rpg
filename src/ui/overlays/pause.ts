@@ -202,7 +202,11 @@ export function createPauseOverlay(): Overlay {
     void navigator.clipboard?.writeText(seed);
     seedText.text = "copied!";
     setTimeout(() => {
-      if (seedText && ctx?.run) seedText.text = `seed ${ctx.run.runSeed}`;
+      // the overlay can be popped inside the 900 ms — never write to a
+      // destroyed Text (its internals are nulled)
+      if (seedText && !seedText.destroyed && ctx?.run) {
+        seedText.text = `seed ${ctx.run.runSeed}`;
+      }
     }, 900);
   };
 
@@ -303,7 +307,7 @@ export function createPauseOverlay(): Overlay {
         title.position.set(SPACE.lg, SPACE.lg);
         help.addChild(title);
         const lines = [
-          "WASD/arrows step · E interact · M map · Tab marching order",
+          "Run map: 1-3 / arrows pick a route · Enter takes it",
           "Battle: 1-6 skills · arrows move-swap · G guard · R Scatter!",
           "Shove enemies with moveTarget skills — a forced move makes",
           "them OFF-BALANCE (+50% damage taken until round end).",

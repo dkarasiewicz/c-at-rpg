@@ -22,7 +22,7 @@ export type SceneId =
   | "title"
   | "partyCreator"
   | "floorgen"
-  | "explore"
+  | "runMap"
   | "battle"
   | "event"
   | "landing"
@@ -97,26 +97,31 @@ export function layer(root: Container, name: LayerName): Container {
 
 /**
  * goto legality: `TRANSITIONS[from]` lists every legal target.
- *  - title → floorgen (New Run) | explore (Continue restores mid-floor) |
+ *  - title → floorgen (New Run) | runMap (Continue restores mid-floor) |
  *    partyCreator ([C] Create your party)
  *  - partyCreator → floorgen (accept / GM-offline fallback) | title (Esc)
- *  - explore → battle / event / landing, or results (Abandon via pause)
- *  - battle → explore (victory-after-loot / flee) | results (defeat, floor-6
+ *  - runMap → battle (fight/elite/boss node) / event (event node) /
+ *    landing (shop node, and the stairwell once the floor is cleared), or
+ *    results (Abandon via pause, and the floor-6 exit)
+ *  - battle → runMap (victory-after-loot / flee) | results (defeat, floor-6
  *    win, abandon)
- *  - event → explore | battle (ambush fight) | results (abandon)
- *  - landing → floorgen (Descend) | results (abandon)
+ *  - event → runMap | battle (ambush fight) | results (abandon)
+ *  - landing → runMap (a shop node hands the route back) | floorgen
+ *    (Descend) | results (abandon)
  *  - results → floorgen (Again / New Seed) | title
- * LOOT and PAUSE are overlays, not states.
+ * LOOT and PAUSE are overlays, not states. Rest and treasure nodes resolve
+ * INSIDE runMap (an in-scene catnap panel / the loot overlay), so they are
+ * not states either.
  */
 export const TRANSITIONS: Record<SceneId, readonly SceneId[]> = {
   boot: ["title"],
-  title: ["floorgen", "explore", "partyCreator"],
+  title: ["floorgen", "runMap", "partyCreator"],
   partyCreator: ["floorgen", "title"],
-  floorgen: ["explore"],
-  explore: ["battle", "event", "landing", "results"],
-  battle: ["explore", "results"],
-  event: ["explore", "battle", "results"],
-  landing: ["floorgen", "results"],
+  floorgen: ["runMap"],
+  runMap: ["battle", "event", "landing", "results"],
+  battle: ["runMap", "results"],
+  event: ["runMap", "battle", "results"],
+  landing: ["runMap", "floorgen", "results"],
   results: ["floorgen", "title"],
 };
 

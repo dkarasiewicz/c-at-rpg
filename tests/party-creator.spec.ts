@@ -18,7 +18,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Stats } from "../src/core/types.js";
 import {
-  generateCurrentFloor,
+  generateCurrentFloorMap,
   newRun,
   PARTY_ORDER,
 } from "../src/core/run/runState.js";
@@ -311,7 +311,7 @@ describe("newRun customParty (additive)", () => {
     const party = mapKitsToCustomParty(fakeParty());
     applyPartyContent(party);
     let run = newRun("CCCCCCCC", party);
-    run = generateCurrentFloor(run);
+    run = generateCurrentFloorMap(run);
     const restored = deserializeRun(serializeRun(run));
     expect(restored.customParty).toEqual(run.customParty);
     expect(restored.customParty?.[0].visualPrompt).toContain("ghostly stand");

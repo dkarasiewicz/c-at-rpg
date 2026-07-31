@@ -96,6 +96,36 @@
       "w": 1600,
       "h": 900
     },
+    "scene:map:1": {
+      "file": "map-1.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:map:2": {
+      "file": "map-2.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:map:3": {
+      "file": "map-3.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:map:4": {
+      "file": "map-4.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:map:5": {
+      "file": "map-5.webp",
+      "w": 1600,
+      "h": 900
+    },
+    "scene:map:6": {
+      "file": "map-6.webp",
+      "w": 1600,
+      "h": 900
+    },
     "npc:peddler": {
       "file": "npc-peddler.png",
       "w": 640,

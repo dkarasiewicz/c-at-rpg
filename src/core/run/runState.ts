@@ -1,14 +1,14 @@
 /**
  * c(at)rpg — run-state lifecycle (ARCHITECTURE.md WP-07: core/run/runState.ts).
  *
- * newRun(seed) → the starting party & kit; floor generation entry points;
- * descend (floor-mod expiry + catnap heal + floor gen); applyBattleResult
+ * newRun(seed) → the starting party & kit; run-map generation entry points;
+ * descend (floor-mod expiry + catnap heal + map gen); applyBattleResult
  * write-back (hp/lives, XP/level-ups, deaths + grief loot, score counters);
  * loot-grant application; fired-event & Mewthical-unique bookkeeping.
  *
  * Convention: run-level functions return a NEW RunState (structural
- * sharing); the FloorState inside is the dungeon layer's mutable object and
- * is mutated in place (its own convention).
+ * sharing). The run map is immutable data — traversal state lives on the
+ * RunState itself as `currentNodeId` / `visitedNodeIds` (core/map/traverse.ts).
  */
 import type {
   BattleResult,
@@ -17,8 +17,9 @@ import type {
   ClassId,
   EquipDef,
   EquipInstance,
+  FloorConfig,
+  FloorMap,
   LootGrant,
-  Roamer,
   RunState,
   ScoreCounters,
   Skill,
@@ -28,8 +29,7 @@ import type { PowerScript } from "../combat/powerTypes.js";
 import { EQUIP_DEFS } from "../../content/equipment.js";
 import { FLOORS } from "../../content/floors.js";
 import { STARTING_KIT } from "../../content/lootTables.js";
-import { generateFloor } from "../dungeon/gen.js";
-import { applyVictory } from "../dungeon/step.js";
+import { generateFloorMap } from "../map/generate.js";
 import {
   addConsumables,
   addShinies,
@@ -127,8 +127,8 @@ function weaponDefFor(classId: ClassId): EquipDef {
  * A fresh run (gameloop RUN_INIT): fixed party [bruiser, trickster, hexer,
  * medic] at level 1, 9 Lives and full HP each, wearing their Stray L1 class
  * weapons (`atk +2`, fixed — no rolls, loot.md §6); starting kit 20 ✦ +
- * 2 Tuna Snacks + 1 Cardboard Box; default marching order. The floor is
- * NOT generated yet — FLOORGEN calls `generateCurrentFloor` (floorNum
+ * 2 Tuna Snacks + 1 Cardboard Box; default marching order. The run map is
+ * NOT generated yet — FLOORGEN calls `generateCurrentFloorMap` (floorNum
  * starts at 1, floorsReached counts it as entered).
  *
  * `customParty` (optional, additive — default behavior is unchanged): a
@@ -183,21 +183,45 @@ export function newRun(
     firedEventIds: [],
     floorFiredEventIds: [],
     uniquesDropped: [],
-    floor: null,
+    floorMap: null,
+    currentNodeId: null,
+    visitedNodeIds: [],
     playTimeMs: 0,
     ...(customParty && customParty.length > 0 ? { customParty } : {}),
   };
 }
 
+/** The FloorConfig for a 1-based floor number, or a hard error. */
+export function floorConfig(floorNum: number): FloorConfig {
+  const cfg = FLOORS[floorNum - 1];
+  if (!cfg) throw new Error(`no floor config for floor ${floorNum}`);
+  return cfg;
+}
+
 /**
- * Generate (or regenerate) the current floor from the run seed — the
- * FLOORGEN state's core call. Deterministic: same seed + floorNum ⇒ same
- * floor.
+ * Generate (or regenerate) the current floor's run map from the run seed —
+ * the FLOORGEN state's core call. Deterministic: same seed + floorNum ⇒ the
+ * same graph (run-map-and-dm.md §2). The party is placed on the entry node
+ * and the entry counts as visited: it is where the floor's first encounter
+ * happens, not a lobby.
  */
-export function generateCurrentFloor(run: RunState): RunState {
-  const cfg = FLOORS[run.floorNum - 1];
-  if (!cfg) throw new Error(`no floor config for floor ${run.floorNum}`);
-  return { ...run, floor: generateFloor(run.runSeed, run.floorNum, cfg) };
+export function generateCurrentFloorMap(run: RunState): RunState {
+  const map = generateFloorMap(
+    run.runSeed,
+    run.floorNum,
+    floorConfig(run.floorNum),
+  );
+  return enterFloorMap(run, map);
+}
+
+/** Put the party on a map's entry node (fresh floor, or a migrated save). */
+export function enterFloorMap(run: RunState, map: FloorMap): RunState {
+  return {
+    ...run,
+    floorMap: map,
+    currentNodeId: map.entryId,
+    visitedNodeIds: [map.entryId],
+  };
 }
 
 /** Living cats (lives > 0), fixed party order. */
@@ -233,7 +257,8 @@ export function catnapHeal(
  *  1. floor-scoped tempMods expire (descending the stairs — events.md §1),
  *  2. free catnap heal `floor(0.25 × maxHP)` per living cat,
  *  3. floorNum+1, floorsReached+1, floor-scoped fired-event ids reset,
- *  4. the new floor generates from the seed.
+ *  4. the new floor's run map generates from the seed and the party is
+ *     placed on its entry node (traversal state resets with the floor).
  * `energyNextBattle` grants persist — they are consumed by the next battle
  * setup, whenever that happens.
  */
@@ -244,13 +269,15 @@ export function descend(run: RunState): RunState {
   const expired = run.cats.map((c) => expireFloorMods(c, run.level));
   const { cats } = catnapHeal(expired, run.level);
   const score = { ...run.score, floorsReached: run.score.floorsReached + 1 };
-  return generateCurrentFloor({
+  return generateCurrentFloorMap({
     ...run,
     cats,
     score,
     floorNum: run.floorNum + 1,
     floorFiredEventIds: [],
-    floor: null,
+    floorMap: null,
+    currentNodeId: null,
+    visitedNodeIds: [],
   });
 }
 
@@ -283,14 +310,16 @@ export interface ApplyBattleOutput {
  *  - cats at 0 Lives: removed from the marching order (compression) and
  *    their gear drops into the shared inventory (grief loot, WP-05 API);
  *  - score counters (enemies, cat piles, bosses);
- *  - on victory over a roamer pack (`roamerId` given): the pack dies on the
- *    floor (boss kill unlocks the stairs); when the last pack on the floor
- *    dies, `floorsCleared` ticks. Event fights pass no roamerId.
+ *  - on victory at the floor's TERMINAL node (`nodeId === floorMap.bossId`):
+ *    `floorsCleared` ticks — the boss (or the pack guarding the stairs) is
+ *    down and the way onward is open. Pass the node the fight belongs to;
+ *    event fights and mid-floor packs pass their own id (or nothing) and
+ *    never tick it.
  */
 export function applyBattleResult(
   run: RunState,
   result: BattleResult,
-  roamerId?: number,
+  nodeId?: number,
 ): ApplyBattleOutput {
   // 1. hp/lives write-back (post-standup values), energyNextBattle cleared.
   let cats: CatRunState[] = run.cats.map((cat) => {
@@ -340,15 +369,14 @@ export function applyBattleResult(
     bossesDefeated: run.score.bossesDefeated + (result.bossDefeated ? 1 : 0),
   };
 
-  // 6. floor bookkeeping: pack death + floors-cleared tick.
-  if (result.outcome === "victory" && roamerId !== undefined && run.floor) {
-    applyVictory(run.floor, roamerId);
-    const packs = run.floor.entities.filter(
-      (e): e is Roamer => e.kind === "roamer" || e.kind === "boss",
-    );
-    if (packs.length > 0 && packs.every((p) => p.dead)) {
-      score.floorsCleared += 1;
-    }
+  // 6. floor bookkeeping: clearing the terminal node clears the floor.
+  if (
+    result.outcome === "victory" &&
+    nodeId !== undefined &&
+    run.floorMap !== null &&
+    nodeId === run.floorMap.bossId
+  ) {
+    score.floorsCleared += 1;
   }
 
   return {

@@ -63,12 +63,12 @@ src/
       ai.ts                   # [100] takeEnemyTurn score-and-pick (combat.md §10), Provoked targeting, advance fallback
       boss.ts                 # [110] Poise chip/break, doubleTurn queue entries, phase switch, charge/windup + cancel, summons
 
-    dungeon/
-      gen.ts                  # [220] rooms-in-a-maze: room scatter, growing-tree maze, connectors+union-find, trim passes, boss lair, validation+retry (dungeon.md §5)
-      populate.ts             # [160] stairs, chests (nooks first), events, roamers+packs (threat budget), waypoints, per-entity seeds (dungeon.md §6-7)
-      floor.ts                # [110] tile index helpers, BFS flood (N,E,S,W FIFO), Bresenham LOS, visibility recompute (whisker-light + room light)
-      step.ts                 # [130] the step loop: move/bump/chest-open, roamer phase, contact check, tile triggers, flee re-entry + stun (dungeon.md §9.3)
-      roamers.ts              # [80] patrol/chase/return/stunned state machine, shared BFS flood, zero RNG (dungeon.md §12)
+    map/                      # the run map — replaced core/dungeon/* (run-map-and-dm.md §2)
+      types.ts                # [60] re-exports the §2.7 wire contract + engine constants (NODE_TYPES, MIN/MAX_COLUMNS, MAX_OUT_EDGES, ELITE_MIN_FLOOR), MapOption, IllegalMoveError, nodeAt
+      generate.ts             # [260] generateFloorMap(runSeed, floor, cfg) on the 'map' stream: column sizes, non-crossing edge weave, node typing (weights + guarantees), terminal node; validateFloorMap → invariant list
+      traverse.ts             # [90] optionsFrom/optionsForRun, outgoing/incoming, isAdjacent/isVisited, canAdvance, advance (throws IllegalMoveError), atTerminal, closedNodes. ZERO RNG
+      encounter.ts            # [90] rollPack (dungeon.md §7.3 verbatim) off mulberry32(node.seed), encounterFor(node,cfg), encounterIndexOf(node) = node.id, ELITE_BUDGET_BONUS
+      index.ts                # [10] barrel
 
     events/
       select.ts               # [40] pool filter (floors, once, per-floor fired), weighted pick, empty-pool shiny fallback (events.md §2.1)
@@ -81,10 +81,10 @@ src/
       shop.ts                 # [60] Peddler stock roll (shop stream), prices, Warm Lap cost, sell-at-quarter
 
     run/
-      runState.ts             # [120] newRun(seed), descend (catnap heal + floor gen call), applyBattleResult write-back, fired-event & unique bookkeeping
+      runState.ts             # [120] newRun(seed), generateCurrentFloorMap/enterFloorMap/floorConfig, descend (catnap heal + map gen), applyBattleResult(run, result, nodeId) write-back, fired-event & unique bookkeeping
       party.ts                # [90] effectiveStats(cat) = base+growth+equipment+tempMods, skill list by level, XP → level-ups (delta-HP rule), trait tier
       score.ts                # [40] score table (gameloop.md §7), results summary struct
-      save.ts                 # [110] SaveFile/MetaFile (de)serialize, floor→delta snapshot, localStorage adapter, version gate
+      save.ts                 # [110] SaveFile/MetaFile (de)serialize (the run minus its regenerable floorMap), v1/v2→v3 migration, localStorage adapter, version gate
 
   content/
     classes.ts                # [120] CLASSES: 4 CatClass defs verbatim from classes.md (bases, growth rows, unlocks, traits, barks, palettes)
@@ -95,7 +95,7 @@ src/
     consumables.ts            # [90] CONSUMABLES: 10 defs with battle Skill payloads (cost 0, chance 1.0) + explore fields + prices
     lootTables.ts             # [70] consumable weight table (Σ=100), rarity weights by floor band, chest/fight/boss draw tables, §5d bundles, starting kit
     events.ts                 # [300] EVENTS: the 10 shipped GameEvents verbatim from events.md §4 (ids fixed: 'rat'→'ratThug')
-    floors.ts                 # [40] FLOORS: canonical 6-floor table from GDD §6, XP_TO_LEVEL, LEVEL_CAP
+    floors.ts                 # [40] FLOORS: canonical 6-floor table from GDD §6 incl. the per-floor run-map budget (columns/rows/weights/guaranteed), XP_TO_LEVEL, LEVEL_CAP
 
   ui/
     palette.ts                # [70] PAL + THEMES consts verbatim from ui-art.md §2
@@ -113,9 +113,7 @@ src/
       boot.ts                 # [40] black screen, paw logo, click-to-start
       title.ts                # [130] logo, rooftop cats, New Run / Continue / Records, seed entry
       floorgen.ts             # [30] one-frame "Descending… Floor N" interstitial; calls core floor gen
-      explore.ts              # [280] tile layer, fog overlay, entity blobs, party token, camera, step-loop driving, trigger dispatch
-      exploreHud.ts           # [130] floor/seed chips, 4 cat cards, shiny counter, item belt (Tuna/Sardine pressable), toasts, marching-order panel (Tab)
-      minimap.ts              # [80] RenderTexture minimap + M full-map overlay
+      runMap.ts               # [900] THE floor screen: painted backdrop, node medallions + state overlays, inked routes, party marker, route choice, node → scene dispatch, party strip
       battle.ts               # [320] battle scene: engine driving loop, event-queue animator, targeting flow, unit containers, floaters, log line
       battleWidgets.ts        # [230] initiative ribbon, skill bar + range strips, active panel, Cat Pile banner, Poise pips, boss telegraph
       event.ts                # [160] event modal: PROMPT/RESULT states, option buttons + gate tags, hotkeys 1-4, delta lines (events.md §3 + ui-art §9)
@@ -125,16 +123,34 @@ src/
       loot.ts                 # [90] chest/victory loot popup: rows, XP bar + level-up toasts, Lives ledger (pip crack), Take All
       pause.ts                # [110] Esc menu: Resume/Party/Inventory/Help/Abandon; footer seed/floor/time
       inventoryPanel.ts       # [130] 16-slot grid, equip/unequip per cat, full-inventory pickup modal, sort
+      progressPanel.ts        # [900] THE DEN: whisker points / skills / gear, per-cat, "where the numbers come from"
+      tabletopBar.ts          # [330] the "what do you do?" card: DOM <input> positioned through the letterbox transform, echoed prompt, streamed DM reply, phase-fitted height. Built ONLY when a DM answered the probe
+
+  services/                   # ui-side clients — no pixi, no engine rules
+    gm.ts                     # [400] typed client for the legacy api/gm/* endpoints (party, event free-text, resonances), fail-soft to null
+    gmTypes.ts                # [200] the GM wire types shared with api/
+    dm.ts                     # [680] the persistent DM: eve's four HTTP routes by hand, one durable session per run, NDJSON stream read to the turn boundary, verdict returned UNVALIDATED
+    tabletop.ts               # [560] the pure half: verdict contracts, the CLIENT-SIDE re-lint (powerBudget/validatePowerScript/validateEvents), per-floor cap mirrors, the run transcript
 
 tests/
   rng.spec.ts                 # known-answer hash/mulberry32 vectors, int bounds
   content.spec.ts             # validator pass, weights Σ=100, id cross-refs, L1 party == combat.md §13 party
   combat.spec.ts              # combat.md §13 worked example EXACTLY, + determinism & edge cases
-  dungeon.spec.ts             # 'MEOW-1987' floor-1 fixture == dungeon.md §13 grid + entities
+  run-map.spec.ts             # graph invariants fuzzed over 30k maps, determinism, traversal legality, pack rolls
   loot.spec.ts                # roll order, value formulas, inventory invariants
   events.spec.ts              # draw order, clamp-at-1, fired bookkeeping
   run.spec.ts                 # level-up deltas, save round-trip, score math
   integration.spec.ts         # scripted mini-run: gen → battle → loot → event → descend, headless, deterministic
+  tabletop.spec.ts            # verdict lint (closed union, budget, floor caps, affordability), transcript, cap-table parity with agent/ and api/
+
+agent/                        # the persistent DM (Vercel eve) — NEVER in the browser bundle
+  agent.ts                    # defineAgent({ model: 'anthropic/claude-haiku-4.5', sessionTimeoutMs: 7d })
+  instructions.md             # the DM's voice, the hard bounds, the refusal policy
+  channels/eve.ts             # HTTP channel: CORS to the game origin, auth policy
+  lib/{effects,memory,catalog,oneshot}.ts   # EffectSpec mirror w/ compile-time parity assertion, run memory, one-shot schemas
+  tools/                      # narrate · apply_effect · grant_item · adjust_shinies · remember · offer_encounter
+  subagents/encounter/        # one fight's adjudicator: battle snapshot in, typed verdict out
+api/                          # the legacy stateless GM (kept until the agent reaches parity)
 ```
 
 Total ≈ 6.3k LoC — on budget with GDD §11's sanity check.
@@ -440,63 +456,62 @@ export interface LootGrant {
 }
 ```
 
-### 2.7 Dungeon (dungeon.md §3)
+### 2.7 The run map (run-map-and-dm.md §2)
+
+*(Replaces the tile-dungeon contract. `Tile`, `Room`, `Roamer`, `Entity`,
+`FloorState`, `StepTrigger` and `FloorDelta` are gone.)*
 
 ```ts
-export const enum Tile { Wall = 0, Floor = 1, Door = 2, StairsUp = 3, StairsDown = 4 }
+export type NodeType =
+  | 'fight' | 'elite' | 'event' | 'shop' | 'rest' | 'treasure' | 'boss';
 
-export interface Room { id: number; x: number; y: number; w: number; h: number; }
-
-export interface Roamer {
-  kind: 'roamer' | 'boss';
-  id: number; x: number; y: number;
-  encounterIndex: number;          // 0 = boss, 1..N in placement order
-  enemies: EnemyId[];              // front-to-back, 1..5
-  homeRoom: number;
-  waypoints: [number, number][];
-  wpIndex: number;
-  state: 'patrol' | 'chase' | 'return' | 'stunned';
-  stunnedFor: number;
-  lostSightFor: number;
-  dead: boolean;
+export interface MapNode {
+  id: number;                      // index into FloorMap.nodes — stable, 0-based
+  type: NodeType;
+  depth: number;                   // column index, 0 = entry
+  row: number;                     // 0-based row within the column, top → bottom
+  rowCount: number;                // how many nodes live in this column
+  seed: number;                    // hash(runSeed, floor, 'node', id) — DERIVED, never drawn
 }
 
-export type Entity =
-  | { kind: 'chest'; id: number; x: number; y: number; opened: boolean;
-      lootTableId: 'chest_t1' | 'chest_t2' | 'chest_t3' | 'boss_hoard'; chestSeed: number }
-  | { kind: 'event'; id: number; x: number; y: number; used: boolean; eventSeed: number }
-  | Roamer;
+/** A one-way step. Always nodes[from].depth + 1 === nodes[to].depth. */
+export interface MapEdge { from: number; to: number; }
 
-export interface FloorState {
+export interface FloorMap {
   floor: number;                   // 1..6
-  w: number; h: number;
-  tiles: Uint8Array;               // index = y*w + x
-  rooms: Room[];
-  entranceRoomId: number; exitRoomId: number;
-  entities: Entity[];              // id = index at creation
-  stairsLocked: boolean;
-  explored: Uint8Array;            // 0|1
-  visible: Set<number>;            // recomputed after every step
-  party: { x: number; y: number };
-  stepCount: number;
+  columns: number;                 // 4..7
+  nodes: MapNode[];                // index === node.id
+  edges: MapEdge[];                // sorted by (from, to)
+  entryId: number;                 // the single column-0 node
+  bossId: number;                  // the single terminal node (boss, or the stairs guard)
+}
+
+/** Authored density — replaces the maze's roamers/chests/events counts. */
+export interface FloorMapBudget {
+  columnsLo: number; columnsHi: number;          // clamped to 4..7
+  rowsLo: number; rowsHi: number;                // clamped to 1..4
+  weights: Partial<Record<NodeType, number>>;    // a missing type is never drawn
+  guaranteed: NodeType[];                        // shop + rest
 }
 
 export interface FloorConfig {
   name: string;
-  w: number; h: number; roomAttempts: number;
-  roamers: number; chests: number; events: number;
   pool: EnemyId[]; budgetLo: number; budgetHi: number;
+  map: FloorMapBudget;
   boss?: { bossId: EnemyId; encounter: EnemyId[] };
 }
-
-// Step-loop result: what the UI must react to after one step.
-export type StepTrigger =
-  | { t: 'battle'; roamerId: number; encounterIndex: number; enemies: EnemyId[]; isBoss: boolean }
-  | { t: 'chest'; chestId: number }         // bumped an unopened chest
-  | { t: 'event'; eventId: number; eventSeed: number }
-  | { t: 'stairs'; locked: boolean }
-  | { t: 'moved' } | { t: 'bump' };
 ```
+
+**Invariants** `validateFloorMap` enforces (fuzzed over 30 000 maps in
+`tests/run-map.spec.ts`): 4–7 columns · 1–4 nodes/column · edges only into the next
+column · ≤3 outgoing edges/node · **no crossing edges** · no dead ends · no orphans ·
+every node reachable from `entryId` · every maximal path ends at `bossId` · ≥1 `shop`
+and ≥1 `rest` · no `elite` before floor 2 · never two adjacent `rest` nodes ·
+`entryId` is one of `fight | event | treasure`.
+
+**Traversal** (`core/map/traverse.ts`) draws **zero** RNG. `advance(run, nodeId)`
+throws `IllegalMoveError` unless the target is exactly one outgoing edge away and
+unvisited — the UI can never teleport the party.
 
 ### 2.8 Narrative events (events.md §1, verbatim with canonical fixes)
 
@@ -562,7 +577,7 @@ export interface CatRunState {
 }
 
 export interface ScoreCounters {
-  floorsCleared: number;           // every roamer on the floor dead
+  floorsCleared: number;           // ticks once per floor, on a victory at floorMap.bossId
   floorsReached: number;
   enemiesDefeated: number;
   bossesDefeated: number;
@@ -581,28 +596,24 @@ export interface RunState {
   firedEventIds: string[];         // run-scoped (for `once`)
   floorFiredEventIds: string[];    // reset each floor
   uniquesDropped: MewHookId[];     // mewthical downgrade rule
-  floor: FloorState | null;
+  floorMap: FloorMap | null;       // regenerated on load — never saved
+  currentNodeId: number | null;    // where the party is standing
+  visitedNodeIds: number[];        // this floor only
   playTimeMs: number;
 }
 
-// ---- persistence (core/run/save.ts) ----
-export interface FloorDelta {      // tiles regenerate from the seed; deltas overlay
-  partyPos: { x: number; y: number };
-  explored: string;                // base64 bitset
-  stepCount: number;
-  stairsLocked: boolean;
-  entities: (
-    | { kind: 'chest'; id: number; opened: boolean }
-    | { kind: 'event'; id: number; used: boolean }
-    | { kind: 'roamer' | 'boss'; id: number; x: number; y: number; dead: boolean;
-        state: Roamer['state']; stunnedFor: number; lostSightFor: number; wpIndex: number }
-  )[];
-}
+// Additive, optional module augmentations (declared where they are owned, the
+// same pattern as `customParty`): they ride the save without a version bump.
+//   ui/scenes/runMap.ts  → resolvedNodes?: { floor: number; ids: number[] }
+//   services/tabletop.ts → dm?: DmSessionHandle ; tabletop?: TabletopLog
 
-export interface SaveFile {        // localStorage 'catrpg.save.v1'
-  version: 1;
-  run: Omit<RunState, 'floor'>;
-  floorDelta: FloorDelta;
+// ---- persistence (core/run/save.ts) ----
+export type SaveVersion = 1 | 2 | 3;
+
+export interface SaveFile {        // localStorage 'catrpg.save.v1' (a KEY, not a schema tag)
+  version: SaveVersion;            // written as 3; 1 and 2 are READ and migrated
+  run: Omit<RunState, 'floorMap'>; // the map regenerates from (runSeed, floorNum)
+  floorDelta?: unknown;            // v1/v2 only — dropped by the migration
 }
 
 export interface MetaFile {        // localStorage 'catrpg.meta.v1' — records only, no unlocks
@@ -654,8 +665,11 @@ export declare const LEVEL_CAP: number;             // 8
 ### 3.1 The model
 
 One `SceneManager` (in `ui/sceneManager.ts`) owns the pixi stage. States mirror
-gameloop.md §1's FSM: scenes `boot · title · floorgen · explore · battle · event ·
-landing · results`, overlays `loot · pause` (max one overlay, never stacked).
+the FSM of run-map-and-dm.md §5 (which supersedes gameloop.md §1): scenes
+`boot · title · partyCreator · floorgen · runMap · battle · event · landing ·
+results`, overlays `loot · pause` (max one overlay, never stacked). There is no
+`explore` state, and **rest and treasure are not states** — they resolve inside
+the run-map scene.
 
 ```ts
 // ui/sceneManager.ts (contract — UI-layer type, not in core/types.ts)
@@ -682,10 +696,11 @@ export interface SceneManager {
 }
 ```
 
-Rules (from gameloop.md §1, restated as code behavior):
+Rules (restated as code behavior):
 
-- `goto` destroys the outgoing scene completely. `explore` is **rebuilt from
-  `ctx.run.floor`** on every re-entry — no scene survives in the background.
+- `goto` destroys the outgoing scene completely. `runMap` is **rebuilt from
+  `ctx.run.floorMap` + the traversal fields** on every re-entry — no scene
+  survives in the background.
 - While an overlay is up: the underlying scene's `update` is skipped and its
   subtree gets `interactiveChildren = false`. The pixi ticker keeps running
   (overlay animations, ambient idle in `landing`).
@@ -718,22 +733,24 @@ loop:
   if bs.outcome !== 'ongoing' → result = battleResult(bs)
       → applyBattleResult(ctx.run, result)             // core/run/runState.ts
       → victory: pushOverlay('loot', rollVictoryLoot(...)) ; defeat: goto('results')
-      → fled: goto('explore') (step loop applies the 5-step stun)
+      → fled: goto('runMap') (the node is already resolved — no re-fight)
 ```
 
 `animate(events)` appends to an animation queue that drains at ≥3 events/s even
-mid-tween (ui-art §12); the engine never waits on animation. The explore scene
-drives `core/dungeon/step.ts` identically: one `step(floor, dir)` per input,
-returned `StepTrigger` dispatched to battle/event/loot/stairs handlers, fog diff
-re-rendered.
+mid-tween (ui-art §12); the engine never waits on animation. The run map drives
+`core/map/traverse.ts` the same way: one `advance(run, nodeId)` per chosen route
+(it throws on anything that is not a legal step), then the node it landed on is
+dispatched — fight/elite/boss to `battle`, event to `event`, shop to `landing`,
+treasure to the `loot` overlay, rest to its own in-scene catnap panel.
 
 ### 3.3 Input
 
 `ui/input.ts` installs exactly one `keydown`/`keyup` listener and a pointer
 normalizer (design-resolution coordinates via the root transform). Dispatch order:
-active overlay → active scene → global (Esc/M/Tab handled by scenes per their
-specs). Key repeat for movement is implemented by the explore scene (re-step when
-the 110 ms tween finishes while held), not by OS auto-repeat.
+active overlay → active scene → global (Esc handled by scenes per their specs).
+OS key auto-repeat never reaches a handler — held-to-walk went with the maze, and
+the run map is one keypress per decision; a scene that wants a held key polls
+`isKeyDown`.
 
 ### 3.4 Stage & scaling
 
@@ -786,20 +803,22 @@ only to *pick* a seed).
 
 | Stream | Seed expression | Consumer | Consumption contract |
 |---|---|---|---|
-| `genRng` | `mulberry32(hash(runSeed, floor, 'gen'))` (`'gen1'`, `'gen2'`… on validation retry) | `dungeon/gen.ts` | strictly in dungeon.md §5 step order; rejected placements still burn their rolls |
-| `popRng` | `mulberry32(hash(runSeed, floor, 'pop'))` (retry suffix likewise) | `dungeon/populate.ts` | strictly in dungeon.md §6 order |
-| `battleRng` | `mulberry32(hash(runSeed, floor, encounterIndex))` | battle scene → all `core/combat` calls | draw order per combat.md §3: initiative (cats R1→4, enemies R1→5) → per action per target: variance, crit, per-effect status chances (chance 1.0 draws nothing) → AI tie-breaks → flee. Re-engaging a fled pack restarts the same stream |
-| `chestSeed` | `hash(runSeed, floor, 'loot', chestIndex)` | `loot/roll.ts`, lazily at open | one fresh `mulberry32(chestSeed)` per open; roll order loot.md §5e |
+| `mapRng` | `mulberry32(hash(runSeed, floor, 'map'))` | `map/generate.ts` | the run map's dedicated stream (run-map-and-dm.md §2). Draw order: column count → per intermediate column its node count → per column pair, per left node: 1 span pick + 1 converge coin (both burned even when only one branch is legal) → entry node type → per intermediate node its type → 1 pick per MISSING guaranteed type. Same seed ⇒ same graph |
+| `nodeSeed` | `hash(runSeed, floor, 'node', nodeId)` | `map/encounter.ts`, `events/*`, `loot/roll.ts`, lazily on arrival | derived, never drawn — one fresh `mulberry32(node.seed)` per node, so what a node holds can never depend on the order nodes are visited. Pack rolls per dungeon.md §7.3 (budget roll, then 1 roll per pick) |
+| `battleRng` | `mulberry32(hash(runSeed, floor, encounterIndex))` | battle scene → all `core/combat` calls | `encounterIndex` = the map node's id (event fights: `1000 + nodeId`). Draw order per combat.md §3: initiative (cats R1→4, enemies R1→5) → per action per target: variance, crit, per-effect status chances (chance 1.0 draws nothing) → AI tie-breaks → flee. Re-engaging a fled pack restarts the same stream |
+| `chestSeed` | the treasure node's `nodeSeed` | `loot/roll.ts`, lazily at open | one fresh `mulberry32(chestSeed)` per open; roll order loot.md §5e |
 | `victorySeed` | `hash(runSeed, floor, 'loot', 100 + encounterIndex)` | `loot/roll.ts`, at victory screen | same roll-order contract |
-| `eventSeed` | `hash(runSeed, floor, 'event', eventIndex)` | `events/select.ts` + `events/resolve.ts`, at trigger | draw order events.md §2.2: selection → outcome → per-`random`-target |
+| `eventSeed` | the event node's `nodeSeed` | `events/select.ts` + `events/resolve.ts`, at trigger | draw order events.md §2.2: selection → outcome → per-`random`-target |
 | `shopRng` | `mulberry32(hash(runSeed, 'shop', n))` | `loot/shop.ts` per landing (n = floor just cleared) | stock rolls in loot.md §6 order |
 | `bossPickRng` | `mulberry32(hash(runSeed, 'bossPick'))` | `runState.ts` (SHOULD: Rat Prince alternate) | one roll per run |
 
 Rules: an `Rng` instance is created at the boundary (scene or run-state function)
 and passed *down* into core functions — core never seeds itself, which is what
-makes every engine test drivable with a scripted `Rng`. Exploration and roamer AI
-consume **zero** RNG. Per-entity derived seeds mean open/trigger order can never
-perturb any other system.
+makes every engine test drivable with a scripted `Rng`. Run-map traversal
+consumes **zero** RNG. Per-node derived seeds mean the order the party takes
+its routes in can never perturb any other system.
+
+(`genRng`/`popRng` are retired with the tile maze — run-map-and-dm.md §2.)
 
 ---
 
@@ -814,7 +833,7 @@ Dependency graph:
 
 ```
 WP-01 ─► WP-02 ─┬─► WP-03 (combat) ────────────┬─► WP-11 (battle UI)
-                ├─► WP-04 (dungeon) ───────────┼─► WP-10 (explore UI)
+                ├─► core/map (run map) ───────┼─► WP-10 (run-map UI)
                 ├─► WP-05 (loot) ──────┐       │
                 ├─► WP-06 (events) ────┼───────┼─► WP-12 (event/landing/loot UI)
                 ├─► WP-07 (run/save) ──┴─► WP-09 (shell)
@@ -870,21 +889,27 @@ packages then fan out again.
 - Purity: same seed + same action script ⇒ identical `BattleEvent` log (deep-equal
   test); no `Math.random`, no pixi (lint).
 
-### WP-04 · Dungeon engine *(deps: WP-01, WP-02)*
-**Files:** `src/core/dungeon/` (`gen.ts`, `populate.ts`, `floor.ts`, `step.ts`,
-`roamers.ts`), `tests/dungeon.spec.ts`.
+### WP-04 · Run-map engine *(deps: WP-01, WP-02)*
+*(Replaced the dungeon engine — `src/core/dungeon/*` and `tests/dungeon.spec.ts`
+are deleted. run-map-and-dm.md §2.)*
+**Files:** `src/core/map/` (`types.ts`, `generate.ts`, `traverse.ts`,
+`encounter.ts`, `index.ts`), `tests/run-map.spec.ts`.
 **Acceptance:**
-- `runSeed 'MEOW-1987'`, floor 1 reproduces dungeon.md §13's grid, rooms, chest/
-  event/roamer placements, packs, and `encounterIndex` assignment exactly
-  (fixture test).
-- Boss floors: 11×7 lair, single west door, locked stairs, hoard chest at
-  `(lairX+2, lairY+1)`, lair-entry trigger.
-- Visibility: Chebyshev-3 + Bresenham LOS + room light matches hand-built cases;
-  doors never block LOS.
-- Step loop: contact (Manhattan ≤1, lowest id), chest bump consumes step, flee
-  returns to pre-contact tile with 5-step stun, roamer half-speed desync
-  `(stepCount + id) % 2`, chase give-up rules — all tested; zero RNG consumed at
-  runtime (assert by instrumented Rng).
+- `generateFloorMap(runSeed, floor, cfg)` is a pure function of its arguments:
+  the same triple gives a byte-identical `FloorMap`, and the map is never
+  persisted — `deserializeRun` regenerates it.
+- `validateFloorMap` returns `[]` for every one of 30 000 fuzzed maps across all
+  six floors, and each invariant fails on a hand-broken map (§2.7 list).
+- Node typing honours the floor's weight table, both `guaranteed` types appear,
+  no `elite` before floor 2, no two adjacent `rest` nodes, and `entryId` is one
+  of `fight | event | treasure`.
+- Traversal draws **zero** RNG (assert by instrumented Rng). `advance` throws
+  `IllegalMoveError` for: a non-adjacent node, the current node, an already
+  visited node, and any node before the party has entered the floor.
+- `encounterFor` reproduces dungeon.md §7.3's pack algorithm off
+  `mulberry32(node.seed)`, with `ELITE_BUDGET_BONUS` added on elite nodes;
+  `encounterIndexOf(node) === node.id`, so the battle stream is
+  `hash(runSeed, floor, nodeId)`.
 
 ### WP-05 · Loot & economy engine *(deps: WP-01, WP-02)*
 **Files:** `src/core/loot/` (`roll.ts`, `inventory.ts`, `shop.ts`),
@@ -946,8 +971,9 @@ packages then fan out again.
 `title.ts`, `floorgen.ts`, `results.ts`, `src/ui/overlays/pause.ts`.
 **Acceptance:**
 - App boots to title at 60fps; letterbox scaling correct at arbitrary window
-  sizes; FSM enforces the gameloop.md §1 transition table.
-- Title: seed entry (blank = random 8-hex), New Run → floorgen → explore
+  sizes; FSM enforces the §3.1 transition table (gameloop.md §1's is superseded
+  by run-map-and-dm.md — `explore` is now `runMap`).
+- Title: seed entry (blank = random 8-hex), New Run → floorgen → runMap
   handoff, Continue visible iff valid save, Records line from MetaFile.
 - Pause overlay: freeze semantics, Party/Inventory tabs open the WP-12 panel,
   Abandon → RESULTS(defeat) with save deletion.
@@ -955,18 +981,23 @@ packages then fan out again.
   Title; save deleted on entry; autosave fires at the five specified points via
   `ctx.save()`.
 
-### WP-10 · Explore UI *(deps: WP-04, WP-07, WP-08)*
-**Files:** `src/ui/scenes/explore.ts`, `exploreHud.ts`, `minimap.ts`.
+### WP-10 · Run-map UI *(deps: core/map, WP-07, WP-08)*
+**Files:** `src/ui/scenes/runMap.ts`. *(Supersedes the explore/minimap/HUD trio
+of the tile crawl, all deleted — run-map-and-dm.md §2.)*
 **Acceptance:**
-- Renders the MEOW-1987 fixture floor correctly (tiles, fog 3-state, entities
-  culled by knowledge state, camera lerp + clamp).
-- WASD/arrows step with held-repeat on tween completion (~9/s); click-to-path
-  auto-walk with the three cancel conditions (SHOULD-tier, may stub to no-op);
-  Tab marching-order panel blocked when a chaser is within 3 tiles; M map overlay.
-- All `StepTrigger`s dispatched to the right scenes/overlays; roamer `!`/`?`
-  markers; minimap per dungeon.md §11 table; belt allows Tuna/Sardine only,
-  others disabled with tooltip.
-- 60fps on the largest floor (35×23) — fog overlay rebuilds only changed tiles.
+- Renders any generated `FloorMap`: medallions positioned from `depth`/`row`,
+  inked routes between them, the party marker on `currentNodeId`, and the
+  terminal node telegraphed (halo + stairs badge + its own tooltip line).
+- The choice reads as a choice: the 2-3 legal routes are ringed, numbered and
+  animated, hover explains what is known about a node, and branches that can no
+  longer be reached wear the `node:locked` overlay on a faded medallion.
+- Keyboard 1-3 / arrows + Enter, and click, all take a route; the party walks
+  the chosen edge before the node resolves.
+- Node dispatch matches §3.2; a node is marked resolved BEFORE dispatch (a fled
+  fight never re-opens), and the record is floor-scoped so it cannot leak into
+  the next floor.
+- Fully playable with ZERO generated assets: procedural medallions, procedural
+  state overlays and the palette-wash backdrop.
 
 ### WP-11 · Battle UI *(deps: WP-03, WP-08)*
 **Files:** `src/ui/scenes/battle.ts`, `battleWidgets.ts`.
@@ -995,13 +1026,90 @@ packages then fan out again.
 - Inventory panel: 16-slot grid, per-cat equip/unequip with stat-delta preview,
   sort; opens from pause and from pickup.
 
+### WP-13 · The tabletop layer *(deps: WP-10, WP-11, WP-12)*
+**Files:** `src/services/tabletop.ts` (pure), `src/services/dm.ts` (transport),
+`src/ui/overlays/tabletopBar.ts`, the `[T]` paths in `scenes/battle.ts` and
+`scenes/event.ts`, `tests/tabletop.spec.ts`; the agent itself in `agent/`.
+**Acceptance:**
+- **Offline-first is provable.** With no DM reachable the affordance is never
+  built and both scenes are byte-identical to their pre-feature behaviour. The
+  release gate plays a run with `VITE_DM_URL` pointed at a dead host.
+- **Defence in depth, three times.** The agent prices the effects with the
+  engine's own `powerBudget()`/`validatePowerScript()`; the client re-lints the
+  response (`validateCombatVerdict`) before the engine sees a number; and
+  `consultImprovisation` lints a third time inside the engine, dropping the
+  effect list while keeping the narration. A tampered `pct:150` posted straight
+  at `resolveAction` deals 0 damage and spends 0 energy — asserted by test.
+- **A refused / dropped / unaffordable verdict does not consume the turn.**
+- **Zero RNG.** An improvisation is a conditionless `activated` `PowerScript`;
+  the transcript records `rngDraws: 0` and a replay reproduces the run.
+- **The browser bundle contains no zod and no `agent/`/`api/` code** (asserted by
+  inspecting the `vite build` output).
+- Cap tables mirrored in `src/` are pinned to their authoring-side originals by
+  parity tests over every floor — the same pattern `resonancePairKey` uses.
+
 ### Integration gate (owned by WP-09's implementer, after all packages merge)
 **Files:** `tests/integration.spec.ts`.
-**Acceptance:** headless scripted run (fixed seed): new run → generate floor 1 →
-fight pack 1 via scripted actions → loot → event tile → descend → assert
-deep-equal `RunState` against a recorded fixture, twice (determinism). Plus a
-manual playtest checklist: full 6-floor victory run, a defeat run, a
-save/reload-mid-floor run, 60fps spot checks.
+**Acceptance:** headless scripted run (fixed seed): new run → generate floor 1's
+run map → walk entry → boss resolving each node → fight via scripted actions →
+loot → event → shop node round trip → descend → assert deep-equal `RunState`
+against a recorded fixture, twice (determinism). Plus a runtime gate driven in
+headless chromium: fresh screenshots of every screen, a clean console, a
+same-seed-twice run-state comparison, a v2-save migration, and a full playthrough
+with **zero generated assets** and with the **DM unreachable**.
+
+---
+
+## 5b. Modules added by the visual overhaul + progression depth
+
+Everything below landed after the WP-01..12 packages and obeys the same §0
+layering rules. Nothing here introduced a new `SceneId` or `OverlayId`.
+
+### `src/core` — progression (pure, no pixi)
+
+| Module | Layer | What it owns |
+|---|---|---|
+| `core/run/party.ts` *(extended)* | core | `POINT_MENU` and the whisker-point API (`unspentPoints`, `canSpendPoint`, `spendPoint`, `clearPoints`, `pointStats`); milestone skill unlocks (`knownSkills`, `activeSkills`, `benchedSkills`, `setLoadout`, `LOADOUT_SIZE = 4`, slot 1 pinned to `BASIC_SKILL_ID`); `effectiveStats` now folds growth → points → **all three** equip slots → temp mods → clamps. |
+| `core/types.ts` *(extended)* | core | `EquipSlot = 'weapon' \| 'trinket' \| 'collar'` + `EQUIP_SLOTS`; `CatRunState.collar? / points? / loadout?` (all optional, so v1 saves load); `SaveVersion`. |
+| `core/loot/{inventory,roll,shop}.ts` | core | Slot-generic: equip/unequip/sort/grief walk `EQUIP_SLOTS`; `rollOneEquip` takes `{ slotWeights?, slot? }`; the Peddler stocks a guaranteed collar. |
+| `core/run/save.ts` | core | `SAVE_VERSION = 3`, `READABLE_SAVE_VERSIONS = [1,2,3]`, `migrateSave()` — v1 and v2 blobs load and are migrated forward, never rejected. v2→v3 drops the tile `FloorState`/`floorDelta` and restarts the party at the equivalent floor's entry node with party, gear, wallet and floor number intact. |
+
+### `src/ui` — the shared chrome kit and the screens built on it
+
+The kit is the single source of chrome. **No scene paints its own rectangle,
+picks its own font size, or invents a colour or gap** — everything resolves to
+`PAL` / `TYPE` / `SPACE` / `RADIUS`. Every asset-backed widget is painted-first
+with a procedural fallback, so the whole UI still renders with zero generated
+assets.
+
+| Module | Layer | What it owns |
+|---|---|---|
+| `ui/widgets.ts` *(extended)* | ui | The kit: `panel` (solid/glass/raised), `avatar`/`enemyAvatar`, `bar` (hp/energy/xp/poise), `heading`/`label`, `button`, `vignette`, `scrim`, `sceneBackdrop`. All fail-soft — a missing texture degrades, never throws. |
+| `ui/palette.ts`, `ui/textStyles.ts`, `ui/layout.ts` *(extended)* | ui | The design tokens the kit resolves against: `PAL.sheen/shadow/glass/xp` + `mix()`; `TYPE` scale + `headingStyle`/`labelStyle`; `RADIUS.avatar/.bar` + `SPACE`. |
+| `ui/overlays/progressPanel.ts` **(new)** | ui | THE DEN — an *embeddable* panel (same shape as `inventoryPanel.ts`, hosted by both the Landing and the pause overlay, hence no new `OverlayId`). Its view-model half (`buildStatRows`, `buildPointRows`, `buildSkillRows`, `buildGearRows`, `assignToSlot`, `buildLevelUpSummary`, …) is pure and unit-tested headless; the pixi half is `makeProgressPanel` / `makeDenBox` / `makeLevelUpCard`. |
+| `ui/scenes/battleWidgets.ts` *(rewritten)* | ui | `makeBattleStage(floorNum)` — painted `scene:battle:<n>` backdrop, parallax, ground pool, contact shadows, presence auras — plus every re-chromed HUD widget. Falls back to a fully drawn stage when the painting is absent. |
+| `ui/overlays/tabletopBar.ts` **(new)** | ui | The "what do you do?" card, shared by battle and event. A DOM `<input>` positioned through main.ts's own letterbox transform, the prompt echoed back, the DM's reply streamed in, and a per-phase card height. Renders and collects text; decides nothing. |
+| `services/dm.ts`, `services/tabletop.ts` **(new)** | services | The DM transport (eve's four HTTP routes, one durable session per run, `null` on any failure) and the pure half (verdict contracts, the client-side re-lint, the cap mirrors, the transcript). `eve/client` and zod are deliberately not shipped to the browser. |
+| `ui/scenes/runMap.ts` **(new)** | ui | THE floor screen. Owns the board geometry, the medallion/overlay vocabulary (painted `node:*` first, procedural fallback second), the route-line states, the party marker's edge walk, and the node → scene dispatch. *(It replaced `explore.ts`, `exploreHud.ts`, `exploreLayout.ts`, `exploreAtmosphere.ts`, `minimap.ts` and `draw/mapIcons.ts`, all deleted with the tile crawl.)* |
+
+### Generated art contract
+
+`public/assets/gen/manifest.json` and `public/assets/gen/scenes/manifest.json`
+share one shape — `{"version":1,"sprites":{id:{file,w,h}}}`. Consumers must
+**not** assume a file extension: the sprite manifest is all-WebP, the scenes
+manifest mixes WebP backdrops with a keyed PNG (`npc:peddler`). Ids in use:
+`cat:*`, `portrait:*`, `enemy:*`, `boss:*`, `title:hero`, `scene:battle:1..6`,
+`scene:event:<eventId>`, `scene:landing`, `scene:victory`, `scene:defeat`,
+`npc:peddler`, `scene:map:1..6` (the run-map backdrops), and in
+`public/assets/gen/env/manifest.json` the node medallions `node:fight`,
+`node:elite`, `node:event`, `node:shop`, `node:rest`, `node:treasure`,
+`node:boss` plus the two state overlays `node:visited` / `node:locked`. There is
+no `scene:eventStage` — the event screen reuses that event's own illustration as
+its blurred surround.
+
+**Overlay contract:** `node:visited` / `node:locked` are drawn at the **same size
+and centre** as the medallion beneath them, and their centres are transparent, so
+the node type stays readable through the state mark.
 
 ---
 

@@ -16,6 +16,7 @@
  */
 import { Container, FillGradient, Graphics } from "pixi.js";
 import type {
+  Effect,
   EnemyId,
   EventOption,
   GameEvent,
@@ -54,6 +55,22 @@ import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 import type { EventWinContext } from "../overlays/loot.js";
 import { probeGm, requestGmEventResolve } from "../../services/gm.js";
 import type { GmEventResolveOutcome } from "../../services/gmTypes.js";
+import {
+  ensureDmSession,
+  markDmUnreachable,
+  probeDm,
+  requestEncounterVerdict,
+} from "../../services/dm.js";
+import {
+  validateEncounterVerdict,
+  withAdjudication,
+  withDmSession,
+  type TabletopRun,
+} from "../../services/tabletop.js";
+import {
+  createTabletopBar,
+  type TabletopBar,
+} from "../overlays/tabletopBar.js";
 
 /* ---------------------------------------------------------------------- */
 /* Params (in from explore's StepTrigger, out to the battle scene)         */
@@ -138,6 +155,14 @@ export class EventScene implements Scene {
   private dynamic: Container | null = null;
   private glyph: Container | null = null;
   private glyphBaseY = 0;
+  /** Holds the full-screen backdrop; filled in once the event is known. */
+  private backdrop: Container | null = null;
+  /**
+   * Panel-local y where body copy starts — measured from the real title
+   * bottom rather than R.event.body's fixed 240, which left a ~75px orphan
+   * gap under every one-line title.
+   */
+  private bodyTop = 0;
   /** true when a generated scene illustration is up (text hugs the left) */
   private illustrated = false;
   private t = 0;
@@ -150,9 +175,15 @@ export class EventScene implements Scene {
   private fight: FightRequest | null = null;
   private hotkeys: ((() => void) | null)[] = [];
   private continueFn: (() => void) | null = null;
-  /** GM free-text option (gm-system.md): shown only when the GM is up. */
+  /**
+   * The typed-action option (run-map-and-dm.md §3): shown only when SOMETHING
+   * can answer it. Offline both probes fail, the row is never rendered, and
+   * the modal is byte-identical to the authored one.
+   */
   private gmAvailable = false;
-  private inputEl: HTMLInputElement | null = null;
+  /** true ⇒ the persistent DM answers; false ⇒ the stateless /api/gm seam. */
+  private dmReady = false;
+  private tabletop: TabletopBar | null = null;
 
   mount(root: Container, ctx: GameCtx, params?: unknown): void {
     const p = params as EventSceneParams;
@@ -165,10 +196,16 @@ export class EventScene implements Scene {
     this.view = view;
     layer(root, "hud").addChild(view);
 
-    // backdrop: palette wash + the §9 scrim (the modal look, explore is
-    // gone) + vignette, all from the kit
+    // Backdrop: palette wash + the §9 scrim (the modal look, explore is
+    // gone) + vignette, all from the kit. There is no one "event stage"
+    // painting, so the surround stays an empty container until the event is
+    // picked and `setHeader` can blow THIS event's own illustration up
+    // behind the card — otherwise the screen is a black void with a floating
+    // panel in it.
+    const backdrop = new Container();
+    this.backdrop = backdrop;
     view.addChild(
-      sceneBackdrop("scene:eventStage", DESIGN_W, DESIGN_H),
+      backdrop,
       scrim(DESIGN_W, DESIGN_H),
       vignette(DESIGN_W, DESIGN_H, 0.7),
     );
@@ -215,15 +252,32 @@ export class EventScene implements Scene {
     );
     this.showPrompt();
 
-    // GM free-text option (gm-system.md event/resolve): probe once per
-    // session, fire-and-forget; when the GM is reachable and the prompt is
-    // still up, re-render with the extra "[T] Do something else…" row.
-    // Offline (the probe fails) the modal stays byte-identical.
-    void probeGm().then((ok) => {
-      if (!ok || !this.view || this.state !== "prompt" || !this.event) return;
-      this.gmAvailable = true;
-      this.rerenderPrompt();
+    // The typed-action option: probe once per session, fire-and-forget; when
+    // something answers and the prompt is still up, re-render with the extra
+    // "[T] Do something else…" row. Offline both probes fail and the modal
+    // stays byte-identical. The persistent DM wins when both are up — it is
+    // the one that remembers the rest of the run.
+    // The persistent DM is asked FIRST and, when it answers, the legacy
+    // `api/gm/*` deployment is never probed at all: it is the fallback, and
+    // probing it anyway costs a request per session that is guaranteed to be
+    // discarded (and, on a dev server with no /api, a 404 in the console).
+    void probeDm().then((ok) => {
+      if (ok) {
+        this.dmReady = true;
+        this.enableTabletop();
+        return;
+      }
+      void probeGm().then((gmOk) => {
+        if (gmOk) this.enableTabletop();
+      });
     });
+  }
+
+  /** Show the typed-action row (idempotent; safe from either probe). */
+  private enableTabletop(): void {
+    if (this.gmAvailable || !this.view || !this.event) return;
+    this.gmAvailable = true;
+    if (this.state === "prompt") this.rerenderPrompt();
   }
 
   update(dtMs: number): void {
@@ -232,12 +286,19 @@ export class EventScene implements Scene {
     if (this.glyph) {
       this.glyph.y = this.glyphBaseY + Math.sin(this.t / 400) * 3;
     }
+    this.tabletop?.update(dtMs);
   }
 
   onKey(key: string): boolean {
-    // the DOM input owns the keyboard while typing (it stops propagation
-    // itself; anything that still bubbles here is swallowed)
-    if (this.state === "freetext" || this.state === "waiting") return true;
+    // The tabletop card owns the keyboard while it is up: the DOM field stops
+    // propagation itself, and the reply beat takes any confirm key to dismiss.
+    if (this.state === "freetext" || this.state === "waiting") {
+      if (this.tabletop && !this.tabletop.isOpen()) this.cancelFreeText();
+      else if (key === "e" || key === "enter" || key === "space") {
+        this.cancelFreeText();
+      }
+      return true;
+    }
     if (key === "esc") return true; // consumed, does nothing (events.md §3)
     if (this.state === "prompt") {
       const i = "1234".indexOf(key);
@@ -259,7 +320,10 @@ export class EventScene implements Scene {
   }
 
   unmount(): void {
-    this.closeInput();
+    // the tabletop card owns a DOM <input>: destroy it before its pixi
+    // parent goes, or the element is orphaned over the next scene
+    this.tabletop?.destroy();
+    this.tabletop = null;
     this.view?.destroy({ children: true });
     this.view = null;
     this.panel = null;
@@ -281,6 +345,18 @@ export class EventScene implements Scene {
   ): void {
     const modal = this.panel!;
     const [px, py, pw, ph] = R.event.panel;
+
+    // Surround: the same painting, blown up, blurred and pushed way down so
+    // it reads as the room the card is sitting in. Falls back to the palette
+    // wash on its own when there is no art (sceneBackdrop is fail-soft).
+    this.backdrop?.addChild(
+      sceneBackdrop(sceneId ?? "", DESIGN_W, DESIGN_H, {
+        // the §9 scrim (0.6) and vignette (0.7) both land on top of this, so
+        // the dim here stays light or the surround goes black again
+        dim: 0.3,
+        blur: true,
+      }),
+    );
 
     // Generated illustration (scene:event:<id>): fills the panel, subject
     // in the right third (the scene set's composition contract), clipped
@@ -342,6 +418,8 @@ export class EventScene implements Scene {
     titleText.style.wordWrapWidth = pw - this.textX() - SPACE.lg;
     titleText.position.set(this.textX(), SPACE.lg + SPACE.lg);
     modal.addChild(eyebrow, titleText);
+    // body copy starts one gutter under the title, however tall it wrapped
+    this.bodyTop = titleText.y + Math.ceil(titleText.height) + SPACE.lg;
   }
 
   /** Left edge of the text column: past the glyph, or the panel padding. */
@@ -366,14 +444,12 @@ export class EventScene implements Scene {
     this.state = "prompt";
     this.hotkeys = [];
 
-    const [, py] = R.event.panel;
-    const [, by] = R.event.body;
     // with an illustration up the prompt hugs the scrim-dark left column
     const body = label(event.prompt, {
       size: TYPE.body,
       wrap: this.wrapW(),
     });
-    body.position.set(this.textX(), by - py);
+    body.position.set(this.textX(), this.bodyTop);
     dyn.addChild(body);
 
     // Last option sits in the Leave row; the rest fill the option rects.
@@ -456,97 +532,150 @@ export class EventScene implements Scene {
     return b.view;
   }
 
-  /* ---- GM free-text option (gm-system.md event/resolve) --------------- */
+  /* ---- the tabletop layer (run-map-and-dm.md §3, out of combat) ------- */
+
+  /** The shared "what do you do?" card, built on first use. */
+  private ensureTabletop(): TabletopBar {
+    this.tabletop ??= createTabletopBar({
+      rect: [280, 300, 720, 200],
+      placeholder: "Bruno pries the grate open with the crowbar…",
+      onSubmit: (text) => this.submitFreeText(text),
+      onCancel: () => this.cancelFreeText(),
+      onDismiss: () => this.cancelFreeText(),
+    });
+    if (this.tabletop.view.parent === null) {
+      this.view?.addChild(this.tabletop.view);
+    }
+    return this.tabletop;
+  }
 
   private openFreeText(): void {
-    if (this.state !== "prompt" || !this.ctx || !this.event || this.inputEl) {
-      return;
-    }
+    if (this.state !== "prompt" || !this.ctx || !this.event) return;
     this.state = "freetext";
-    const el = document.createElement("input");
-    el.type = "text";
-    el.maxLength = 200;
-    el.placeholder = "What do you do? (Enter to act · Esc to cancel)";
-    el.autocomplete = "off";
-    el.spellcheck = false;
-    // same tokens as the pixi chrome (PAL), so the DOM input reads as part
-    // of the modal rather than a browser widget dropped on top of it
-    const css = (c: number): string => `#${c.toString(16).padStart(6, "0")}`;
-    el.style.cssText =
-      "position:fixed;left:50%;top:62%;transform:translateX(-50%);" +
-      "width:min(600px,86vw);padding:12px 16px;font-size:16px;" +
-      `color:${css(PAL.text)};background:${css(PAL.hpBack)};` +
-      `border:1px solid ${css(PAL.gold)};` +
-      "border-radius:6px;outline:none;z-index:10;" +
-      "box-shadow:0 8px 32px rgba(7,6,13,.55);";
-    // the game's single window key listener must not see typing
-    el.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") {
-        const text = el.value.trim().slice(0, 200);
-        if (text.length > 0) this.submitFreeText(text);
-      } else if (e.key === "Escape") {
-        this.closeInput();
-        this.state = "prompt";
-      }
-    });
-    el.addEventListener("keyup", (e) => e.stopPropagation());
-    document.body.appendChild(el);
-    this.inputEl = el;
-    el.focus();
+    this.ensureTabletop().open();
   }
 
-  private closeInput(): void {
-    this.inputEl?.remove();
-    this.inputEl = null;
+  /** Nothing happened: back to the untouched prompt (no RNG was drawn). */
+  private cancelFreeText(): void {
+    this.tabletop?.close();
+    if (this.state === "result") return;
+    this.state = "prompt";
+    this.rerenderPrompt();
   }
 
+  /**
+   * One typed action, adjudicated by whichever DM answered the probe. The
+   * verdict is re-linted CLIENT-SIDE (run-map-and-dm.md §3 "defence in
+   * depth") and every beat — told, refused, or dropped — is recorded into
+   * the run transcript before anything is applied.
+   */
   private submitFreeText(text: string): void {
     if (this.state !== "freetext" || !this.ctx || !this.event) return;
-    this.closeInput();
     this.state = "waiting";
+    const bar = this.ensureTabletop();
+    bar.waiting(text);
     const run = this.ctx.run!;
     const ev = this.event;
 
-    // waiting beat: prompt + the player's declared move
-    const dyn = this.dynamic!;
-    for (const c of dyn.removeChildren()) c.destroy({ children: true });
-    const [, py] = R.event.panel;
-    const [, by] = R.event.body;
-    const wrap = this.wrapW();
-    const body = label(ev.prompt, { size: TYPE.body, wrap });
-    body.position.set(this.textX(), by - py);
-    dyn.addChild(body);
-    const wait = label(`“${text}” — the night holds its breath…`, {
-      dim: true,
-      wrap,
+    void this.askDm(text, run, ev).then((raw) => {
+      if (!this.view || this.state !== "waiting" || this.event !== ev) return;
+      if (raw === null) {
+        // failure mid-run: the option disappears, the prompt returns
+        // untouched (no RNG was drawn, nothing was paid or fired)
+        if (this.dmReady) markDmUnreachable();
+        this.gmAvailable = false;
+        bar.reply("The night holds its breath, and lets it out.", "quiet");
+        return;
+      }
+      const check = validateEncounterVerdict(raw, run.floorNum);
+      const verdict = check.verdict;
+      if (!verdict) {
+        this.gmAvailable = false;
+        bar.reply("The night holds its breath, and lets it out.", "quiet");
+        return;
+      }
+      this.recordBeat(text, verdict, check.applied, check.problems);
+      if (!check.applied) {
+        // A refusal is the DM saying no, in character; a dropped verdict
+        // reads the same. Either way the prompt is still on the table.
+        bar.reply(verdict.narration, verdict.allowed ? "told" : "refused");
+        return;
+      }
+      bar.close();
+      this.applyFreeText(text, {
+        text: verdict.narration,
+        effects: verdict.effects,
+      });
     });
-    wait.position.set(
-      this.textX(),
-      by - py + Math.ceil(body.height) + SPACE.md,
-    );
-    dyn.addChild(wait);
+  }
 
-    void requestGmEventResolve({
+  /**
+   * Ask the persistent DM when one is up, else the stateless `/api/gm`
+   * endpoint (the seam gm.ts has always owned). Both return the same
+   * `{ allowed?, narration|text, effects }` shape to the lint above.
+   */
+  private async askDm(
+    text: string,
+    run: RunState,
+    ev: GameEvent,
+  ): Promise<unknown> {
+    const partyHp = run.cats.filter((c) => c.lives > 0).map((c) => c.hp);
+    if (this.dmReady && this.ctx) {
+      const ensured = await ensureDmSession(run as TabletopRun);
+      if (!ensured) return null;
+      this.ctx.run = ensured.run;
+      const res = await requestEncounterVerdict(ensured.session, {
+        floor: run.floorNum,
+        prompt: text,
+        situation:
+          `The party is at "${ev.title}". ${ev.prompt} ` +
+          `Their options were: ${ev.options.map((o) => o.label).join("; ")}.`,
+        shinies: run.inventory.shinies,
+        partyHp,
+        onDelta: (_delta, soFar) => this.tabletop?.stream(soFar),
+      });
+      if (!res) return null;
+      if (this.ctx.run) {
+        this.ctx.run = withDmSession(this.ctx.run as TabletopRun, res.session);
+      }
+      return res.data;
+    }
+    const outcome = await requestGmEventResolve({
       floor: run.floorNum,
       text,
       eventId: ev.id,
       eventPrompt: ev.prompt,
       optionLabels: ev.options.map((o) => o.label),
-      partyHp: run.cats.filter((c) => c.lives > 0).map((c) => c.hp),
+      partyHp,
       shinies: run.inventory.shinies,
-    }).then((verdict) => {
-      if (!this.view || this.state !== "waiting" || this.event !== ev) return;
-      if (!verdict) {
-        // failure mid-run: the GM option disappears, the prompt returns
-        // untouched (no RNG was drawn, nothing was paid or fired)
-        this.gmAvailable = false;
-        this.state = "prompt";
-        this.rerenderPrompt();
-        return;
-      }
-      this.applyFreeText(text, verdict);
     });
+    // the /api/gm seam has no refusal channel: a verdict is always an "allowed"
+    return outcome === null
+      ? null
+      : { allowed: true, narration: outcome.text, effects: outcome.effects };
+  }
+
+  /** Record one adjudication into the run log, then autosave it. */
+  private recordBeat(
+    prompt: string,
+    verdict: { allowed: boolean; narration: string; effects: Effect[] },
+    applied: boolean,
+    problems: string[],
+  ): void {
+    if (!this.ctx?.run) return;
+    const run = this.ctx.run;
+    this.ctx.run = withAdjudication(run as TabletopRun, {
+      where: "encounter",
+      floor: run.floorNum,
+      nodeId: run.currentNodeId,
+      prompt,
+      narration: verdict.narration,
+      allowed: verdict.allowed,
+      effects: verdict.effects,
+      applied,
+      problems,
+    });
+    this.ctx.save();
   }
 
   /**
@@ -602,14 +731,13 @@ export class EventScene implements Scene {
     this.hotkeys = [];
     for (const c of dyn.removeChildren()) c.destroy({ children: true });
 
-    const [, py, pw] = R.event.panel;
-    const [, by] = R.event.body;
+    const [, , pw] = R.event.panel;
     const body = label(text, { size: TYPE.body, wrap: this.wrapW() });
-    body.position.set(this.textX(), by - py);
+    body.position.set(this.textX(), this.bodyTop);
     dyn.addChild(body);
 
     // one delta line per emitted result, color-coded (events.md §3)
-    let ly = by - py + Math.ceil(body.height) + SPACE.md;
+    let ly = this.bodyTop + Math.ceil(body.height) + SPACE.md;
     for (const line of lines) {
       const t = label(line.text, { fill: TONE_COLOR[line.tone], bold: true });
       t.position.set(this.textX(), ly);
@@ -657,7 +785,7 @@ export class EventScene implements Scene {
       };
       this.ctx.scenes.goto("battle", params);
     } else {
-      this.ctx.scenes.goto("explore");
+      this.ctx.scenes.goto("runMap");
     }
   }
 }

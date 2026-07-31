@@ -6,18 +6,18 @@
  * Esc closes first), ticker gating / freeze semantics, and key routing.
  * Headless: sceneManager.ts imports pixi types only.
  *
- * Part 2: shell-level determinism — the title → floorgen → explore handoff
- * data path (newRun → generateCurrentFloor → autosave round-trip) is
+ * Part 2: shell-level determinism — the title → floorgen → runMap handoff
+ * data path (newRun → generateCurrentFloorMap → autosave round-trip) is
  * deterministic for a fixed seed, twice.
  *
  * Part 3: the ARCHITECTURE.md §5 integration gate — a headless scripted
- * run on a fixed seed (new run → floor 1 → fight a pack via scripted
- * actions → loot → event tile → descend), deep-equalled against a
- * recorded RunState fixture and executed twice for determinism. The
- * driver below mirrors the REAL scene wiring byte-for-byte: the battle
- * scene's BattleSetup build + §4 rng stream keys, explore's chestSeed
- * rolls, the event scene's selectEvent/resolveOption stream, and the
- * loot overlay's applyEventEffects → applyLootGrant order.
+ * run on a fixed seed (new run → floor 1's run map → walk entry to boss,
+ * resolving every node → descend), deep-equalled against a recorded
+ * RunState fixture and executed twice for determinism. The driver below
+ * mirrors the REAL scene wiring byte-for-byte: the battle scene's
+ * BattleSetup build + §4 rng stream keys, the node payload-seed rolls, the
+ * event scene's selectEvent/resolveOption stream, and the loot overlay's
+ * applyEventEffects → applyLootGrant order.
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
@@ -39,7 +39,7 @@ import {
   applyBattleResult,
   applyLootGrant,
   descend,
-  generateCurrentFloor,
+  generateCurrentFloorMap,
   newRun,
 } from "../src/core/run/runState.js";
 import {
@@ -49,7 +49,6 @@ import {
   serializeRun,
   emptyMeta,
 } from "../src/core/run/save.js";
-import { Tile } from "../src/core/types.js";
 import type {
   BattleAction,
   BattleEvent,
@@ -58,14 +57,21 @@ import type {
   BattleState,
   EnemyId,
   EventOption,
-  FloorState,
+  MapNode,
   MewHookId,
-  Roamer,
+  NodeType,
   RunState,
   SaveFile,
 } from "../src/core/types.js";
 import { hash, mulberry32 } from "../src/core/rng.js";
 import { CLASSES } from "../src/content/classes.js";
+import { FLOORS } from "../src/content/floors.js";
+import { encounterFor, encounterIndexOf } from "../src/core/map/encounter.js";
+import {
+  advance,
+  atTerminal,
+  optionsForRun,
+} from "../src/core/map/traverse.js";
 import { SKILLS } from "../src/content/skills.js";
 import { EVENTS } from "../src/content/events.js";
 import { createBattle } from "../src/core/combat/setup.js";
@@ -77,7 +83,6 @@ import {
 import { legalActions, nextActor } from "../src/core/combat/state.js";
 import { resolveAction } from "../src/core/combat/resolve.js";
 import { takeEnemyTurn } from "../src/core/combat/ai.js";
-import { contactCheck, step, type StepDir } from "../src/core/dungeon/step.js";
 import {
   rollBossLoot,
   rollChest,
@@ -189,14 +194,18 @@ describe("SceneManager FSM", () => {
       "boot",
       "title",
       "floorgen",
-      "explore",
-      "battle",
-      "explore",
-      "event",
-      "explore",
-      "landing",
+      "runMap",
+      "battle", // a fight node
+      "runMap",
+      "event", // an event node
+      "runMap",
+      "landing", // a SHOP node borrows the Peddler…
+      "runMap", // …and hands the route straight back
+      "battle", // the stairs guard falls
+      "runMap",
+      "landing", // the stairwell, floor cleared
       "floorgen",
-      "explore",
+      "runMap",
       "battle",
       "results",
       "title",
@@ -213,9 +222,9 @@ describe("SceneManager FSM", () => {
     expect(() => manager.goto("battle")).toThrow(/illegal transition/);
     manager.goto("title");
     manager.goto("floorgen");
-    manager.goto("explore");
+    manager.goto("runMap");
     expect(() => manager.goto("title")).toThrow(/illegal transition/);
-    expect(manager.current).toBe("explore");
+    expect(manager.current).toBe("runMap");
   });
 
   it("no-ops on illegal transitions in prod mode", () => {
@@ -257,11 +266,20 @@ describe("SceneManager FSM", () => {
   it("transition table matches the gameloop.md §1 FSM", () => {
     expect(TRANSITIONS.boot).toEqual(["title"]);
     expect(TRANSITIONS.title).toContain("floorgen"); // New Run
-    expect(TRANSITIONS.title).toContain("explore"); // Continue
-    expect(TRANSITIONS.floorgen).toEqual(["explore"]);
+    expect(TRANSITIONS.title).toContain("runMap"); // Continue
+    expect(TRANSITIONS.floorgen).toEqual(["runMap"]);
     expect(TRANSITIONS.battle).toContain("results"); // defeat / floor-6 win
+    expect(TRANSITIONS.battle).toContain("runMap"); // back to the route
     expect(TRANSITIONS.event).toContain("battle"); // ambush fight
+    // the run map dispatches every node type it does not resolve in-scene
+    expect(TRANSITIONS.runMap).toEqual([
+      "battle",
+      "event",
+      "landing",
+      "results",
+    ]);
     expect(TRANSITIONS.landing).toContain("floorgen"); // Descend
+    expect(TRANSITIONS.landing).toContain("runMap"); // a shop NODE returns
     expect(TRANSITIONS.results).toEqual(["floorgen", "title"]);
     // party creator (GM custom parties): title ⇄ creator, accept/fallback
     // always lands in floorgen — a run start is never blocked
@@ -279,7 +297,7 @@ describe("SceneManager FSM", () => {
 describe("SceneManager overlays", () => {
   it("never stacks overlays; pause cannot open over loot", () => {
     const { manager } = makeHarness();
-    manager.goto("explore");
+    manager.goto("runMap");
     manager.pushOverlay("loot");
     expect(manager.overlay).toBe("loot");
     manager.pushOverlay("pause"); // must be ignored
@@ -292,7 +310,7 @@ describe("SceneManager overlays", () => {
 
   it("freezes non-modal layers beneath an overlay and thaws on pop", () => {
     const { manager, layers } = makeHarness();
-    manager.goto("explore");
+    manager.goto("runMap");
     manager.pushOverlay("pause");
     for (const l of layers) {
       const expected = l.label === "modal" || l.label === "flash";
@@ -304,22 +322,22 @@ describe("SceneManager overlays", () => {
 
   it("skips the underlying scene's update while an overlay is up", () => {
     const { manager, sceneSpies, overlaySpies } = makeHarness();
-    manager.goto("explore");
+    manager.goto("runMap");
     manager.update(16);
-    expect(sceneSpies.explore!.updates).toBe(1);
+    expect(sceneSpies.runMap!.updates).toBe(1);
     manager.pushOverlay("loot");
     manager.update(16);
     manager.update(16);
-    expect(sceneSpies.explore!.updates).toBe(1); // frozen
+    expect(sceneSpies.runMap!.updates).toBe(1); // frozen
     expect(overlaySpies.loot!.updates).toBe(2);
     manager.popOverlay();
     manager.update(16);
-    expect(sceneSpies.explore!.updates).toBe(2);
+    expect(sceneSpies.runMap!.updates).toBe(2);
   });
 
   it("pops any overlay before a scene swap", () => {
     const { manager, overlaySpies } = makeHarness();
-    manager.goto("explore");
+    manager.goto("runMap");
     manager.pushOverlay("pause");
     manager.goto("results"); // Abandon Run path
     expect(overlaySpies.pause!.unmounted).toBe(1);
@@ -340,7 +358,7 @@ describe("SceneManager key routing", () => {
     expect(manager.overlay).toBeNull(); // boot blocked
     manager.goto("title");
     manager.goto("floorgen");
-    manager.goto("explore");
+    manager.goto("runMap");
     manager.handleKey("esc");
     expect(manager.overlay).toBe("pause");
     manager.popOverlay();
@@ -354,18 +372,18 @@ describe("SceneManager key routing", () => {
 
   it("routes keys overlay-first and swallows them beneath an overlay", () => {
     const { manager, sceneSpies, overlaySpies } = makeHarness();
-    manager.goto("explore");
+    manager.goto("runMap");
     manager.handleKey("w");
-    expect(sceneSpies.explore!.keys).toEqual(["w"]);
+    expect(sceneSpies.runMap!.keys).toEqual(["w"]);
     manager.pushOverlay("loot");
     manager.handleKey("w");
     expect(overlaySpies.loot!.keys).toEqual(["w"]);
-    expect(sceneSpies.explore!.keys).toEqual(["w"]); // frozen scene sees nothing
+    expect(sceneSpies.runMap!.keys).toEqual(["w"]); // frozen scene sees nothing
   });
 
   it("Esc closes the overlay first (loot before pause can ever open)", () => {
     const { manager } = makeHarness();
-    manager.goto("explore");
+    manager.goto("runMap");
     manager.pushOverlay("loot");
     manager.handleKey("esc");
     expect(manager.overlay).toBeNull(); // first Esc closed loot
@@ -375,7 +393,7 @@ describe("SceneManager key routing", () => {
 
   it("lets a consuming overlay keep Esc for itself", () => {
     const { manager, overlaySpies } = makeHarness();
-    manager.goto("explore");
+    manager.goto("runMap");
     manager.pushOverlay("pause");
     overlaySpies.pause!.consumeKeys = true; // e.g. a sub-panel is open
     manager.handleKey("esc");
@@ -390,18 +408,18 @@ describe("SceneManager key routing", () => {
 /* shell data path: newRun → floorgen → autosave round-trip            */
 /* ------------------------------------------------------------------ */
 
-describe("shell handoff determinism (title → floorgen → explore)", () => {
-  it("same seed ⇒ identical generated floor, twice", () => {
-    const a = generateCurrentFloor(newRun("MEOW-1987"));
-    const b = generateCurrentFloor(newRun("MEOW-1987"));
-    expect(a.floor).not.toBeNull();
-    expect(b.floor).toEqual(a.floor);
+describe("shell handoff determinism (title → floorgen → run map)", () => {
+  it("same seed ⇒ identical generated run map, twice", () => {
+    const a = generateCurrentFloorMap(newRun("MEOW-1987"));
+    const b = generateCurrentFloorMap(newRun("MEOW-1987"));
+    expect(a.floorMap).not.toBeNull();
+    expect(b.floorMap).toEqual(a.floorMap);
     expect(b).toEqual(a);
   });
 
   it("autosave at the floorgen point round-trips to a deep-equal run", () => {
     const storage = memoryStorage();
-    const run = generateCurrentFloor(newRun("MEOW-1987"));
+    const run = generateCurrentFloorMap(newRun("MEOW-1987"));
     saveRun(run, storage);
     const loaded = loadRun(storage);
     expect(loaded).toEqual(run);
@@ -410,9 +428,9 @@ describe("shell handoff determinism (title → floorgen → explore)", () => {
   });
 
   it("different seeds diverge (sanity)", () => {
-    const a = generateCurrentFloor(newRun("MEOW-1987"));
-    const b = generateCurrentFloor(newRun("PURR-0001"));
-    expect(b.floor).not.toEqual(a.floor);
+    const a = generateCurrentFloorMap(newRun("MEOW-1987"));
+    const b = generateCurrentFloorMap(newRun("PURR-0001"));
+    expect(b.floorMap).not.toEqual(a.floorMap);
   });
 });
 
@@ -526,96 +544,29 @@ function driveBattle(
   return battleResult(bs, log);
 }
 
-const DIRS: readonly (readonly [StepDir, number, number])[] = [
-  ["N", 0, -1],
-  ["E", 1, 0],
-  ["S", 0, 1],
-  ["W", -1, 0],
-];
-
-/** BFS from the target outward; the party's best first step, or null. */
-function firstStep(
-  f: FloorState,
-  tx: number,
-  ty: number,
-  blocked: ReadonlySet<number>,
-): StepDir | null {
-  const dist = new Int32Array(f.w * f.h).fill(-1);
-  const q: number[] = [ty * f.w + tx];
-  dist[q[0]] = 0;
-  for (let head = 0; head < q.length; head++) {
-    const cur = q[head];
-    const cx = cur % f.w;
-    const cy = (cur - cx) / f.w;
-    for (const [, dx, dy] of DIRS) {
-      const nx = cx + dx;
-      const ny = cy + dy;
-      if (nx < 0 || ny < 0 || nx >= f.w || ny >= f.h) continue;
-      const ni = ny * f.w + nx;
-      if (dist[ni] !== -1 || f.tiles[ni] === Tile.Wall || blocked.has(ni))
-        continue;
-      dist[ni] = dist[cur] + 1;
-      q.push(ni);
-    }
-  }
-  let best: StepDir | null = null;
-  let bestD = Infinity;
-  for (const [d, dx, dy] of DIRS) {
-    const nx = f.party.x + dx;
-    const ny = f.party.y + dy;
-    if (nx < 0 || ny < 0 || nx >= f.w || ny >= f.h) continue;
-    const dd = dist[ny * f.w + nx];
-    if (dd >= 0 && dd < bestD) {
-      bestD = dd;
-      best = d;
-    }
-  }
-  return best;
-}
-
-/**
- * One party step toward (tx, ty), preferring paths that do not trample
- * other unopened chests / unused event tiles; falls back to a plain
- * path (bumping whatever is in the way) when entities block the only
- * corridor. Deterministic — no rng anywhere in the step loop.
- */
-function stepToward(
-  f: FloorState,
-  tx: number,
-  ty: number,
-): ReturnType<typeof step> {
-  const blocked = new Set<number>();
-  for (const e of f.entities) {
-    if (e.x === tx && e.y === ty) continue;
-    if ((e.kind === "chest" && !e.opened) || (e.kind === "event" && !e.used)) {
-      blocked.add(e.y * f.w + e.x);
-    }
-  }
-  const dir = firstStep(f, tx, ty, blocked) ?? firstStep(f, tx, ty, new Set());
-  if (!dir) throw new Error(`scripted run: no path to ${tx},${ty}`);
-  return step(f, dir);
-}
-
 interface ScriptedOutcome {
   run: RunState;
-  packFights: number;
-  chestsOpened: number;
+  nodesVisited: NodeType[];
+  fights: number;
+  treasures: number;
   eventsResolved: number;
 }
 
 /**
- * The §5 scripted mini-run: new run → generate floor 1 → walk to and
- * fight pack 1 (scripted actions, real AI, §4 streams) → victory loot →
- * open a chest (chestSeed stream) → step on an event tile (eventRng
- * stream, first available non-fight option; event fights handled via
- * the 1000+entityId encounterIndex convention) → descend to floor 2.
+ * The §5 scripted mini-run, on the run map: new run → generate floor 1's
+ * graph → walk entry → boss, always taking the FIRST offered route, and
+ * resolve every node the party lands on with the real engines (packs from
+ * the node's payload seed, victory loot on the §4 victory stream, treasure
+ * on a chest roll, events through selectEvent/resolveOption) → descend.
  */
 function scriptedRun(seed: string): ScriptedOutcome {
-  let run = generateCurrentFloor(newRun(seed));
-  const f = run.floor;
-  if (!f) throw new Error("floor 1 did not generate");
-  let packFights = 0;
-  let chestsOpened = 0;
+  let run = generateCurrentFloorMap(newRun(seed));
+  const map = run.floorMap;
+  if (!map) throw new Error("floor 1 map did not generate");
+  const cfg = FLOORS[run.floorNum - 1];
+  const nodesVisited: NodeType[] = [];
+  let fights = 0;
+  let treasures = 0;
   let eventsResolved = 0;
 
   // Victory write-back + §4 victory-loot stream, exactly as battle.ts
@@ -623,10 +574,10 @@ function scriptedRun(seed: string): ScriptedOutcome {
   const afterVictory = (
     result: BattleResult,
     encounterIndex: number,
-    roamerId: number | undefined,
+    nodeId: number | undefined,
     isBoss: boolean,
   ): void => {
-    run = applyBattleResult(run, result, roamerId).run;
+    run = applyBattleResult(run, result, nodeId).run;
     const vrng = mulberry32(
       hash(run.runSeed, run.floorNum, "loot", 100 + encounterIndex),
     );
@@ -636,23 +587,8 @@ function scriptedRun(seed: string): ScriptedOutcome {
     run = applyLootGrant(run, grant).run; // overflow = Leave (none expected)
   };
 
-  const fightChain = (
-    trig: Extract<ReturnType<typeof step>, { t: "battle" }>,
-  ): void => {
-    let t: ReturnType<typeof contactCheck> = trig;
-    while (t && t.t === "battle") {
-      const result = driveBattle(run, t.enemies, t.encounterIndex, t.isBoss);
-      if (result.outcome !== "victory") {
-        throw new Error(`scripted pack fight ended in ${result.outcome}`);
-      }
-      afterVictory(result, t.encounterIndex, t.roamerId, t.isBoss);
-      packFights++;
-      t = contactCheck(f); // chained adjacent fights (dungeon.md §14)
-    }
-  };
-
-  const resolveEventTile = (eventEntityId: number, eventSeed: number): void => {
-    const erng = mulberry32(eventSeed);
+  const resolveEventNode = (node: MapNode): void => {
+    const erng = mulberry32(node.seed);
     const sel = selectEvent(
       EVENTS,
       run.floorNum,
@@ -689,12 +625,12 @@ function scriptedRun(seed: string): ScriptedOutcome {
     run = out.state;
     if (out.fightRequest) {
       const fr = out.fightRequest;
-      const encIdx = 1000 + eventEntityId; // event.ts convention
+      const encIdx = 1000 + node.id; // event.ts convention
       const result = driveBattle(run, fr.encounter, encIdx, false);
       if (result.outcome !== "victory") {
         throw new Error(`scripted event fight ended in ${result.outcome}`);
       }
-      run = applyBattleResult(run, result).run; // event fights: no roamerId
+      run = applyBattleResult(run, result).run; // event fights: no node id
       // loot overlay order: onWinEffects (same eventRng) → grant
       const vrng = mulberry32(
         hash(run.runSeed, run.floorNum, "loot", 100 + encIdx),
@@ -717,96 +653,77 @@ function scriptedRun(seed: string): ScriptedOutcome {
     eventsResolved++;
   };
 
-  const handleTrigger = (trig: ReturnType<typeof step>): void => {
-    switch (trig.t) {
-      case "battle":
-        fightChain(trig);
+  /** Resolve the node the party is standing on, by type. */
+  const resolveNode = (node: MapNode): void => {
+    nodesVisited.push(node.type);
+    switch (node.type) {
+      case "fight":
+      case "elite":
+      case "boss": {
+        const enemies = encounterFor(node, cfg);
+        if (!enemies) throw new Error(`fight node ${node.id} has no pack`);
+        const isBoss = node.type === "boss";
+        const encIdx = encounterIndexOf(node);
+        const result = driveBattle(run, enemies, encIdx, isBoss);
+        if (result.outcome !== "victory") {
+          throw new Error(`scripted node fight ended in ${result.outcome}`);
+        }
+        afterVictory(result, encIdx, node.id, isBoss);
+        fights++;
         break;
-      case "chest": {
-        const chest = f.entities[trig.chestId];
-        if (chest.kind !== "chest") throw new Error("bad chest trigger");
-        // mirror of explore.ts openChest: fresh stream per open (§4)
-        const crng = mulberry32(chest.chestSeed);
-        const grant =
-          chest.lootTableId === "boss_hoard"
-            ? rollBossLoot(crng, lootCtxOf(run))
-            : rollChest(crng, lootCtxOf(run));
-        run = applyLootGrant(run, grant).run;
-        chestsOpened++;
+      }
+      case "treasure": {
+        // mirror of the treasure node: one fresh stream per node seed (§4)
+        const crng = mulberry32(node.seed);
+        run = applyLootGrant(run, rollChest(crng, lootCtxOf(run))).run;
+        treasures++;
         break;
       }
       case "event":
-        resolveEventTile(trig.eventId, trig.eventSeed);
+        resolveEventNode(node);
         break;
       default:
-        break; // moved / bump / stairs — keep walking
+        break; // shop / rest — the landing-style scenes own those
     }
   };
 
-  const walkTo = (
-    target: () => { x: number; y: number } | undefined,
-    done: () => boolean,
-    what: string,
-  ): void => {
-    for (let steps = 0; !done(); steps++) {
-      if (steps > 800) throw new Error(`scripted run: ${what} not reached`);
-      const t = target();
-      if (!t) return; // nothing left of this kind on the floor
-      handleTrigger(stepToward(f, t.x, t.y));
-    }
-  };
+  resolveNode(map.nodes[run.currentNodeId!]);
+  for (let steps = 0; !atTerminal(run); steps++) {
+    if (steps > 32) throw new Error("scripted run: never reached the boss");
+    const opts = optionsForRun(run);
+    if (opts.length === 0) throw new Error("scripted run: dead end");
+    run = advance(run, opts[0].node.id);
+    resolveNode(map.nodes[run.currentNodeId!]);
+  }
 
-  // 1. fight pack 1 (lowest-id living roamer; chasers may intercept —
-  //    all handled by the same deterministic battle driver).
-  walkTo(
-    () => f.entities.find((e): e is Roamer => e.kind === "roamer" && !e.dead),
-    () => packFights > 0,
-    "pack fight",
-  );
-  // 2. loot: bump open the first unopened chest.
-  walkTo(
-    () =>
-      f.entities.find(
-        (e): e is Extract<typeof e, { kind: "chest" }> =>
-          e.kind === "chest" && !e.opened,
-      ),
-    () => chestsOpened > 0,
-    "chest",
-  );
-  // 3. event tile.
-  walkTo(
-    () =>
-      f.entities.find(
-        (e): e is Extract<typeof e, { kind: "event" }> =>
-          e.kind === "event" && !e.used,
-      ),
-    () => eventsResolved > 0,
-    "event tile",
-  );
-  // 4. descend (core descend = floor-mod expiry → catnap → gen floor 2).
+  // descend (core descend = floor-mod expiry → catnap → generate floor 2)
   run = descend(run);
-  return { run, packFights, chestsOpened, eventsResolved };
+  return { run, nodesVisited, fights, treasures, eventsResolved };
 }
 
 const FIXTURE_URL = new URL("./fixtures/integration-run.json", import.meta.url);
 
 describe("integration gate: scripted mini-run (ARCHITECTURE.md §5)", () => {
-  it("covers battle, loot, event and descend on the fixed seed", () => {
+  it("walks floor 1 entry → boss and covers fights, loot and descend", () => {
     const out = scriptedRun(GATE_SEED);
-    expect(out.packFights).toBeGreaterThan(0);
-    expect(out.chestsOpened).toBeGreaterThan(0);
-    expect(out.eventsResolved).toBeGreaterThan(0);
+    expect(out.fights).toBeGreaterThan(0);
+    expect(out.nodesVisited.length).toBeGreaterThanOrEqual(4);
     expect(out.run.floorNum).toBe(2);
-    expect(out.run.floor).not.toBeNull();
+    expect(out.run.floorMap).not.toBeNull();
     expect(out.run.score.enemiesDefeated).toBeGreaterThan(0);
     expect(out.run.xp).toBeGreaterThan(0);
     expect(out.run.floorFiredEventIds).toEqual([]); // reset on descend
     expect(out.run.score.floorsReached).toBe(2);
+    expect(out.run.score.floorsCleared).toBe(1); // the terminal node fell
+    // floor 2 starts fresh at its own entry node
+    expect(out.run.currentNodeId).toBe(out.run.floorMap!.entryId);
+    expect(out.run.visitedNodeIds).toEqual([out.run.floorMap!.entryId]);
   });
 
   it("is deterministic: two executions produce deep-equal RunStates", () => {
     const a = scriptedRun(GATE_SEED);
     const b = scriptedRun(GATE_SEED);
+    expect(b.nodesVisited).toEqual(a.nodesVisited);
     expect(b.run).toEqual(a.run);
     expect(serializeRun(b.run)).toEqual(serializeRun(a.run));
   });

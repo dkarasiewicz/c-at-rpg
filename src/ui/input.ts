@@ -5,9 +5,9 @@
  * coordinates via the root transform.
  *
  * Dispatch order: active overlay → active scene. A handler returns true to
- * consume the key. Key repeat for movement is implemented by the explore
- * scene (re-step on tween completion while held), not OS auto-repeat —
- * repeats are filtered out here; scenes poll `isKeyDown` instead.
+ * consume the key. OS auto-repeat never reaches a handler (the tile crawl's
+ * held-to-walk movement went with the maze — the run map is one keypress per
+ * decision); a scene that wants held-key behaviour polls `isKeyDown`.
  */
 import { Container, Point } from "pixi.js";
 
@@ -47,7 +47,7 @@ export function setSceneKeyHandler(h: KeyHandler | null): void {
   sceneHandler = h;
 }
 
-/** Is a (normalized) key currently held? Drives explore's held-repeat. */
+/** Is a (normalized) key currently held? For any hold-to-act affordance. */
 export function isKeyDown(key: string): boolean {
   return down.has(key);
 }

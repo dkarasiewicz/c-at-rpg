@@ -1,45 +1,38 @@
 /**
  * c(at)rpg — persistence (ARCHITECTURE.md WP-07: core/run/save.ts).
  *
- * SaveFile = the run minus its FloorState, plus a FloorDelta: tiles/rooms/
- * entities regenerate from the seed and the delta overlays mutable state
- * (GDD §9 ruling). MetaFile keeps lifetime records only — no unlocks.
+ * SaveFile = the run minus its `floorMap`: the map regenerates from
+ * `(runSeed, floorNum)` on its own RNG stream, and everything mutable about
+ * a floor is already two plain fields on the RunState (`currentNodeId`,
+ * `visitedNodeIds`). No delta, no bitsets — the tile maze took those with it
+ * (run-map-and-dm.md §2). MetaFile keeps lifetime records only — no unlocks.
  *
  * This is the ONLY file in the repo allowed to touch localStorage, behind a
  * tiny adapter so tests inject a stub (ARCHITECTURE.md §0 rule 5).
  * Unparseable or unknown-version saves are silently deleted; KNOWN older
- * versions migrate forward instead (progression.md §5 — a v1 save loads with
- * no loss and simply starts with 0 points spent, no loadouts and empty
- * collars).
+ * versions migrate forward instead — a v1/v2 (tile-dungeon) save loads into a
+ * freshly generated run map at the same floor rather than being thrown away.
  */
-import type {
-  FloorDelta,
-  FloorState,
-  MetaFile,
-  RunState,
-  SaveFile,
-  SaveVersion,
-} from "../types.js";
-import { decodeBitset, encodeBitset } from "../util.js";
-import { FLOORS } from "../../content/floors.js";
-import { generateFloor } from "../dungeon/gen.js";
-import { recomputeVisibility } from "../dungeon/floor.js";
+import type { MetaFile, RunState, SaveFile, SaveVersion } from "../types.js";
+import { generateFloorMap } from "../map/generate.js";
+import { enterFloorMap, floorConfig } from "./runState.js";
 
 export const SAVE_KEY = "catrpg.save.v1";
 export const META_KEY = "catrpg.meta.v1";
 
 /**
- * Current save schema (docs/design/progression.md §5).
+ * Current save schema (docs/design/progression.md §5, run-map-and-dm.md §2).
  *   v1 — pre-progression: no Whisker Points, no loadouts, no collar slot.
- *   v2 — current. Every progression field is OPTIONAL, so a v1 payload is
- *        already a valid v2 payload: the migration only stamps the version.
+ *   v2 — pre-run-map: the tile dungeon, saved as `run.floor` + a FloorDelta.
+ *   v3 — current. The run map replaces the maze: `floorMap` regenerates and
+ *        `currentNodeId` / `visitedNodeIds` carry the traversal.
  * The localStorage KEY deliberately keeps its `.v1` name — it is a key, not a
  * schema tag, and renaming it would orphan every save on disk.
  */
-export const SAVE_VERSION = 2;
+export const SAVE_VERSION = 3;
 
 /** Versions `loadRun` will accept and migrate forward. */
-export const READABLE_SAVE_VERSIONS: readonly SaveVersion[] = [1, 2];
+export const READABLE_SAVE_VERSIONS: readonly SaveVersion[] = [1, 2, 3];
 
 /* ------------------------------------------------------------------ */
 /* storage adapter                                                     */
@@ -69,81 +62,28 @@ export function memoryStorage(): StorageAdapter {
 }
 
 /* ------------------------------------------------------------------ */
-/* floor ⇄ delta                                                       */
-/* ------------------------------------------------------------------ */
-
-/** Snapshot the mutable overlay of a floor (types.ts §2.9 FloorDelta). */
-export function floorToDelta(f: FloorState): FloorDelta {
-  return {
-    partyPos: { x: f.party.x, y: f.party.y },
-    explored: encodeBitset(f.explored),
-    stepCount: f.stepCount,
-    stairsLocked: f.stairsLocked,
-    entities: f.entities.map((e) => {
-      if (e.kind === "chest") {
-        return { kind: "chest" as const, id: e.id, opened: e.opened };
-      }
-      if (e.kind === "event") {
-        return { kind: "event" as const, id: e.id, used: e.used };
-      }
-      return {
-        kind: e.kind,
-        id: e.id,
-        x: e.x,
-        y: e.y,
-        dead: e.dead,
-        state: e.state,
-        stunnedFor: e.stunnedFor,
-        lostSightFor: e.lostSightFor,
-        wpIndex: e.wpIndex,
-      };
-    }),
-  };
-}
-
-/** Overlay a delta onto a freshly regenerated floor (mutates `f`). */
-export function applyFloorDelta(f: FloorState, d: FloorDelta): void {
-  f.party = { x: d.partyPos.x, y: d.partyPos.y };
-  f.stepCount = d.stepCount;
-  f.stairsLocked = d.stairsLocked;
-  f.explored = decodeBitset(d.explored, f.w * f.h);
-  for (const de of d.entities) {
-    const e = f.entities[de.id];
-    if (!e || e.kind !== de.kind) continue; // regen mismatch: skip defensively
-    if (de.kind === "chest" && e.kind === "chest") {
-      e.opened = de.opened;
-    } else if (de.kind === "event" && e.kind === "event") {
-      e.used = de.used;
-    } else if (
-      (de.kind === "roamer" || de.kind === "boss") &&
-      (e.kind === "roamer" || e.kind === "boss")
-    ) {
-      e.x = de.x;
-      e.y = de.y;
-      e.dead = de.dead;
-      e.state = de.state;
-      e.stunnedFor = de.stunnedFor;
-      e.lostSightFor = de.lostSightFor;
-      e.wpIndex = de.wpIndex;
-    }
-  }
-  recomputeVisibility(f); // rebuild `visible` (a Set is never serialized)
-}
-
-/* ------------------------------------------------------------------ */
 /* run ⇄ SaveFile                                                      */
 /* ------------------------------------------------------------------ */
 
-/** Strip the live floor into a delta. Requires a generated floor. */
+/** Strip the (regenerable) run map. Requires a generated map. */
 export function serializeRun(run: RunState): SaveFile {
-  if (!run.floor) {
+  if (!run.floorMap) {
     throw new Error(
-      "serializeRun: no floor to snapshot (autosave points always have one)",
+      "serializeRun: no run map to snapshot (autosave points always have one)",
     );
   }
-  const { floor, ...rest } = run;
-  return { version: SAVE_VERSION, run: rest, floorDelta: floorToDelta(floor) };
+  const rest = { ...run };
+  delete (rest as Partial<RunState>).floorMap;
+  return { version: SAVE_VERSION, run: rest };
 }
+
+/** The loose shape a stored `run` object really has before migration. */
+type StoredRun = Partial<Omit<RunState, "floorMap">> & {
+  runSeed?: unknown;
+  floorNum?: unknown;
+  /** v1/v2 only: the live tile FloorState, dropped by the v2→v3 migration. */
+  floor?: unknown;
+};
 
 /**
  * Bring a stored payload up to `SAVE_VERSION`, or return `null` when it is
@@ -151,26 +91,50 @@ export function serializeRun(run: RunState): SaveFile {
  *
  * v1 → v2 (progression.md §5): every progression field is optional and the
  * "absent" behaviour is the v1 behaviour — cats keep their weapon/trinket and
- * simply have no collar (`undefined`), no spent Whisker Points (all 7 of them
- * unspent and waiting) and no custom loadout (the legacy default kit). So the
- * migration adds NOTHING: it only re-stamps the version, which keeps the
- * conversion lossless in both directions of a same-session reload.
+ * simply have no collar (`undefined`), no spent Whisker Points and no custom
+ * loadout. That step adds nothing.
+ *
+ * v2 → v3 (run-map-and-dm.md §2): the tile maze is gone. The `floorDelta`
+ * blob and `run.floor` are dropped and the traversal fields are stamped as
+ * "not on a map yet" — `deserializeRun` then generates the floor's run map
+ * from the seed and lands the party on its entry node. The party keeps its
+ * HP, Lives, XP, gear, wallet and floor number; it loses only its position
+ * inside a dungeon that no longer exists.
  */
 export function migrateSave(sf: SaveFile): SaveFile | null {
   if (!sf || typeof sf !== "object" || !sf.run) return null;
   if (!READABLE_SAVE_VERSIONS.includes(sf.version)) return null;
   if (sf.version === SAVE_VERSION) return sf;
-  return { ...sf, version: SAVE_VERSION };
+
+  const carried: StoredRun = { ...(sf.run as StoredRun) };
+  delete carried.floor; // the tile FloorState a v1/v2 blob carried inline
+  const run = {
+    ...carried,
+    currentNodeId: null,
+    visitedNodeIds: [],
+  } as unknown as SaveFile["run"];
+  return { version: SAVE_VERSION, run };
 }
 
-/** Regenerate the floor from the seed and overlay the saved delta. */
+/**
+ * Regenerate the floor's run map from the seed and put the party back on it.
+ * A save whose `currentNodeId` is missing or no longer exists on the map
+ * (a migrated v1/v2 blob) restarts at the entry node of the equivalent floor.
+ */
 export function deserializeRun(sf: SaveFile): RunState {
   const { floorNum, runSeed } = sf.run;
-  const cfg = FLOORS[floorNum - 1];
-  if (!cfg) throw new Error(`deserializeRun: bad floorNum ${floorNum}`);
-  const floor = generateFloor(runSeed, floorNum, cfg);
-  applyFloorDelta(floor, sf.floorDelta);
-  return { ...sf.run, floor };
+  const map = generateFloorMap(runSeed, floorNum, floorConfig(floorNum));
+  const run = { ...sf.run, floorMap: map } as RunState;
+
+  const id = run.currentNodeId;
+  const known = id !== null && id !== undefined && map.nodes[id] !== undefined;
+  if (!known) return enterFloorMap(run, map);
+  return {
+    ...run,
+    visitedNodeIds: (run.visitedNodeIds ?? []).filter(
+      (n) => map.nodes[n] !== undefined,
+    ),
+  };
 }
 
 /* ------------------------------------------------------------------ */

@@ -37,8 +37,15 @@ let ticking = false;
  * written to (its position/scale internals are nulled — writing `y` throws
  * "Cannot set properties of null"). Plain driver objects have no
  * `destroyed` and always pass.
+ *
+ * `null`/`undefined` counts as destroyed: pixi v8 nulls a Container's
+ * `_position`/`_scale` on destroy, so a deferred `tween(c.scale, …)` — e.g.
+ * the bar widget's 300 ms chip-away — hands us a null target when the scene
+ * unmounted in between. Reading `.destroyed` off it would throw inside the
+ * shared ticker and take the whole frame loop with it.
  */
-function isDestroyed(obj: object): boolean {
+function isDestroyed(obj: unknown): boolean {
+  if (obj === null || obj === undefined) return true;
   return (obj as { destroyed?: unknown }).destroyed === true;
 }
 

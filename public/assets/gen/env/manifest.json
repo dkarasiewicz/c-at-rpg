@@ -1,51 +1,6 @@
 {
   "version": 1,
   "sprites": {
-    "tile:floor": {
-      "file": "tile-floor.png",
-      "w": 512,
-      "h": 512
-    },
-    "tile:floor2": {
-      "file": "tile-floor2.png",
-      "w": 512,
-      "h": 512
-    },
-    "tile:floor3": {
-      "file": "tile-floor3.png",
-      "w": 512,
-      "h": 512
-    },
-    "tile:wall": {
-      "file": "tile-wall.png",
-      "w": 512,
-      "h": 512
-    },
-    "tile:door": {
-      "file": "tile-door.png",
-      "w": 512,
-      "h": 512
-    },
-    "tile:doorBoss": {
-      "file": "tile-doorBoss.png",
-      "w": 512,
-      "h": 512
-    },
-    "tile:stairsUp": {
-      "file": "tile-stairsUp.png",
-      "w": 512,
-      "h": 512
-    },
-    "tile:stairsDown": {
-      "file": "tile-stairsDown.png",
-      "w": 512,
-      "h": 512
-    },
-    "tile:nook": {
-      "file": "tile-nook.png",
-      "w": 512,
-      "h": 512
-    },
     "prop:chest": {
       "file": "prop-chest.png",
       "w": 512,
@@ -66,30 +21,50 @@
       "w": 512,
       "h": 512
     },
-    "token:party": {
-      "file": "token-party.png",
-      "w": 512,
-      "h": 512
+    "node:fight": {
+      "file": "node-fight.png",
+      "w": 256,
+      "h": 256
     },
-    "token:vermin": {
-      "file": "token-vermin.png",
-      "w": 512,
-      "h": 512
+    "node:elite": {
+      "file": "node-elite.png",
+      "w": 256,
+      "h": 256
     },
-    "token:bird": {
-      "file": "token-bird.png",
-      "w": 512,
-      "h": 512
+    "node:event": {
+      "file": "node-event.png",
+      "w": 256,
+      "h": 256
     },
-    "token:beast": {
-      "file": "token-beast.png",
-      "w": 512,
-      "h": 512
+    "node:shop": {
+      "file": "node-shop.png",
+      "w": 256,
+      "h": 256
     },
-    "token:construct": {
-      "file": "token-construct.png",
-      "w": 512,
-      "h": 512
+    "node:rest": {
+      "file": "node-rest.png",
+      "w": 256,
+      "h": 256
+    },
+    "node:treasure": {
+      "file": "node-treasure.png",
+      "w": 256,
+      "h": 256
+    },
+    "node:boss": {
+      "file": "node-boss.png",
+      "w": 256,
+      "h": 256
+    },
+    "node:locked": {
+      "file": "node-locked.png",
+      "w": 256,
+      "h": 256
+    },
+    "node:visited": {
+      "file": "node-visited.png",
+      "w": 256,
+      "h": 256
     }
   }
 }

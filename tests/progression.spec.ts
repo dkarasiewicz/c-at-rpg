@@ -63,7 +63,7 @@ import {
   migrateSave,
   serializeRun,
 } from "../src/core/run/save.js";
-import { generateCurrentFloor, newRun } from "../src/core/run/runState.js";
+import { generateCurrentFloorMap, newRun } from "../src/core/run/runState.js";
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -502,27 +502,31 @@ describe("collar slot (progression.md §4)", () => {
 /* §5 Save compatibility                                               */
 /* ================================================================== */
 
-describe("save v1 → v2 (progression.md §5)", () => {
-  const seededRun = () => generateCurrentFloor(newRun("MEOW-1987"));
+describe("save v1 → v3 (progression.md §5 + run-map-and-dm.md §2)", () => {
+  const seededRun = () => generateCurrentFloorMap(newRun("MEOW-1987"));
 
-  it("SAVE_VERSION is 2 and serializeRun stamps it", () => {
-    expect(SAVE_VERSION).toBe(2);
-    expect(serializeRun(seededRun()).version).toBe(2);
+  it("SAVE_VERSION is 3 and serializeRun stamps it", () => {
+    expect(SAVE_VERSION).toBe(3);
+    expect(serializeRun(seededRun()).version).toBe(3);
   });
 
-  it("migrates a v1 payload forward with zero loss", () => {
+  it("migrates a v1 payload forward with no PROGRESSION loss", () => {
     const run = seededRun();
-    const v2 = serializeRun(run);
+    const v3 = serializeRun(run);
     // a genuine v1 blob: version 1 and no progression fields anywhere
-    const v1 = JSON.parse(JSON.stringify({ ...v2, version: 1 }));
+    const v1 = JSON.parse(JSON.stringify({ ...v3, version: 1 }));
     for (const c of v1.run.cats) {
       delete c.collar;
       delete c.points;
       delete c.loadout;
     }
     const migrated = migrateSave(v1)!;
-    expect(migrated.version).toBe(2);
-    expect(migrated.run).toEqual(v1.run); // nothing added, nothing dropped
+    expect(migrated.version).toBe(3);
+    // the progression fields stay absent (= v1 behaviour); only the run-map
+    // traversal fields are stamped on, and the party is put back at the entry
+    expect(migrated.run.cats).toEqual(v1.run.cats);
+    expect(migrated.run.inventory).toEqual(v1.run.inventory);
+    expect(migrated.run.currentNodeId).toBeNull();
 
     const storage = memoryStorage();
     storage.set(SAVE_KEY, JSON.stringify(v1));
