@@ -7,6 +7,7 @@
  * scope for this scaffold (a consumable carries a full battle Skill payload;
  * see docs/GM-DEPLOY.md "Scaffold gaps").
  */
+import { ART_STYLE } from "../../src/content/artStyle";
 import type { Rarity } from "../../src/core/types";
 import type {
   GeneratedEquip,
@@ -14,6 +15,7 @@ import type {
   GmItemResponse,
 } from "../../src/services/gmTypes";
 import { getAnthropicGen, gmModel } from "../_lib/anthropic";
+import { composeArtPrompt } from "../_lib/artPrompt";
 import { lintItem, MEW_HOOKS, STAT_KEYS } from "../_lib/constraints";
 import {
   GmGenerationError,
@@ -83,8 +85,11 @@ HARD RULES (server-side lint rejects violations):
 - MEWTHICAL rarity ONLY: pick uniqueId from the EXISTING hook menu
   (${MEW_HOOKS.join(", ")}) and give it a dramatic uniqueName.
   Any other rarity: NO uniqueId, NO uniqueName. Never invent new mechanics.
-- icon: one glyph (a single unicode character). iconPrompt: an image prompt
-  for a small item icon — bold ink, cel shading, flat #1a1626 background.
+- icon: one glyph (a single unicode character). iconPrompt is SUBJECT ONLY:
+  describe the object itself (shape, materials, colors, one telling detail) —
+  the house art style (cel shading, palette, background, framing) is
+  appended automatically by the server. NEVER mention art style, camera,
+  backgrounds, or rendering technique in iconPrompt.
 
 CONTENT POLICY: family-friendly comedy; no sexual content, hate, or gore.`;
 
@@ -163,7 +168,15 @@ export function createItemHandler(deps: ItemDeps) {
             entry.equip &&
             lintItem(entry.equip, input.rarity).length === 0
           ) {
-            const res: GmItemResponse = { equip: entry.equip, source: "pool" };
+            // pooled rows store the style-free subject; compose against the
+            // CURRENT style contract so old rows never leak stale wording
+            const res: GmItemResponse = {
+              equip: {
+                ...entry.equip,
+                iconPrompt: composeArtPrompt("icon", entry.equip.iconPrompt),
+              },
+              source: "pool",
+            };
             return json(res);
           }
         } catch {
@@ -181,10 +194,25 @@ export function createItemHandler(deps: ItemDeps) {
         schema: ITEM_SCHEMA,
         lint: lintItemPayload(input.rarity),
       });
+      // pool keeps the style-free subject + the styleVersion it was made at
       void deps.pool
-        .add("items", JSON.stringify({ rarity: input.rarity, equip }))
+        .add(
+          "items",
+          JSON.stringify({
+            rarity: input.rarity,
+            equip,
+            styleVersion: ART_STYLE.version,
+          }),
+        )
         .catch(() => undefined);
-      const res: GmItemResponse = { equip, source: "generated" };
+      // returned iconPrompt = subject + category framing + basePrompt
+      const res: GmItemResponse = {
+        equip: {
+          ...equip,
+          iconPrompt: composeArtPrompt("icon", equip.iconPrompt),
+        },
+        source: "generated",
+      };
       return json(res);
     } catch (err) {
       if (err instanceof GmGenerationError) {

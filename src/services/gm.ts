@@ -22,8 +22,12 @@ import type {
   GmEventRequest,
   GmItemRequest,
   GmPartyRequest,
+  GmResonanceRequest,
+  GmResonanceResponse,
   GmSteerNudges,
   GmSteerRequest,
+  InteractionRule,
+  PowerScript,
 } from "./gmTypes";
 
 const TIMEOUT_MS = 8000;
@@ -134,7 +138,31 @@ function isGeneratedCatKit(v: unknown): v is GeneratedCatKit {
   }
   const flavor = v.flavor;
   if (!isRecord(flavor) || !isRecord(flavor.barks)) return false;
+  return isPowerScript(v.power);
+}
+
+function isRuleBody(v: unknown): v is InteractionRule {
+  if (!isRecord(v)) return false;
+  if (!isNonEmptyString(v.trigger)) return false;
+  if (!Array.isArray(v.conditions) || !v.conditions.every(isRecord)) {
+    return false;
+  }
+  if (
+    !Array.isArray(v.effects) ||
+    v.effects.length === 0 ||
+    !v.effects.every(isRecord)
+  ) {
+    return false;
+  }
   return true;
+}
+
+function isPowerScript(v: unknown): v is PowerScript {
+  if (!isRecord(v)) return false;
+  if (!isNonEmptyString(v.id) || !isNonEmptyString(v.name)) return false;
+  if (typeof v.flavor !== "string") return false;
+  if (!isFiniteNumber(v.version) || !isFiniteNumber(v.budget)) return false;
+  return isRuleBody(v);
 }
 
 function isGeneratedEquip(v: unknown): v is GeneratedEquip {
@@ -224,6 +252,49 @@ export async function requestGmItem(
   const raw = await post("/gm/item", req);
   if (!isRecord(raw) || !isGeneratedEquip(raw.equip)) return null;
   return raw.equip;
+}
+
+/**
+ * Client-side mirror of the server's canonical interaction key
+ * (stand-powers.md Layer 3): sortedPair(A.id, B.id) + framework version.
+ * Kept in sync with api/_lib/powers.ts `resonancePairKey` (asserted equal in
+ * tests/gm.spec.ts) — src must not import runtime code from api/.
+ */
+export function resonancePairKey(
+  aId: string,
+  bId: string,
+  version: number,
+): string {
+  return `${[aId, bId].sort().join("+")}@v${version}`;
+}
+
+/**
+ * Ask for the memoized Stand resonance of a power pair (compiling it on
+ * first global encounter). A response with `rule: null` is a DEFINITIVE
+ * "no resonance" verdict; `null` from this function is a transport failure —
+ * caller runs the battle on base rules either way and may retry next battle.
+ */
+export async function requestGmResonance(
+  req: GmResonanceRequest,
+): Promise<GmResonanceResponse | null> {
+  const raw = await post("/gm/resonance", req);
+  if (!isRecord(raw)) return null;
+  if (!isNonEmptyString(raw.pairKey)) return null;
+  if (typeof raw.flavor !== "string" || typeof raw.announce !== "string") {
+    return null;
+  }
+  if (raw.source !== "generated" && raw.source !== "pool") return null;
+  if (raw.rule !== null && !isRuleBody(raw.rule)) return null;
+  return {
+    pairKey: raw.pairKey,
+    rule: raw.rule as InteractionRule | null,
+    flavor: raw.flavor,
+    announce: raw.announce,
+    firstDiscoveredBy: isNonEmptyString(raw.firstDiscoveredBy)
+      ? raw.firstDiscoveredBy
+      : undefined,
+    source: raw.source,
+  };
 }
 
 /**

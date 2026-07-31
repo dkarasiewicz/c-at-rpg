@@ -14,6 +14,9 @@ import type {
   GeneratedEquip,
   GmRole,
   GmSteerNudges,
+  InteractionRule,
+  PowerScript,
+  StoredInteraction,
 } from "../src/services/gmTypes";
 import {
   EVENT_CAPS,
@@ -30,7 +33,20 @@ import {
   generateValidated,
   type StructuredGenClient,
 } from "../api/_lib/generate";
+import {
+  BUDGET_CAPS,
+  lintInteractionRule,
+  lintPowerScript,
+  normalizePower,
+  POWER_FRAMEWORK_VERSION,
+  powerBudget,
+  resonancePairKey,
+  STOCK_POWERS,
+} from "../api/_lib/powers";
+import { ART_STYLE } from "../src/content/artStyle";
+import { resonancePairKey as clientPairKey } from "../src/services/gm";
 import { createPartyHandler } from "../api/gm/party";
+import { createResonanceHandler } from "../api/gm/resonance";
 
 /* ------------------------------------------------------------------------ */
 /* fixtures                                                                  */
@@ -70,6 +86,18 @@ const ROLE_BASES: Record<GmRole, GeneratedCatKit["base"]> = {
   support: { hp: 26, atk: 9, def: 1, spd: 5, crt: 5, enMax: 10 },
 };
 
+function makePower(role: GmRole): PowerScript {
+  return normalizePower({
+    id: `power:${role}TestPower`,
+    version: POWER_FRAMEWORK_VERSION,
+    name: "THE EXAMPLE HAND",
+    flavor: "A spectral paw descends.",
+    trigger: "onCrit",
+    conditions: [],
+    effects: [{ kind: "energy", target: "self", amount: 1 }],
+  });
+}
+
 function makeKit(role: GmRole, name: string): GeneratedCatKit {
   return {
     role,
@@ -87,8 +115,10 @@ function makeKit(role: GmRole, name: string): GeneratedCatKit {
     trait: { name: "Test Trait", desc: "Does test things." },
     stand: {
       name: "THE EXAMPLE",
-      visualPrompt: "orange cat, translucent stand behind, flat #1a1626 bg",
+      visualPrompt:
+        "a scarred orange tomcat mid-pounce, spectral boxer looming",
     },
+    power: makePower(role),
     flavor: {
       bio: "A cat.",
       barks: { crit: "!", ko: "...", catPile: "PILE" },
@@ -402,6 +432,32 @@ describe("POST /api/gm/party (mocked client)", () => {
     expect(new Set(body.kits.map((k) => k.role)).size).toBe(4);
     expect(gen.calls).toHaveLength(1);
     expect(await pool.size("stands")).toBe(1);
+    // visualPrompts are composed from the style contract, never ad-hoc:
+    for (const kit of body.kits) {
+      expect(kit.stand.visualPrompt).toContain(ART_STYLE.basePrompt);
+      expect(kit.stand.visualPrompt).toContain(ART_STYLE.framing.battleSprite);
+      // budgets are server-stamped
+      expect(kit.power.budget).toBe(powerBudget(kit.power));
+    }
+  });
+
+  it("falls back to a stock power when a power fails the lint twice", async () => {
+    const broken = makeParty();
+    broken[1].power = {
+      ...makePower("striker"),
+      effects: [{ kind: "damage", target: "enemies", pct: 999 }],
+    };
+    const bad = JSON.stringify({ kits: broken });
+    const gen = new FakeGen([bad, bad]);
+    const handler = createPartyHandler({ gen, pool: new MemoryPool() });
+
+    const res = await handler(partyRequest({ descriptions: ["a cat"] }));
+    expect(res.status).toBe(200);
+    expect(gen.calls).toHaveLength(2); // one regenerate happened first
+    const body = (await res.json()) as { kits: GeneratedCatKit[] };
+    expect(body.kits[1].power.id).toBe(STOCK_POWERS.striker.id);
+    // the valid powers of the other kits are kept, not replaced
+    expect(body.kits[0].power.id).toBe("power:tankTestPower");
   });
 
   it("regenerates ONCE when the first output fails the lint", async () => {
@@ -455,5 +511,269 @@ describe("generateValidated", () => {
       }),
     ).rejects.toThrowError(GmGenerationError);
     expect(gen.calls).toHaveLength(2);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* power budget lint (stand-powers.md §Balance — vendored server copy)       */
+/* ------------------------------------------------------------------------ */
+
+describe("powerBudget + lintPowerScript (service wrapper over core)", () => {
+  it("all stock fallback powers pass the cat cap with true budgets", () => {
+    for (const power of Object.values(STOCK_POWERS)) {
+      expect(lintPowerScript(power, BUDGET_CAPS.cat)).toEqual([]);
+      // same 1e-9 tolerance the core lint uses for declared-vs-computed
+      expect(power.budget).toBeCloseTo(powerBudget(power), 9);
+      expect(power.budget).toBeLessThanOrEqual(BUDGET_CAPS.cat);
+    }
+  });
+
+  it("prices frequent triggers above rare ones and discounts conditions", () => {
+    const base = makePower("tank");
+    const frequent = normalizePower({ ...base, trigger: "onTurnStart" });
+    const rare = normalizePower({ ...base, trigger: "onBattleStart" });
+    expect(powerBudget(frequent)).toBeGreaterThan(powerBudget(rare));
+    const conditioned = normalizePower({
+      ...frequent,
+      conditions: [{ kind: "chance", pct: 25 }],
+    });
+    expect(powerBudget(conditioned)).toBeLessThan(powerBudget(frequent));
+  });
+
+  it("rejects hard-cap violations (damage pct, move delta, effect count)", () => {
+    const power = makePower("striker");
+    const cap = BUDGET_CAPS.enemyByTier[3];
+    const overDamage = {
+      ...power,
+      effects: [
+        { kind: "damage" as const, target: "other" as const, pct: 999 },
+      ],
+    };
+    expect(lintPowerScript(overDamage, cap).join("\n")).toMatch("damage pct");
+    const overMove = {
+      ...power,
+      effects: [{ kind: "move" as const, target: "other" as const, delta: 4 }],
+    };
+    expect(lintPowerScript(overMove, cap).join("\n")).toMatch("move delta");
+    const tooMany = {
+      ...power,
+      effects: Array.from({ length: 4 }, () => ({
+        kind: "energy" as const,
+        target: "self" as const,
+        amount: 1,
+      })),
+    };
+    expect(lintPowerScript(tooMany, cap).join("\n")).toMatch(
+      "effects must have 1..3 entries",
+    );
+  });
+
+  it("rejects budget overruns against the given cap", () => {
+    const nuke = normalizePower({
+      id: "power:overkill",
+      version: POWER_FRAMEWORK_VERSION,
+      name: "OVERKILL",
+      flavor: "Far too much.",
+      trigger: "onTurnStart",
+      conditions: [],
+      effects: [{ kind: "damage", target: "enemies", pct: 150 }],
+    });
+    expect(lintPowerScript(nuke, BUDGET_CAPS.cat).join("\n")).toMatch(
+      "exceeds cap",
+    );
+  });
+
+  it("server and client pair keys agree (sortedPair + framework version)", () => {
+    const key = resonancePairKey("power:b", "power:a");
+    expect(key).toBe(`power:a+power:b@v${POWER_FRAMEWORK_VERSION}`);
+    expect(key).toBe(
+      clientPairKey("power:b", "power:a", POWER_FRAMEWORK_VERSION),
+    );
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* POST /api/gm/resonance (mocked client)                                    */
+/* ------------------------------------------------------------------------ */
+
+function resonanceRequest(body: unknown): Request {
+  return new Request("http://localhost/api/gm/resonance", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    ...({ duplex: "half" } as object),
+  });
+}
+
+describe("POST /api/gm/resonance (mocked client)", () => {
+  const powerA = STOCK_POWERS.striker;
+  const powerB = STOCK_POWERS.control;
+  const pairKey = resonancePairKey(powerA.id, powerB.id);
+  const ruleBody = {
+    trigger: "onCrit",
+    conditions: [],
+    effects: [{ kind: "energy", target: "other", amount: -1 }],
+  } as const;
+  const flavorLine = "Static arcs along the invisible threads.";
+  const announceLine =
+    "STAND RESONANCE DISCOVERED: STRING THEORY conducts BOX AMBUSH.";
+  /** What the handler stamps + stores from ruleBody. */
+  const validRule: InteractionRule = {
+    pairKey,
+    version: POWER_FRAMEWORK_VERSION,
+    trigger: ruleBody.trigger,
+    conditions: [],
+    effects: [{ kind: "energy", target: "other", amount: -1 }],
+    flavor: flavorLine,
+    announce: announceLine,
+    budget: 3, // onCrit 1.5 x energy 2·|−1|
+  };
+  const resonantJson = JSON.stringify({
+    hasResonance: true,
+    rule: ruleBody,
+    flavor: flavorLine,
+    announce: announceLine,
+  });
+  const nullJson = JSON.stringify({
+    hasResonance: false,
+    rule: null,
+    flavor: "These two powers politely ignore each other.",
+    announce: "",
+  });
+  const body = (sessionId?: string): unknown => ({
+    pairKey,
+    powers: [powerA, powerB],
+    sessionId,
+  });
+
+  it("pool hit short-circuits without a model call", async () => {
+    const pool = new MemoryPool();
+    const row: StoredInteraction = {
+      pairKey,
+      version: POWER_FRAMEWORK_VERSION,
+      json: validRule,
+      flavor: "f",
+      announce: "STAND RESONANCE DISCOVERED: x",
+      first_discovered_by: "session-0",
+    };
+    await pool.setEntry("interactions", pairKey, JSON.stringify(row));
+    const gen = new FakeGen([resonantJson]);
+    const handler = createResonanceHandler({ gen, pool });
+
+    const res = await handler(resonanceRequest(body()));
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as {
+      source: string;
+      rule: unknown;
+      firstDiscoveredBy?: string;
+    };
+    expect(out.source).toBe("pool");
+    expect(out.rule).toEqual(validRule);
+    expect(out.firstDiscoveredBy).toBe("session-0");
+    expect(gen.calls).toHaveLength(0);
+  });
+
+  it("miss → compile → store; the next call is served from the memo", async () => {
+    const pool = new MemoryPool();
+    const gen = new FakeGen([resonantJson]);
+    const handler = createResonanceHandler({ gen, pool });
+
+    const first = await handler(resonanceRequest(body("sess-42")));
+    expect(first.status).toBe(200);
+    const out = (await first.json()) as {
+      source: string;
+      rule: InteractionRule;
+      announce: string;
+    };
+    expect(out.source).toBe("generated");
+    expect(out.rule).toEqual(validRule);
+    expect(out.announce).toMatch(/^STAND RESONANCE DISCOVERED:/);
+    expect(gen.calls).toHaveLength(1);
+
+    const stored = await pool.getEntry("interactions", pairKey);
+    expect(stored).not.toBeNull();
+    const row = JSON.parse(stored ?? "") as StoredInteraction;
+    expect(row.version).toBe(POWER_FRAMEWORK_VERSION);
+    expect(row.first_discovered_by).toBe("sess-42");
+
+    const second = await handler(resonanceRequest(body()));
+    const out2 = (await second.json()) as {
+      source: string;
+      firstDiscoveredBy?: string;
+    };
+    expect(out2.source).toBe("pool");
+    expect(out2.firstDiscoveredBy).toBe("sess-42");
+    expect(gen.calls).toHaveLength(1); // no second model call
+  });
+
+  it("memoizes a null verdict (no resonance is a stored answer)", async () => {
+    const pool = new MemoryPool();
+    const gen = new FakeGen([nullJson]);
+    const handler = createResonanceHandler({ gen, pool });
+
+    const first = await handler(resonanceRequest(body()));
+    expect(first.status).toBe(200);
+    expect(((await first.json()) as { rule: unknown }).rule).toBeNull();
+    expect(gen.calls).toHaveLength(1);
+
+    const second = await handler(resonanceRequest(body()));
+    const out = (await second.json()) as { rule: unknown; source: string };
+    expect(out.rule).toBeNull();
+    expect(out.source).toBe("pool");
+    expect(gen.calls).toHaveLength(1); // memoized null → no recompile
+  });
+
+  it("gives up with 502 after two cap-busting outputs", async () => {
+    const overBudget = JSON.stringify({
+      hasResonance: true,
+      rule: {
+        trigger: "onTurnStart",
+        conditions: [],
+        effects: [{ kind: "damage", target: "enemies", pct: 150 }],
+      },
+      flavor: "WAY too strong.",
+      announce: "STAND RESONANCE DISCOVERED: OVERKILL.",
+    });
+    const pool = new MemoryPool();
+    const gen = new FakeGen([overBudget, overBudget]);
+    const handler = createResonanceHandler({ gen, pool });
+
+    const res = await handler(resonanceRequest(body()));
+    expect(res.status).toBe(502);
+    expect(gen.calls).toHaveLength(2);
+    // a failed compile is NOT memoized — the next battle retries
+    expect(await pool.getEntry("interactions", pairKey)).toBeNull();
+  });
+
+  it("rejects tampered powers and mismatched pair keys without a model call", async () => {
+    const gen = new FakeGen([resonantJson]);
+    const handler = createResonanceHandler({ gen, pool: new MemoryPool() });
+
+    const tampered = {
+      pairKey,
+      powers: [
+        {
+          ...powerA,
+          effects: [{ kind: "damage", target: "enemies", pct: 400 }],
+        },
+        powerB,
+      ],
+    };
+    expect((await handler(resonanceRequest(tampered))).status).toBe(400);
+
+    const wrongKey = { pairKey: "nonsense@v1", powers: [powerA, powerB] };
+    expect((await handler(resonanceRequest(wrongKey))).status).toBe(400);
+    expect(gen.calls).toHaveLength(0);
+  });
+
+  it("lintInteractionRule enforces the tighter resonance cap", () => {
+    expect(BUDGET_CAPS.resonance).toBeLessThan(BUDGET_CAPS.cat);
+    expect(lintInteractionRule(validRule)).toEqual([]);
+    const tooStrong = {
+      trigger: "onTurnStart",
+      conditions: [],
+      effects: [{ kind: "damage", target: "enemies", pct: 100 }],
+    } as const;
+    expect(lintInteractionRule(tooStrong).join("\n")).toMatch("exceeds cap");
   });
 });

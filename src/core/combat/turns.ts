@@ -25,6 +25,7 @@ import {
 } from "./state";
 import { clearStatuses, roundEndPhase } from "./status";
 import { bossDataOf } from "./boss";
+import { consultBattleStart, reclonePowers, resetRoundCharges } from "./powers";
 
 export { nextActor };
 
@@ -38,6 +39,7 @@ export function startRound(
   rng: Rng,
 ): { state: BattleState; events: BattleEvent[] } {
   const s = cloneState(state);
+  reclonePowers(s, state); // powers hook 2: un-share the charge counters
   const events: BattleEvent[] = [];
   if (s.outcome !== "ongoing") return { state: s, events };
 
@@ -78,6 +80,14 @@ export function startRound(
     round: s.round,
     queue: entries.map((e) => ({ ...e })),
   });
+  // Powers hook 3 (stand-powers.md): perRound charges reset with the new
+  // round; on round 1, onBattleStart powers consult in slot (queue) order —
+  // strictly AFTER the initiative rolls above, per the RNG addendum. A
+  // battle with no powers attached takes the no-op path and draws nothing.
+  resetRoundCharges(s);
+  if (s.round === 1 && consultBattleStart(s, events, rng)) {
+    processDeathsAndOutcome(s, events);
+  }
   return { state: s, events };
 }
 

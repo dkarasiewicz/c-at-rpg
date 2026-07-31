@@ -12,11 +12,15 @@ content on any failure.
 | `api/gm/party.ts` | POST — free-text cats → 4 legal CatClass-shaped kits + Stands (GM_PARTY_MODEL) |
 | `api/gm/event.ts` | POST — run context → one `GameEvent` in the events.md schema, pool-first |
 | `api/gm/item.ts` | POST — floor/rarity/party → one `EquipDef` + icon prompt, pool-first |
+| `api/gm/resonance.ts` | POST — power pair → memoized `InteractionRule\|null` (stand-powers.md Layer 3); pool hit = no model call |
 | `api/gm/steer.ts` | POST — run summary → bounded director nudges |
 | `api/_lib/anthropic.ts` | Official `@anthropic-ai/sdk` wrapper; structured outputs (`output_config.format` json_schema) |
 | `api/_lib/constraints.ts` | Pure server-side lints: classes.md stat/skill budgets, event effect caps, item hook menu |
-| `api/_lib/generate.ts` | generate → lint → regenerate-once pipeline (injectable client for tests) |
-| `api/_lib/pool.ts` | Shared content pool: in-memory (dev) or Upstash Redis REST; p = min(0.7, size/200) |
+| `api/_lib/powers.ts` | Service wrapper over the canonical core budget lint (`src/core/combat/powers.ts`): error-string lints, budget stamping, pair key, stock fallbacks, DSL JSON schemas |
+| `api/_lib/artPrompt.ts` | Prompt composition against the style contract (`src/content/artStyle.ts`) |
+| `api/_lib/generate.ts` | generate → lint → regenerate-once pipeline (injectable client for tests; optional salvage hook) |
+| `api/_lib/pool.ts` | Shared content pool: in-memory (dev) or Upstash Redis REST; p = min(0.7, size/200); keyed powers/interactions/art tables |
+| `scripts/seed-pool.ts` | Upserts generation-zero art + stock-power rows into the pool |
 | `src/services/gm.ts` | Browser client: fetch, 8s timeout, hand-rolled response guards, null-on-failure |
 | `src/services/gmTypes.ts` | Protocol types shared by both sides (types only, no runtime code) |
 
@@ -80,6 +84,58 @@ curl -s localhost:3000/api/gm/steer -H 'content-type: application/json' -d '{
 }'
 ```
 
+## Style contract & runtime art prompts
+
+`src/content/artStyle.ts` (visual-v2.md §Style contract) is the ONE versioned
+source of truth for art style: `ART_STYLE = { version, basePrompt, negative,
+palette, model, fallbackModel, anchorUrl, framing }`. Every
+`visualPrompt`/`iconPrompt` a GM endpoint returns is composed server-side by
+`api/_lib/artPrompt.ts` as `subject + framing[category] + basePrompt +
+negatives` — models are instructed to write SUBJECT-ONLY descriptions and the
+pool stores those raw subjects (plus the `styleVersion` they were made at),
+so bumping the style bible restyles pooled content for free. The style anchor
+`docs/art/style-anchor-bruno.png` is copied to
+`public/art/style-anchor-bruno.png` so `ART_STYLE.anchorUrl`
+(`/art/style-anchor-bruno.png`) resolves on the deployed site and the
+server-side generator can pass it as a reference image.
+
+## Resonance endpoint (stand-powers.md Layer 3)
+
+`POST /api/gm/resonance` with `{ pairKey, powers: [PowerScript, PowerScript],
+sessionId? }`. `pairKey` MUST equal the canonical
+`sortedPair(A.id, B.id)@v<frameworkVersion>` (helper: `resonancePairKey` in
+`src/services/gm.ts` client-side / `api/_lib/powers.ts` server-side; the
+server recomputes and 400s a mismatch, so the memo table cannot be poisoned).
+Both scripts are re-linted on arrival (defense in depth). A stored row —
+including a stored `json: null` "no resonance" verdict — is returned without
+a model call; a miss compiles once on `GM_MODEL`, validates at the resonance
+budget cap, and memoizes `{ pairKey, version, json|null, flavor, announce,
+first_discovered_by }` in the keyed `interactions` table. Failed compiles are
+NOT memoized (the next encounter retries). The client entry point is
+`requestGmResonance` in `src/services/gm.ts` (null = transport failure ≠
+null rule).
+
+The party endpoint now also emits one budget-linted `PowerScript` per kit
+(schema-enforced, one regenerate on lint failure, then per-power fallback to
+a stock power — the party never 502s because of powers alone).
+
+## Seeding the pool (generation zero)
+
+```sh
+npx tsx scripts/seed-pool.ts
+```
+
+Reads `public/assets/gen/**/manifest.json` (missing sub-manifests are fine —
+batches may be mid-generation) and `src/content/powers.ts` (module probed
+dynamically; absence is fine), then upserts keyed `art` and `powers` rows
+through the `PoolStore` interface. Idempotent; re-run after every asset batch
+or style-version bump. Set `UPSTASH_REDIS_REST_URL`/`UPSTASH_REDIS_REST_TOKEN`
+in the shell to seed the shared Redis pool; without them it dry-runs against
+the in-memory pool and just prints counts. (`npx tsx` is the runner: plain
+`node --experimental-transform-types` cannot resolve the repo's extensionless
+relative imports, and `--experimental-strip-types` additionally rejects the
+constructor parameter properties in `api/_lib/pool.ts`.)
+
 ## Cost notes
 
 - `claude-haiku-4-5`: $1 / $5 per MTok. An event/item/steer call is roughly
@@ -121,7 +177,9 @@ any failure; the UI must always keep the static path working:
 ## Scaffold gaps (deliberate, tracked here)
 
 - **No Masonry jobs yet** — `stand.visualPrompt` / `iconPrompt` are returned
-  but no image jobs are enqueued; clients keep procedural art.
+  (now composed from the style contract) but no image jobs are enqueued;
+  clients keep procedural art. `/api/gm/event` returns no image prompts at
+  all — generated events reuse shipped scene art or the procedural overlay.
 - **No `/api/gm/event/resolve`** — the free-text event option from
   gm-system.md is not implemented; generated events use fixed options only.
 - **Items are equipment-only** — GM consumables (which embed a battle

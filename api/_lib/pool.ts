@@ -16,11 +16,25 @@
 
 export type PoolKind = "stands" | "items" | "events" | "enemies";
 
+/**
+ * Keyed memo tables (stand-powers.md "DB additions"):
+ *  - powers        — Power Script rows keyed by power id;
+ *  - interactions  — resonance rows keyed by pairKey (json may be null:
+ *    "no resonance" is a valid, memoized outcome — a stored row saying so);
+ *  - art           — generation-zero asset rows keyed by asset id, each
+ *    recording styleVersion (visual-v2.md §Style contract).
+ */
+export type KeyedPoolKind = "powers" | "interactions" | "art";
+
 export interface PoolStore {
   size(kind: PoolKind): Promise<number>;
   /** Uniform random entry (JSON string) or null when empty/unavailable. */
   sample(kind: PoolKind): Promise<string | null>;
   add(kind: PoolKind, entryJson: string): Promise<void>;
+  /** Row JSON for `key`, or null when the table has no row (never memoized). */
+  getEntry(kind: KeyedPoolKind, key: string): Promise<string | null>;
+  /** Upsert the row for `key`. */
+  setEntry(kind: KeyedPoolKind, key: string, entryJson: string): Promise<void>;
 }
 
 /** Pool-first probability per gm-system.md: p = min(0.7, size/200). */
@@ -50,6 +64,16 @@ const MAX_POOL_ENTRIES = 500;
 
 export class MemoryPool implements PoolStore {
   private readonly lists = new Map<PoolKind, string[]>();
+  private readonly tables = new Map<KeyedPoolKind, Map<string, string>>();
+
+  private table(kind: KeyedPoolKind): Map<string, string> {
+    let t = this.tables.get(kind);
+    if (!t) {
+      t = new Map();
+      this.tables.set(kind, t);
+    }
+    return t;
+  }
 
   private list(kind: PoolKind): string[] {
     let l = this.lists.get(kind);
@@ -74,6 +98,15 @@ export class MemoryPool implements PoolStore {
     const l = this.list(kind);
     l.unshift(entryJson);
     if (l.length > MAX_POOL_ENTRIES) l.length = MAX_POOL_ENTRIES;
+    return Promise.resolve();
+  }
+
+  getEntry(kind: KeyedPoolKind, key: string): Promise<string | null> {
+    return Promise.resolve(this.table(kind).get(key) ?? null);
+  }
+
+  setEntry(kind: KeyedPoolKind, key: string, entryJson: string): Promise<void> {
+    this.table(kind).set(key, entryJson);
     return Promise.resolve();
   }
 }
@@ -122,6 +155,23 @@ export class UpstashPool implements PoolStore {
   async add(kind: PoolKind, entryJson: string): Promise<void> {
     await this.command(["LPUSH", this.key(kind), entryJson]);
     await this.command(["LTRIM", this.key(kind), 0, MAX_POOL_ENTRIES - 1]);
+  }
+
+  private hashKey(kind: KeyedPoolKind): string {
+    return `gmpool:h:${kind}`;
+  }
+
+  async getEntry(kind: KeyedPoolKind, key: string): Promise<string | null> {
+    const row = await this.command(["HGET", this.hashKey(kind), key]);
+    return typeof row === "string" ? row : null;
+  }
+
+  async setEntry(
+    kind: KeyedPoolKind,
+    key: string,
+    entryJson: string,
+  ): Promise<void> {
+    await this.command(["HSET", this.hashKey(kind), key, entryJson]);
   }
 }
 

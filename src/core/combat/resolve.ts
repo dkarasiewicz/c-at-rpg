@@ -56,10 +56,31 @@ import {
   isBoss,
 } from "./boss";
 import { fleeChance, processDeathsAndOutcome } from "./turns";
+import { consultAllyKOs, consultPower, reclonePowers } from "./powers";
 
 export interface ResolveResult {
   state: BattleState;
   events: BattleEvent[];
+}
+
+/**
+ * Powers hook 9 (stand-powers.md addendum): a death sweep followed by
+ * onAllyKO consults for every `ko` it produced; power effects can KO in
+ * turn, so re-sweep and re-consult until quiet (bounded — each combatant
+ * KOs at most once per revive). With no powers attached this is exactly
+ * one processDeathsAndOutcome call.
+ */
+function sweepWithPowers(
+  s: BattleState,
+  events: BattleEvent[],
+  rng: Rng,
+): void {
+  let from = events.length;
+  processDeathsAndOutcome(s, events);
+  while (consultAllyKOs(s, events, from, rng)) {
+    from = events.length;
+    processDeathsAndOutcome(s, events);
+  }
 }
 
 export function resolveAction(
@@ -68,6 +89,7 @@ export function resolveAction(
   rng: Rng,
 ): ResolveResult {
   const s = cloneState(state);
+  reclonePowers(s, state); // powers hook 2: un-share the charge counters
   const events: BattleEvent[] = [];
 
   // ---- pending Cat Pile prompt: only a catPile answer is legal ----
@@ -78,7 +100,7 @@ export function resolveAction(
     s.catPilePrompt = false;
     if (action.accept) {
       executeCatPile(s, events);
-      processDeathsAndOutcome(s, events);
+      sweepWithPowers(s, events, rng);
     }
     return { state: s, events };
   }
@@ -104,7 +126,7 @@ export function resolveAction(
   turnStartStatusPhase(actor, events); // guarded expiry + scratched + mending
   if (actor.hp <= 0) {
     entry.acted = true;
-    processDeathsAndOutcome(s, events);
+    sweepWithPowers(s, events, rng);
     return { state: s, events };
   }
   if (frazzled) {
@@ -128,6 +150,9 @@ export function resolveAction(
       actor.cooldowns[id] = Math.max(0, actor.cooldowns[id] - 1);
     }
   }
+  // Powers hook 4: the actor's onTurnStart power, after regen/cooldown tick
+  // (a frazzled actor already returned — the lost slot consults nothing).
+  consultPower(s, "onTurnStart", { ownerId: actor.id }, events, rng);
 
   // ---- the action ----
   switch (action.type) {
@@ -275,8 +300,11 @@ export function resolveAction(
   if (actor.side === "cat" && s.outcome === "ongoing") {
     maybePromptCatPile(s, events);
   }
+  // Powers hook 8: the actor's onTurnEnd power (skipped if the actor fell
+  // to a counter during its own action — consultPower checks liveness).
+  consultPower(s, "onTurnEnd", { ownerId: actor.id }, events, rng);
   // ---- pipeline step 6: death / victory check ----
-  processDeathsAndOutcome(s, events);
+  sweepWithPowers(s, events, rng);
   entry.acted = true;
   return { state: s, events };
 }
@@ -402,6 +430,32 @@ function resolveSkill(
         }
       }
       if (isBoss(t)) checkPhase(t, events);
+      // Powers hook 5 (stand-powers.md addendum): per damaged target, after
+      // every existing roll of this step — attacker onDealHit → attacker
+      // onCrit (crit only) → victim onTakeHit (skipped if the hit KO'd it).
+      consultPower(
+        s,
+        "onDealHit",
+        { ownerId: actor.id, otherId: t.id },
+        events,
+        rng,
+      );
+      if (crit) {
+        consultPower(
+          s,
+          "onCrit",
+          { ownerId: actor.id, otherId: t.id },
+          events,
+          rng,
+        );
+      }
+      consultPower(
+        s,
+        "onTakeHit",
+        { ownerId: t.id, otherId: actor.id },
+        events,
+        rng,
+      );
     } else if (isHeal) {
       const flat =
         opts.flatHeal === "full"
@@ -435,6 +489,7 @@ function resolveSkill(
 
   // ---- step 2: forced movement (Off-Balance / Poise chips) ----
   let anyForcedResult = false; // String Theory: moved ≥1 OR chipped Poise
+  let firstForcedId: string | null = null; // onForcedMove 'other' context
   if (skill.moveTarget) {
     const delta = skill.moveTarget;
     const chipAmount = actor.hooks.includes("poiseChip2") ? 2 : 1;
@@ -453,6 +508,7 @@ function resolveSkill(
           chipPoise(t, chipAmount, events);
           chippedThisUse = true;
           anyForcedResult = true;
+          if (!firstForcedId) firstForcedId = t.id;
         }
         continue;
       }
@@ -492,6 +548,7 @@ function resolveSkill(
       }
       if (res.distance >= 1) {
         anyForcedResult = true;
+        if (!firstForcedId) firstForcedId = t.id;
         // Rule 1 — Off-Paw: moved ≥1 clamped rank against its will.
         if (applyStatus(t, "offBalance")) {
           events.push({
@@ -554,6 +611,15 @@ function resolveSkill(
             r.charging = null;
             events.push({ t: "chargeCancelled", id: r.id });
           }
+          // Powers hook 7: the recipient's onStatusApplied power, per
+          // landed application (after this application's chance roll).
+          consultPower(
+            s,
+            "onStatusApplied",
+            { ownerId: r.id, otherId: actor.id },
+            events,
+            rng,
+          );
         }
       }
     }
@@ -598,6 +664,18 @@ function resolveSkill(
   if (stringTier > 0 && anyForcedResult) {
     events.push({ t: "traitTriggered", id: actor.id, trait: "stringTheory" });
     gainEnergy(actor, stringTier, events);
+  }
+  // Powers hook 6: the actor's onForcedMove power — once per skill use that
+  // force-moved ≥1 clamped rank or chipped Poise, after the trait refund
+  // ('other' = the first force-moved/chipped target).
+  if (anyForcedResult) {
+    consultPower(
+      s,
+      "onForcedMove",
+      { ownerId: actor.id, otherId: firstForcedId ?? undefined },
+      events,
+      rng,
+    );
   }
 }
 

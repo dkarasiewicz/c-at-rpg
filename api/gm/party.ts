@@ -10,12 +10,23 @@
  * Masonry sprite jobs are NOT enqueued yet (scaffold) — the client keeps the
  * procedural fallback sprites; see docs/GM-DEPLOY.md.
  */
+import { ART_STYLE } from "../../src/content/artStyle";
 import type {
   GeneratedCatKit,
   GmPartyResponse,
 } from "../../src/services/gmTypes";
 import { getAnthropicGen, gmPartyModel } from "../_lib/anthropic";
+import { composeArtPrompt } from "../_lib/artPrompt";
 import { lintParty, ROLE_STAT_TOTALS } from "../_lib/constraints";
+import {
+  BUDGET_CAPS,
+  EFFECT_CAPS,
+  lintPowerScript,
+  normalizePower,
+  POWER_FRAMEWORK_VERSION,
+  POWER_SCHEMA,
+  STOCK_POWERS,
+} from "../_lib/powers";
 import {
   GmGenerationError,
   generateValidated,
@@ -137,6 +148,7 @@ const KIT_SCHEMA = {
     "skills",
     "trait",
     "stand",
+    "power",
     "flavor",
   ],
   properties: {
@@ -162,6 +174,7 @@ const KIT_SCHEMA = {
         visualPrompt: { type: "string" },
       },
     },
+    power: POWER_SCHEMA,
     flavor: {
       type: "object",
       additionalProperties: false,
@@ -211,9 +224,20 @@ HARD BUDGETS (violations are rejected by a server-side lint):
   power <= 60. moveTarget within -3..3, moveSelf within -2..2, status
   chance in (0, 1]. usableFrom within 1..4; enemy target ranks within 1..5,
   ally/self ranks within 1..4.
-- Stand: dramatic ALL-CAPS name; visualPrompt describes the cat solid in
-  front with a translucent purple/gold Stand looming behind, anime
-  cel-shading, bold ink outlines, flat #1a1626 background.
+- Stand: dramatic ALL-CAPS name. visualPrompt is SUBJECT ONLY: describe the
+  cat's body, colors and pose, and the spectral Stand figure looming behind
+  it — the house art style (cel shading, palette, background) is appended
+  automatically by the server. NEVER mention art style, camera, backgrounds,
+  or rendering technique in visualPrompt.
+- power: ONE Power Script per cat in the DSL the schema enforces
+  (framework version ${POWER_FRAMEWORK_VERSION}). id "power:" + camelCase; dramatic ALL-CAPS
+  name; one trigger; at most 3 conditions; 1-3 effects from the closed menu
+  (damage/heal/status/move/energy/cleanse — never a new mechanic). Caps:
+  damage/heal pct <= ${EFFECT_CAPS.damagePct} (percent of the owner's atk), move delta within
+  ±${EFFECT_CAPS.moveDelta}, energy within ±${EFFECT_CAPS.energyAbs}, status value <= ${EFFECT_CAPS.statusValue}. The computed budget (trigger
+  frequency x effect costs x condition/charge discounts) must stay <= ${BUDGET_CAPS.cat};
+  frequent triggers (onTurnStart/onDealHit/onTakeHit/onTurnEnd) need chance/
+  hpBelowPct conditions or perRound/perBattle charges to fit.
 
 CONTENT POLICY: family-friendly comedy. If a description is sexual, hateful,
 gory, or targets real people, reinterpret it into a harmless cat-universe
@@ -247,7 +271,44 @@ export function lintPartyPayload(
   }
   const kits = root.kits as GeneratedCatKit[];
   const errors = lintParty(kits);
-  return errors.length > 0 ? { errors } : { value: kits, errors: [] };
+  kits.forEach((kit, i) => {
+    errors.push(
+      ...lintPowerScript(
+        kit.power,
+        BUDGET_CAPS.cat,
+        `kit ${i} (${kit.catName || "?"}) power '${String(kit.power?.id)}'`,
+      ),
+    );
+  });
+  if (errors.length > 0) return { errors };
+  // stamp server-computed budgets (never trust the model's arithmetic)
+  const value = kits.map((kit) => ({
+    ...kit,
+    power: normalizePower(kit.power),
+  }));
+  return { value, errors: [] };
+}
+
+/**
+ * Last-resort repair for the SECOND invalid output (stand-powers.md Layer 2:
+ * "Invalid → one regenerate → fallback to a stock power"): when the kits
+ * themselves are legal and only the powers failed the budget lint, swap each
+ * failing power for the stock power of the kit's role instead of 502-ing.
+ */
+export function salvagePartyPowers(
+  parsed: unknown,
+): GeneratedCatKit[] | undefined {
+  const root = parsed as { kits?: unknown };
+  if (!root || !Array.isArray(root.kits)) return undefined;
+  const kits = root.kits as GeneratedCatKit[];
+  if (lintParty(kits).length > 0) return undefined;
+  return kits.map((kit) => ({
+    ...kit,
+    power:
+      lintPowerScript(kit.power, BUDGET_CAPS.cat).length === 0
+        ? normalizePower(kit.power)
+        : STOCK_POWERS[kit.role],
+  }));
 }
 
 export function createPartyHandler(deps: PartyDeps) {
@@ -275,10 +336,30 @@ export function createPartyHandler(deps: PartyDeps) {
         user: buildPartyPrompt(descriptions as string[]),
         schema: PARTY_SCHEMA,
         lint: lintPartyPayload,
+        salvage: salvagePartyPowers,
       });
-      // Persist to the shared pool (fire-and-forget; pool failures are soft).
-      void deps.pool.add("stands", JSON.stringify(kits)).catch(() => undefined);
-      const res: GmPartyResponse = { kits, source: "generated" };
+      // Persist raw (style-free) subjects to the shared pool so pooled rows
+      // survive style-bible bumps; record the styleVersion they were made at.
+      // Fire-and-forget; pool failures are soft.
+      void deps.pool
+        .add(
+          "stands",
+          JSON.stringify({ styleVersion: ART_STYLE.version, kits }),
+        )
+        .catch(() => undefined);
+      // Compose every visualPrompt from the versioned style contract —
+      // subject + category framing + basePrompt, no ad-hoc style wording.
+      const styled = kits.map((kit) => ({
+        ...kit,
+        stand: {
+          ...kit.stand,
+          visualPrompt: composeArtPrompt(
+            "battleSprite",
+            kit.stand.visualPrompt,
+          ),
+        },
+      }));
+      const res: GmPartyResponse = { kits: styled, source: "generated" };
       return json(res);
     } catch (err) {
       if (err instanceof GmGenerationError) {

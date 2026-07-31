@@ -22,6 +22,10 @@ import type {
 } from "../../core/types";
 import { hash, mulberry32 } from "../../core/rng";
 import type { Rng } from "../../core/types";
+import type {
+  PoweredBattleSetup,
+  PowerScript,
+} from "../../core/combat/powerTypes";
 import { createBattle } from "../../core/combat/setup";
 import { battleResult, isAutoSkip, startRound } from "../../core/combat/turns";
 import { resolveAction } from "../../core/combat/resolve";
@@ -51,6 +55,7 @@ import { roundHalfUp } from "../../core/util";
 import { CLASSES } from "../../content/classes";
 import { CONSUMABLES } from "../../content/consumables";
 import { ENEMIES } from "../../content/enemies";
+import { CAT_POWERS, ENEMY_POWERS } from "../../content/powers";
 import { FLOORS } from "../../content/floors";
 import { PAL, THEMES } from "../palette";
 import { DESIGN_H, DESIGN_W, R, RADIUS, rh, rw, rx, ry } from "../layout";
@@ -1652,12 +1657,28 @@ export function createBattleScene(): Scene {
         startEnergyBonus: cat.energyNextBattle,
       });
     }
-    return {
+    // Stand Powers (stand-powers.md, opt-in per battle): attach the stock
+    // scripts for every cat and any enemy that has one, keyed by the
+    // combatant ids createBattle will mint. The engine's budget lint
+    // re-validates at setup; power triggers announce themselves through
+    // the existing 「STAND」 log-line pattern — no extra UI handling.
+    const powers: Record<string, PowerScript> = {};
+    for (const cat of cats) {
+      const p = CAT_POWERS[cat.classId];
+      if (p) powers[`cat:${cat.classId}`] = p;
+    }
+    params.enemies.forEach((enemyId, i) => {
+      const p = ENEMY_POWERS[enemyId];
+      if (p) powers[`e${i}:${enemyId}`] = p;
+    });
+    const setup: PoweredBattleSetup = {
       cats,
       enemies: params.enemies,
       encounterIndex: params.encounterIndex,
       canFlee: !isBoss,
     };
+    if (Object.keys(powers).length > 0) setup.powers = powers;
+    return setup;
   };
 
   /* ---------------- Scene contract ---------------- */

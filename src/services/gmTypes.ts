@@ -13,6 +13,63 @@
 import type { EquipDef, GameEvent, Rarity, Skill, Stats } from "../core/types";
 
 /* ------------------------------------------------------------------------ */
+/* Stand powers (stand-powers.md — canonical DSL from core/combat)           */
+/* ------------------------------------------------------------------------ */
+//
+// The Power Script DSL is owned by src/core/combat/powerTypes.ts (types-only,
+// zero runtime code — safe for the api package to import). The GM protocol
+// re-exports it so both sides of the wire speak the interpreter's exact
+// shapes; the service layer adds only the transport envelopes below.
+
+export type {
+  EffectSpec,
+  InteractionRule,
+  PowerPredicate,
+  PowerScript,
+  PowerTargetSel,
+  PowerTrigger,
+} from "../core/combat/powerTypes";
+import type { InteractionRule, PowerScript } from "../core/combat/powerTypes";
+
+/* ------------------------------------------------------------------------ */
+/* Resonance (stand-powers.md Layer 3 — memoized interaction compilation)    */
+/* ------------------------------------------------------------------------ */
+
+export interface GmResonanceRequest {
+  /** sortedPair(A.id, B.id) + framework version — see resonancePairKey(). */
+  pairKey: string;
+  powers: [PowerScript, PowerScript];
+  /** credited as "first discovered by <session>" on a fresh compile */
+  sessionId?: string;
+}
+
+/**
+ * The memoized `interactions` row (stand-powers.md §DB additions). `json` is
+ * the FULL core InteractionRule (which itself carries pairKey/version/flavor/
+ * announce/budget) or null; flavor/announce are duplicated at row level so
+ * null rows still carry their one-liner.
+ */
+export interface StoredInteraction {
+  pairKey: string;
+  version: number;
+  /** null = compiled, no resonance (a valid, memoized outcome) */
+  json: InteractionRule | null;
+  flavor: string;
+  announce: string;
+  first_discovered_by?: string;
+}
+
+export interface GmResonanceResponse {
+  pairKey: string;
+  /** null = no resonance for this pair (still a definitive answer) */
+  rule: InteractionRule | null;
+  flavor: string;
+  announce: string;
+  firstDiscoveredBy?: string;
+  source: "generated" | "pool";
+}
+
+/* ------------------------------------------------------------------------ */
 /* Party generation                                                          */
 /* ------------------------------------------------------------------------ */
 
@@ -45,6 +102,8 @@ export interface GeneratedCatKit {
   skills: Skill[];
   trait: { name: string; desc: string };
   stand: GeneratedStand;
+  /** One Power Script per cat (stand-powers.md Layer 2), budget-linted. */
+  power: PowerScript;
   flavor: { bio: string; barks: { crit: string; ko: string; catPile: string } };
 }
 

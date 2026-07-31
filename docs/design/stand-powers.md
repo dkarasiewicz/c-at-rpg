@@ -112,3 +112,56 @@ The lint runs server-side at compile time AND client-side at battle setup
    player action is adjudicated by the GM into a one-battle temporary rule
    (the only place an LLM output lands mid-run, still schema-bounded, and
    still cached).
+
+## Implementation addendum — Layer 1 as shipped
+
+Shipped in `src/core/combat/powerTypes.ts` (types), `src/core/combat/powers.ts`
+(interpreter + budget lint), `src/content/powers.ts` (stock powers for the 4
+cats + 3 bosses), with minimal hooks in `setup.ts` / `resolve.ts` / `turns.ts`
+and attach wiring in `battle.ts buildSetup`. Notes where the build diverges
+from or pins down the sketch above:
+
+- **Opt-in per battle.** Powers ride as OPTIONAL parallel fields
+  (`PoweredBattleSetup.powers`, `PoweredBattleState.powers`) — the frozen
+  §2 contracts in `core/types.ts` are untouched. A setup without powers
+  produces a state with no `powers` key and behaves byte-identically to the
+  pre-powers engine (zero extra RNG draws, zero extra events). The combat.md
+  §13 fixture is therefore unaffected.
+- **EffectSpec** (defined in `powerTypes.ts`) is a bounded union whose kinds
+  map 1:1 onto EXISTING engine mechanics — damage (§3 pipeline at variance
+  1.0, no crit, draws no RNG), heal, status (applyStatus §6 stacking), move
+  (§8 forced movement incl. heavy/Poise §11.1), energy, cleanse. No new
+  mechanics, no new BattleEvent kinds; announcements reuse the `log` event
+  as `「STAND NAME」 flavor` (the UI's existing 「STAND」 log pattern).
+- **Insertion points** (authoritative list, mirrored in the `powers.ts`
+  header): createBattle attach+lint; startRound → perRound charge reset +
+  round-1 `onBattleStart` in slot (queue) order; resolveAction turn-start →
+  actor `onTurnStart` (a frazzled slot consults nothing); resolveSkill
+  step 1 per damaged target → attacker `onDealHit` → attacker `onCrit`
+  (crit only) → victim `onTakeHit` (skipped if the hit KO'd it); step 3 per
+  landed application → recipient `onStatusApplied`; end of skill →
+  `onForcedMove` once per use that moved ≥1 clamped rank / chipped Poise;
+  end of action → actor `onTurnEnd`; every death sweep → `onAllyKO` for the
+  fallen one's living allies in rank order (re-swept until quiet).
+  `activated` is typed but not yet wired (scope ladder).
+- **RNG roll-order addendum** (extends combat.md §3): powers draw from the
+  same battle stream; ONLY the `chance` predicate draws (one float), always
+  AFTER every existing roll of the surrounding step, in the consult order
+  above. A power that is absent, out of charges, dead-owned, or fails an
+  earlier predicate draws nothing; effects never draw. Same seed + same
+  attached scripts ⇒ identical battle.
+- **No power chains**: power effects never re-consult triggers. Sole bounded
+  exception: a KO caused by a power still consults `onAllyKO`.
+- **Budget lint** (`powerBudget`): trigger-frequency class × Σ effect costs
+  (multi-target ×2) × Π condition discounts (`chance` scales linearly) ×
+  charge discount. Caps as shipped: `BUDGET_CAPS = { cat: 12, enemyByTier:
+  {1: 6, 2: 9, 3: 12}, resonance: 8 }`; per-effect hard caps in
+  `EFFECT_CAPS` (damage/heal ≤150% atk, |move| ≤3, |energy| ≤4, status
+  value ≤3). The lint validates declared-vs-computed budget too; a failing
+  script is dropped at setup (no-op) — defense in depth.
+- **Stock powers**: THE DUMPSTER KING (onTakeHit 35% counter-shove +
+  Guarded), BOX AMBUSH (onCrit bonus strike), STRING THEORY (onForcedMove
+  energy refund + thread-snap echo), PURR ENGINE (onAllyKO party mend, once
+  per battle); bosses — ABSOLUTE VOID (onTakeHit 25% energy vacuum), BAD TO
+  THE BONE (onCrit shove + Scratched), PURPLE REIGN (onAllyKO tribute
+  damage, twice per battle).

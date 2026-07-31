@@ -9,6 +9,8 @@
  * capped at the cat's enMax).
  */
 import type { BattleSetup, BattleState, Combatant } from "../types";
+import type { PoweredBattleState } from "./powerTypes";
+import { initPowersState } from "./powers";
 import { ENEMIES } from "../../content/enemies";
 import { clamp } from "../util";
 
@@ -66,7 +68,7 @@ export function createBattle(setup: BattleSetup): BattleState {
     combatants.push(c);
   });
 
-  return {
+  const state: BattleState = {
     combatants,
     round: 0,
     queue: [],
@@ -78,4 +80,13 @@ export function createBattle(setup: BattleSetup): BattleState {
     encounterIndex: setup.encounterIndex,
     outcome: "ongoing",
   };
+  // Stand Powers (opt-in, stand-powers.md): a PoweredBattleSetup may attach
+  // validated PowerScripts by combatant id. Without them the returned state
+  // carries NO powers key — byte-identical to the pre-powers engine.
+  const powers = initPowersState(
+    setup,
+    combatants.map((c) => c.id),
+  );
+  if (powers) (state as PoweredBattleState).powers = powers;
+  return state;
 }
