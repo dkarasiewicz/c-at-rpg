@@ -1,0 +1,150 @@
+{
+ "version": 1,
+ "sprites": {
+  "equip:appliesAlwaysHit": {
+   "file": "equip-appliesAlwaysHit.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:cardboardCuirass": {
+   "file": "equip-cardboardCuirass.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:catPileDouble": {
+   "file": "equip-catPileDouble.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:chimeBell": {
+   "file": "equip-chimeBell.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:critOffBalance": {
+   "file": "equip-critOffBalance.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:driedLuckyBeetle": {
+   "file": "equip-driedLuckyBeetle.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:fluffyCollar": {
+   "file": "equip-fluffyCollar.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:healsGrantMending": {
+   "file": "equip-healsGrantMending.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:mittsOfMenace": {
+   "file": "equip-mittsOfMenace.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:moverOffBalance": {
+   "file": "equip-moverOffBalance.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:ninthBell": {
+   "file": "equip-ninthBell.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:poiseChip2": {
+   "file": "equip-poiseChip2.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:ribbonRapier": {
+   "file": "equip-ribbonRapier.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:spikedCollar": {
+   "file": "equip-spikedCollar.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:startEnergy6": {
+   "file": "equip-startEnergy6.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:tangleTalisman": {
+   "file": "equip-tangleTalisman.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:tinBell": {
+   "file": "equip-tinBell.png",
+   "w": 512,
+   "h": 512
+  },
+  "equip:yarnBangle": {
+   "file": "equip-yarnBangle.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:bagOfFleas": {
+   "file": "item-bagOfFleas.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:canOpenerRecording": {
+   "file": "item-canOpenerRecording.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:cardboardBox": {
+   "file": "item-cardboardBox.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:catnip": {
+   "file": "item-catnip.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:featherWand": {
+   "file": "item-featherWand.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:sardineTin": {
+   "file": "item-sardineTin.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:shinies": {
+   "file": "item-shinies.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:squeakyToy": {
+   "file": "item-squeakyToy.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:theCucumber": {
+   "file": "item-theCucumber.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:tunaSnack": {
+   "file": "item-tunaSnack.png",
+   "w": 512,
+   "h": 512
+  },
+  "item:warmMilk": {
+   "file": "item-warmMilk.png",
+   "w": 512,
+   "h": 512
+  }
+ }
+}

@@ -1,0 +1,95 @@
+{
+  "version": 1,
+  "sprites": {
+    "tile:floor": {
+      "file": "tile-floor.png",
+      "w": 512,
+      "h": 512
+    },
+    "tile:floor2": {
+      "file": "tile-floor2.png",
+      "w": 512,
+      "h": 512
+    },
+    "tile:floor3": {
+      "file": "tile-floor3.png",
+      "w": 512,
+      "h": 512
+    },
+    "tile:wall": {
+      "file": "tile-wall.png",
+      "w": 512,
+      "h": 512
+    },
+    "tile:door": {
+      "file": "tile-door.png",
+      "w": 512,
+      "h": 512
+    },
+    "tile:doorBoss": {
+      "file": "tile-doorBoss.png",
+      "w": 512,
+      "h": 512
+    },
+    "tile:stairsUp": {
+      "file": "tile-stairsUp.png",
+      "w": 512,
+      "h": 512
+    },
+    "tile:stairsDown": {
+      "file": "tile-stairsDown.png",
+      "w": 512,
+      "h": 512
+    },
+    "tile:nook": {
+      "file": "tile-nook.png",
+      "w": 512,
+      "h": 512
+    },
+    "prop:chest": {
+      "file": "prop-chest.png",
+      "w": 512,
+      "h": 512
+    },
+    "prop:chestOpen": {
+      "file": "prop-chestOpen.png",
+      "w": 512,
+      "h": 512
+    },
+    "prop:eventSparkle": {
+      "file": "prop-eventSparkle.png",
+      "w": 512,
+      "h": 512
+    },
+    "prop:hoardChest": {
+      "file": "prop-hoardChest.png",
+      "w": 512,
+      "h": 512
+    },
+    "token:party": {
+      "file": "token-party.png",
+      "w": 512,
+      "h": 512
+    },
+    "token:vermin": {
+      "file": "token-vermin.png",
+      "w": 512,
+      "h": 512
+    },
+    "token:bird": {
+      "file": "token-bird.png",
+      "w": 512,
+      "h": 512
+    },
+    "token:beast": {
+      "file": "token-beast.png",
+      "w": 512,
+      "h": 512
+    },
+    "token:construct": {
+      "file": "token-construct.png",
+      "w": 512,
+      "h": 512
+    }
+  }
+}

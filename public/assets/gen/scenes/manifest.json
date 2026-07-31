@@ -1,0 +1,70 @@
+{
+  "version": 1,
+  "sprites": {
+    "scene:event:yarnBall": {
+      "file": "event-yarnBall.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:event:suspiciousHuman": {
+      "file": "event-suspiciousHuman.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:event:cursedPost": {
+      "file": "event-cursedPost.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:event:shrineOfNine": {
+      "file": "event-shrineOfNine.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:event:perfectBox": {
+      "file": "event-perfectBox.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:event:milkBowl": {
+      "file": "event-milkBowl.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:event:redDot": {
+      "file": "event-redDot.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:event:dormantRoomba": {
+      "file": "event-dormantRoomba.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:event:catnipPatch": {
+      "file": "event-catnipPatch.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:event:elderStray": {
+      "file": "event-elderStray.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:landing": {
+      "file": "landing.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:victory": {
+      "file": "victory.png",
+      "w": 1600,
+      "h": 907
+    },
+    "scene:defeat": {
+      "file": "defeat.png",
+      "w": 1600,
+      "h": 907
+    }
+  }
+}
