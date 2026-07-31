@@ -17,6 +17,7 @@ import { display, mono, ui } from "../textStyles";
 import { makeButton } from "../widgets";
 import { drawCat } from "../draw/cats";
 import { spriteTextureFor } from "../sprites";
+import { applyPartyContent } from "./partyCreator";
 import { layer, type GameCtx, type Scene } from "../sceneManager";
 
 /** Random 8-hex seed (visual RNG picking a gameplay seed — §4 exception). */
@@ -59,14 +60,25 @@ export function createTitleScene(): Scene {
   const startRun = (): void => {
     if (!ctx || entering) return;
     const seed = seedBuffer.trim() === "" ? randomSeed() : seedBuffer.trim();
+    // restore the stock Strays BEFORE newRun — a previous custom-party run
+    // may have left its kit overlay on the content tables
+    applyPartyContent(null);
     ctx.run = newRun(seed);
     ctx.scenes.goto("floorgen");
   };
 
   const continueRun = (): void => {
     if (!ctx || !savedRun) return;
+    // a saved custom-party run re-applies its kit overlay after reload
+    // (Continue skips floorgen, the usual sync point)
+    applyPartyContent(savedRun.customParty);
     ctx.run = savedRun;
     ctx.scenes.goto("explore");
+  };
+
+  const openPartyCreator = (): void => {
+    if (!ctx || entering) return;
+    ctx.scenes.goto("partyCreator");
   };
 
   return {
@@ -134,7 +146,13 @@ export function createTitleScene(): Scene {
         startRun();
         return true;
       }
-      if (key === "c" && savedRun) {
+      // [C] = Create your party (always available; the creator itself falls
+      // back to the Strays when the GM is offline). Continue moved to [O].
+      if (key === "c") {
+        openPartyCreator();
+        return true;
+      }
+      if (key === "o" && savedRun) {
         continueRun();
         return true;
       }
@@ -258,13 +276,17 @@ export function createTitleScene(): Scene {
     view.addChild(subtitle);
 
     /* ---- menu ---------------------------------------------------- */
-    const rects = R.title.menuButtons;
+    // Buttons keep the §11 column (x 500, 280×48) but stack from a local
+    // baseline: with Create-your-party ALWAYS present the menu can hold 4
+    // entries, one more than R.title.menuButtons planned for.
+    const [bx, , bw, bh] = R.title.menuButtons[0];
     const entries: { label: string; onTap: () => void; primary?: boolean }[] = [
       { label: "[Enter] New Run", onTap: startRun, primary: true },
     ];
     if (savedRun) {
-      entries.push({ label: "[C] Continue", onTap: continueRun });
+      entries.push({ label: "[O] Continue", onTap: continueRun });
     }
+    entries.push({ label: "[C] Create your party", onTap: openPartyCreator });
     entries.push({
       label: "[S] Seed…",
       onTap: () => {
@@ -272,19 +294,19 @@ export function createTitleScene(): Scene {
         refreshSeedTexts();
       },
     });
+    const startY = entries.length > 3 ? 330 : 360;
     entries.forEach((e, i) => {
-      const rect = rects[Math.min(i, rects.length - 1)];
-      const b = makeButton(e.label, rect[2], rect[3], e.onTap, {
+      const b = makeButton(e.label, bw, bh, e.onTap, {
         primary: e.primary,
       });
-      b.view.position.set(rect[0], rect[1]);
+      b.view.position.set(bx, startY + i * 60);
       view.addChild(b.view);
     });
 
     // live seed entry chip under the menu
     entryChip = new Text({ text: "", style: mono(14, { fill: PAL.gold }) });
     entryChip.anchor.set(0.5, 0);
-    entryChip.position.set(DESIGN_W / 2, 540);
+    entryChip.position.set(DESIGN_W / 2, startY + entries.length * 60 + 6);
     entryChip.visible = false;
     view.addChild(entryChip);
 
@@ -301,7 +323,7 @@ export function createTitleScene(): Scene {
       style: ui(14, { fill: PAL.textDim }),
     });
     records.anchor.set(0.5, 0);
-    records.position.set(DESIGN_W / 2, 576);
+    records.position.set(DESIGN_W / 2, startY + entries.length * 60 + 32);
     view.addChild(records);
 
     // current seed chip bottom-left + version bottom-right

@@ -10,7 +10,14 @@
  * src/core/types.ts — the GM authors content in the exact shapes the engines
  * already consume (docs/design/gm-system.md).
  */
-import type { EquipDef, GameEvent, Rarity, Skill, Stats } from "../core/types";
+import type {
+  Effect,
+  EquipDef,
+  GameEvent,
+  Rarity,
+  Skill,
+  Stats,
+} from "../core/types";
 
 /* ------------------------------------------------------------------------ */
 /* Stand powers (stand-powers.md — canonical DSL from core/combat)           */
@@ -139,6 +146,45 @@ export interface GmEventResponse {
   /** Passes core/events/validate + the per-floor effect caps. */
   event: GameEvent;
   source: "generated" | "pool";
+}
+
+/* ------------------------------------------------------------------------ */
+/* Event free-text resolution (gm-system.md /api/gm/event "free-text option") */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * The player typed what they do at an event; the GM maps the free text onto
+ * the BOUNDED event effect menu (core `Effect` union, per-floor caps — never
+ * arbitrary mechanics). Served by api/gm/eventResolve.ts; nothing is
+ * memoized (free text is personal and one-shot).
+ */
+export interface GmEventResolveRequest {
+  /** 1..6 */
+  floor: number;
+  /** The player's free-text action, 1..280 chars. */
+  text: string;
+  /** Context: the event being resolved (id + prompt + fixed option labels). */
+  eventId?: string;
+  eventPrompt?: string;
+  optionLabels?: string[];
+  /** Current HP per living cat, front-to-back. */
+  partyHp?: number[];
+  shinies?: number;
+}
+
+/**
+ * Outcome-shaped verdict (events.md `Outcome` minus `weight`, stamped 1 by
+ * the client) — applied through the exact same resolveOption effect path as
+ * a fixed option, so every clamp/cap stays intact.
+ */
+export interface GmEventResolveOutcome {
+  text: string;
+  effects: Effect[];
+}
+
+export interface GmEventResolveResponse {
+  outcome: GmEventResolveOutcome;
+  source: "generated";
 }
 
 /* ------------------------------------------------------------------------ */

@@ -20,6 +20,7 @@ import type { MetaFile, RunState } from "../core/types";
 export type SceneId =
   | "boot"
   | "title"
+  | "partyCreator"
   | "floorgen"
   | "explore"
   | "battle"
@@ -96,7 +97,9 @@ export function layer(root: Container, name: LayerName): Container {
 
 /**
  * goto legality: `TRANSITIONS[from]` lists every legal target.
- *  - title → floorgen (New Run) | explore (Continue restores mid-floor)
+ *  - title → floorgen (New Run) | explore (Continue restores mid-floor) |
+ *    partyCreator ([C] Create your party)
+ *  - partyCreator → floorgen (accept / GM-offline fallback) | title (Esc)
  *  - explore → battle / event / landing, or results (Abandon via pause)
  *  - battle → explore (victory-after-loot / flee) | results (defeat, floor-6
  *    win, abandon)
@@ -107,7 +110,8 @@ export function layer(root: Container, name: LayerName): Container {
  */
 export const TRANSITIONS: Record<SceneId, readonly SceneId[]> = {
   boot: ["title"],
-  title: ["floorgen", "explore"],
+  title: ["floorgen", "explore", "partyCreator"],
+  partyCreator: ["floorgen", "title"],
   floorgen: ["explore"],
   explore: ["battle", "event", "landing", "results"],
   battle: ["explore", "results"],
@@ -116,8 +120,13 @@ export const TRANSITIONS: Record<SceneId, readonly SceneId[]> = {
   results: ["floorgen", "title"],
 };
 
-/** Esc opens pause from every scene except these (§3.1). */
-export const PAUSE_BLOCKED: readonly SceneId[] = ["boot", "results"];
+/** Esc opens pause from every scene except these (§3.1; partyCreator has
+ *  no run — its Esc navigates back to the title instead). */
+export const PAUSE_BLOCKED: readonly SceneId[] = [
+  "boot",
+  "results",
+  "partyCreator",
+];
 
 /* ---------------------------------------------------------------------- */
 /* Implementation                                                          */

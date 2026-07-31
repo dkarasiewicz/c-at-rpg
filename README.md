@@ -63,8 +63,27 @@ An optional serverless GM authors content on the fly — free-text party generat
 Stands), fresh events, items, and bounded run steering — via Vercel functions under
 `api/gm/*` using the official `@anthropic-ai/sdk` with structured outputs. Every
 generation passes the same validators the shipped static content passes, and lands
-in a shared content pool that grows as people play. The game is fully playable
-without it: every client call falls back to static content on any failure.
+in a shared content pool that grows as people play.
+
+Three GM features are now wired client-side (`src/services/gm.ts` is the typed
+client):
+
+- **Party creator** — `[C] Create your party` on the title screen: describe one to
+  four cats in free text and the GM returns a full legal kit (classes, stats,
+  skills, PowerScripts, Stand art prompts) that overlays the run's content tables.
+- **Free-text event actions** — when the GM is reachable, event modals gain a
+  `[T] Do something else…` option: type anything and the GM maps it onto the same
+  bounded, validated effect set the authored options use.
+- **Stand resonance discoveries** — cat-power × enemy-power pairings are checked
+  against GM-authored interaction rules (session-cached, prefetched in the
+  background); a discovered resonance attaches an extra bounded power script and
+  announces itself once with a gold banner.
+
+**The GM is optional and the game is offline-first.** With no deployed service
+(the default) every feature above silently degrades to the exact static behavior:
+the party creator shows a "GM offline — using the Strays" toast and starts a
+normal default-party run, event modals render without the free-text option, and
+battles run with stock powers only. No feature ever blocks on the network.
 Design: `docs/design/gm-system.md` · deploy & operations: `docs/GM-DEPLOY.md`.
 
 ## Development

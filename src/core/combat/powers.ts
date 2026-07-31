@@ -59,6 +59,7 @@ import type {
 } from "../types";
 import type {
   EffectSpec,
+  InteractionRule,
   PowerChargeCounters,
   PoweredBattleSetup,
   PoweredBattleState,
@@ -262,27 +263,61 @@ export function capForCombatantId(id: string): number {
 /* ------------------------------------------------------------------------ */
 
 /**
+ * A resonance rule recast as the PowerScript the interpreter executes
+ * (stand-powers.md Layer 3: "attached rules behave as an extra power on the
+ * pair's owner side"). Chargeless by construction; the announced log line
+ * becomes 「RESONANCE」 <flavor>.
+ */
+export function interactionScript(rule: InteractionRule): PowerScript {
+  return {
+    id: `power:resonance[${rule.pairKey}]`,
+    version: rule.version,
+    name: "RESONANCE",
+    flavor: rule.flavor,
+    budget: rule.budget,
+    trigger: rule.trigger,
+    conditions: rule.conditions,
+    effects: rule.effects,
+  };
+}
+
+/**
  * Build the PowersState for createBattle. Unknown combatant ids are
  * ignored; scripts failing the lint are dropped (no-op) — defense in depth.
- * Returns null when nothing valid is attached (the state then carries NO
- * powers key at all → byte-identical legacy behavior).
+ * Attached interactions are recast via interactionScript() and linted at
+ * the resonance cap (same drop-on-failure rule). Returns null when nothing
+ * valid is attached (the state then carries NO powers key at all →
+ * byte-identical legacy behavior).
  */
 export function initPowersState(
   setup: PoweredBattleSetup,
   combatantIds: string[],
 ): PowersState | null {
   const attach = setup.powers;
-  if (!attach) return null;
   const scripts: Record<string, PowerScript> = {};
   const charges: Record<string, PowerChargeCounters> = {};
-  for (const id of combatantIds) {
-    const script = attach[id];
-    if (!script) continue;
-    if (!validatePowerScript(script, capForCombatantId(id)).ok) continue;
-    scripts[id] = script;
-    charges[id] = { battle: 0, round: 0 };
+  if (attach) {
+    for (const id of combatantIds) {
+      const script = attach[id];
+      if (!script) continue;
+      if (!validatePowerScript(script, capForCombatantId(id)).ok) continue;
+      scripts[id] = script;
+      charges[id] = { battle: 0, round: 0 };
+    }
   }
-  return Object.keys(scripts).length > 0 ? { scripts, charges } : null;
+  const resonances: Record<string, PowerScript[]> = {};
+  let resonanceCount = 0;
+  for (const { ownerId, rule } of setup.interactions ?? []) {
+    if (!combatantIds.includes(ownerId)) continue;
+    const script = interactionScript(rule);
+    if (!validatePowerScript(script, BUDGET_CAPS.resonance).ok) continue;
+    (resonances[ownerId] ??= []).push(script);
+    resonanceCount++;
+  }
+  if (Object.keys(scripts).length === 0 && resonanceCount === 0) return null;
+  const state: PowersState = { scripts, charges };
+  if (resonanceCount > 0) state.resonances = resonances;
+  return state;
 }
 
 const powersOf = (state: BattleState): PowersState | undefined =>
@@ -296,12 +331,14 @@ const powersOf = (state: BattleState): PowersState | undefined =>
 export function reclonePowers(clone: BattleState, source: BattleState): void {
   const p = powersOf(source);
   if (!p) return;
-  (clone as PoweredBattleState).powers = {
+  const next: PowersState = {
     scripts: p.scripts,
     charges: Object.fromEntries(
       Object.entries(p.charges).map(([k, v]) => [k, { ...v }]),
     ),
   };
+  if (p.resonances) next.resonances = p.resonances; // frozen, shared
+  (clone as PoweredBattleState).powers = next;
 }
 
 /** startRound: perRound charge counters reset with the new round. */
@@ -489,6 +526,10 @@ function executeEffect(
  * owner not alive, or charges exhausted. Otherwise predicates run in order
  * (`chance` draws one float); on success the proc is charged, announced via
  * the existing `log` event as 「STAND NAME」, and effects execute in order.
+ *
+ * Layer 3: any resonance rules attached to the owner are consulted AFTER
+ * the owner's own script (same trigger context, chargeless, RNG draws in
+ * that order). A state without resonances behaves exactly as before.
  */
 export function consultPower(
   state: BattleState,
@@ -499,29 +540,55 @@ export function consultPower(
 ): boolean {
   const p = powersOf(state);
   if (!p) return false;
+  let fired = false;
   const script = p.scripts[ctx.ownerId];
-  if (!script || script.trigger !== trigger) return false;
-  const owner = byId(state, ctx.ownerId);
-  if (!isAlive(owner)) return false;
-  const counters = p.charges[ctx.ownerId];
-  if (script.charges?.perBattle !== undefined) {
-    if (counters.battle >= script.charges.perBattle) return false;
+  if (script && script.trigger === trigger) {
+    const owner = byId(state, ctx.ownerId);
+    if (isAlive(owner)) {
+      const counters = p.charges[ctx.ownerId];
+      const battleOk =
+        script.charges?.perBattle === undefined ||
+        counters.battle < script.charges.perBattle;
+      const roundOk =
+        script.charges?.perRound === undefined ||
+        counters.round < script.charges.perRound;
+      if (battleOk && roundOk) {
+        const other = ctx.otherId ? byId(state, ctx.otherId) : undefined;
+        if (predicatesHold(state, script, owner, other, rng)) {
+          counters.battle += 1;
+          counters.round += 1;
+          events.push({
+            t: "log",
+            text: `「${script.name.toUpperCase()}」 ${script.flavor}`,
+          });
+          for (const e of script.effects) {
+            executeEffect(state, e, owner, other, script.id, events);
+          }
+          fired = true;
+        }
+      }
+    }
   }
-  if (script.charges?.perRound !== undefined) {
-    if (counters.round >= script.charges.perRound) return false;
+  const extras = p.resonances?.[ctx.ownerId];
+  if (extras) {
+    const owner = byId(state, ctx.ownerId);
+    if (isAlive(owner)) {
+      const other = ctx.otherId ? byId(state, ctx.otherId) : undefined;
+      for (const rs of extras) {
+        if (rs.trigger !== trigger) continue;
+        if (!predicatesHold(state, rs, owner, other, rng)) continue;
+        events.push({
+          t: "log",
+          text: `「${rs.name.toUpperCase()}」 ${rs.flavor}`,
+        });
+        for (const e of rs.effects) {
+          executeEffect(state, e, owner, other, rs.id, events);
+        }
+        fired = true;
+      }
+    }
   }
-  const other = ctx.otherId ? byId(state, ctx.otherId) : undefined;
-  if (!predicatesHold(state, script, owner, other, rng)) return false;
-  counters.battle += 1;
-  counters.round += 1;
-  events.push({
-    t: "log",
-    text: `「${script.name.toUpperCase()}」 ${script.flavor}`,
-  });
-  for (const e of script.effects) {
-    executeEffect(state, e, owner, other, script.id, events);
-  }
-  return true;
+  return fired;
 }
 
 /**

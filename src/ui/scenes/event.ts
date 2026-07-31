@@ -44,6 +44,8 @@ import {
 import { makeEventGlyph, type EventGlyphId } from "../draw/glyphs";
 import { layer, type GameCtx, type Scene } from "../sceneManager";
 import type { EventWinContext } from "../overlays/loot";
+import { probeGm, requestGmEventResolve } from "../../services/gm";
+import type { GmEventResolveOutcome } from "../../services/gmTypes";
 
 /* ---------------------------------------------------------------------- */
 /* Params (in from explore's StepTrigger, out to the battle scene)         */
@@ -120,7 +122,7 @@ function gateTag(req: Requirement, run: RunState): string {
 /* The scene                                                               */
 /* ---------------------------------------------------------------------- */
 
-type State = "prompt" | "result";
+type State = "prompt" | "freetext" | "waiting" | "result";
 
 export class EventScene implements Scene {
   private view: Container | null = null;
@@ -140,6 +142,9 @@ export class EventScene implements Scene {
   private fight: FightRequest | null = null;
   private hotkeys: ((() => void) | null)[] = [];
   private continueFn: (() => void) | null = null;
+  /** GM free-text option (gm-system.md): shown only when the GM is up. */
+  private gmAvailable = false;
+  private inputEl: HTMLInputElement | null = null;
 
   mount(root: Container, ctx: GameCtx, params?: unknown): void {
     const p = params as EventSceneParams;
@@ -201,6 +206,16 @@ export class EventScene implements Scene {
       `scene:event:${sel.event.id}`,
     );
     this.showPrompt();
+
+    // GM free-text option (gm-system.md event/resolve): probe once per
+    // session, fire-and-forget; when the GM is reachable and the prompt is
+    // still up, re-render with the extra "[T] Do something else…" row.
+    // Offline (the probe fails) the modal stays byte-identical.
+    void probeGm().then((ok) => {
+      if (!ok || !this.view || this.state !== "prompt" || !this.event) return;
+      this.gmAvailable = true;
+      this.rerenderPrompt();
+    });
   }
 
   update(dtMs: number): void {
@@ -212,11 +227,18 @@ export class EventScene implements Scene {
   }
 
   onKey(key: string): boolean {
+    // the DOM input owns the keyboard while typing (it stops propagation
+    // itself; anything that still bubbles here is swallowed)
+    if (this.state === "freetext" || this.state === "waiting") return true;
     if (key === "esc") return true; // consumed, does nothing (events.md §3)
     if (this.state === "prompt") {
       const i = "1234".indexOf(key);
       if (i >= 0) {
         this.hotkeys[i]?.();
+        return true;
+      }
+      if (key === "t" && this.gmAvailable && this.event) {
+        this.openFreeText();
         return true;
       }
       return false;
@@ -229,6 +251,7 @@ export class EventScene implements Scene {
   }
 
   unmount(): void {
+    this.closeInput();
     this.view?.destroy({ children: true });
     this.view = null;
     this.panel = null;
@@ -237,6 +260,7 @@ export class EventScene implements Scene {
     this.illustrated = false;
     this.hotkeys = [];
     this.continueFn = null;
+    this.gmAvailable = false;
   }
 
   /* ---- static header: title + glyph ---------------------------------- */
@@ -338,11 +362,17 @@ export class EventScene implements Scene {
     body.position.set(bx - px, by - py);
     dyn.addChild(body);
 
-    // last option sits in the Leave row; the rest fill the option rects
+    // last option sits in the Leave row; the rest fill the option rects.
+    // With the GM up, the Leave band is split so a "[T] Do something else…"
+    // row fits beside it (offline: the original full-width band, unchanged).
     const n = event.options.length;
+    const [lx, ly, lw, lh] = R.event.leave;
+    const leaveRect: Rect = this.gmAvailable
+      ? [lx, ly, 486, lh]
+      : [lx, ly, lw, lh];
     event.options.forEach((option, i) => {
       const isLeave = i === n - 1;
-      const rect = isLeave ? R.event.leave : R.event.options[i];
+      const rect = isLeave ? leaveRect : R.event.options[i];
       const available = isOptionAvailable(run, option);
       const row = this.makeOptionRow(
         rect,
@@ -356,6 +386,27 @@ export class EventScene implements Scene {
       dyn.addChild(row);
       this.hotkeys[i] = available ? () => this.pick(i) : null;
     });
+    if (this.gmAvailable) {
+      const row = this.makeOptionRow(
+        [lx + 496, ly, lw - 496, lh],
+        "T",
+        { label: "Do something else…", outcomes: [] },
+        true,
+        true,
+        run,
+        () => this.openFreeText(),
+      );
+      dyn.addChild(row);
+    }
+  }
+
+  /** Rebuild the PROMPT in place (after the GM probe resolves). */
+  private rerenderPrompt(): void {
+    if (this.state !== "prompt" || !this.dynamic) return;
+    for (const c of this.dynamic.removeChildren()) {
+      c.destroy({ children: true });
+    }
+    this.showPrompt();
   }
 
   private makeOptionRow(
@@ -423,6 +474,133 @@ export class EventScene implements Scene {
       row.alpha = 0.45;
     }
     return row;
+  }
+
+  /* ---- GM free-text option (gm-system.md event/resolve) --------------- */
+
+  private openFreeText(): void {
+    if (this.state !== "prompt" || !this.ctx || !this.event || this.inputEl) {
+      return;
+    }
+    this.state = "freetext";
+    const el = document.createElement("input");
+    el.type = "text";
+    el.maxLength = 200;
+    el.placeholder = "What do you do? (Enter to act · Esc to cancel)";
+    el.autocomplete = "off";
+    el.spellcheck = false;
+    el.style.cssText =
+      "position:fixed;left:50%;top:62%;transform:translateX(-50%);" +
+      "width:min(600px,86vw);padding:12px 16px;font-size:16px;" +
+      "color:#efe9ff;background:#241f38;border:2px solid #d7a94b;" +
+      "border-radius:8px;outline:none;z-index:10;" +
+      "box-shadow:0 8px 32px rgba(0,0,0,.5);";
+    // the game's single window key listener must not see typing
+    el.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        const text = el.value.trim().slice(0, 200);
+        if (text.length > 0) this.submitFreeText(text);
+      } else if (e.key === "Escape") {
+        this.closeInput();
+        this.state = "prompt";
+      }
+    });
+    el.addEventListener("keyup", (e) => e.stopPropagation());
+    document.body.appendChild(el);
+    this.inputEl = el;
+    el.focus();
+  }
+
+  private closeInput(): void {
+    this.inputEl?.remove();
+    this.inputEl = null;
+  }
+
+  private submitFreeText(text: string): void {
+    if (this.state !== "freetext" || !this.ctx || !this.event) return;
+    this.closeInput();
+    this.state = "waiting";
+    const run = this.ctx.run!;
+    const ev = this.event;
+
+    // waiting beat: prompt + the player's declared move
+    const dyn = this.dynamic!;
+    for (const c of dyn.removeChildren()) c.destroy({ children: true });
+    const [px, py] = R.event.panel;
+    const [bx, by, bw] = R.event.body;
+    const wrap = this.illustrated ? 420 : bw;
+    const body = new Text({
+      text: ev.prompt,
+      style: ui(16, { wordWrap: true, wordWrapWidth: wrap, lineHeight: 24 }),
+    });
+    body.position.set(bx - px, by - py);
+    dyn.addChild(body);
+    const wait = new Text({
+      text: `“${text}” — the night holds its breath…`,
+      style: ui(15, {
+        fontStyle: "italic",
+        fill: PAL.textDim,
+        wordWrap: true,
+        wordWrapWidth: wrap,
+      }),
+    });
+    wait.position.set(bx - px, by - py + Math.ceil(body.height) + 14);
+    dyn.addChild(wait);
+
+    void requestGmEventResolve({
+      floor: run.floorNum,
+      text,
+      eventId: ev.id,
+      eventPrompt: ev.prompt,
+      optionLabels: ev.options.map((o) => o.label),
+      partyHp: run.cats.filter((c) => c.lives > 0).map((c) => c.hp),
+      shinies: run.inventory.shinies,
+    }).then((verdict) => {
+      if (!this.view || this.state !== "waiting" || this.event !== ev) return;
+      if (!verdict) {
+        // failure mid-run: the GM option disappears, the prompt returns
+        // untouched (no RNG was drawn, nothing was paid or fired)
+        this.gmAvailable = false;
+        this.state = "prompt";
+        this.rerenderPrompt();
+        return;
+      }
+      this.applyFreeText(text, verdict);
+    });
+  }
+
+  /**
+   * Apply the GM's Outcome-shaped verdict through the SAME resolveOption
+   * path as a fixed option (per-floor caps were linted server-side; clamps,
+   * fired-id bookkeeping and the fight handoff all stay intact).
+   */
+  private applyFreeText(label: string, verdict: GmEventResolveOutcome): void {
+    if (!this.ctx || !this.event || !this.rng) return;
+    const run = this.ctx.run!;
+    // restoreLife is runtime-gated (events.md invariant 7): when no living
+    // cat is below 9 Lives, drop that effect rather than the whole verdict.
+    const anyBelow9 = run.cats.some((c) => c.lives > 0 && c.lives < 9);
+    const effects = verdict.effects.filter(
+      (e) => e.kind !== "restoreLife" || anyBelow9,
+    );
+    const synthetic: GameEvent = {
+      ...this.event,
+      options: [
+        ...this.event.options,
+        { label, outcomes: [{ weight: 1, text: verdict.text, effects }] },
+      ],
+    };
+    const out = resolveOption(
+      run,
+      synthetic,
+      synthetic.options.length - 1,
+      this.rng,
+    );
+    this.ctx.run = out.state;
+    this.fight = out.fightRequest;
+    this.ctx.save(); // autosave point: event outcome (same as pick())
+    this.showResult(out.outcome.text, out.results);
   }
 
   /* ---- RESULT --------------------------------------------------------- */

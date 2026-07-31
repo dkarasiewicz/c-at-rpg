@@ -153,6 +153,13 @@ export interface PowersState {
   scripts: Record<string, PowerScript>;
   /** charge counters, keyed by combatant id (only ids present in scripts) */
   charges: Record<string, PowerChargeCounters>;
+  /**
+   * Layer 3 resonances, keyed by owner combatant id: each rule executes as
+   * an EXTRA chargeless power of its owner, consulted after the owner's own
+   * script. Frozen at createBattle and shared across clones (no mutable
+   * state — resonance rules carry no charges).
+   */
+  resonances?: Record<string, PowerScript[]>;
 }
 
 /**
@@ -164,12 +171,24 @@ export interface PoweredBattleState extends BattleState {
   powers?: PowersState;
 }
 
+/** A compiled Stand resonance attached to one battle (stand-powers.md L3). */
+export interface AttachedInteraction {
+  /** the combatant the rule behaves as an extra power of (`self` = owner) */
+  ownerId: string;
+  rule: InteractionRule;
+}
+
 /**
  * BattleSetup with optional power attachments, keyed by the combatant id
  * createBattle will mint ('cat:<classId>' / 'e<index>:<enemyId>'). Scripts
  * failing the client-side budget lint are dropped (replaced by no-op) —
  * defense in depth per stand-powers.md §Balance.
+ *
+ * `interactions` carries already-compiled resonance rules (memoized by
+ * /api/gm/resonance); each valid rule executes as an extra chargeless power
+ * on its owner, linted at the resonance budget cap (invalid rules dropped).
  */
 export interface PoweredBattleSetup extends BattleSetup {
   powers?: Record<string, PowerScript>;
+  interactions?: AttachedInteraction[];
 }

@@ -22,6 +22,7 @@ import {
 } from "./ui/sceneManager";
 import { createBootScene } from "./ui/scenes/boot";
 import { createTitleScene } from "./ui/scenes/title";
+import { createPartyCreatorScene } from "./ui/scenes/partyCreator";
 import { createFloorgenScene } from "./ui/scenes/floorgen";
 import { createResultsScene } from "./ui/scenes/results";
 import { createExploreScene } from "./ui/scenes/explore";
@@ -88,6 +89,7 @@ const RUN_SCENES: readonly SceneId[] = [
   const scenes: SceneFactories = {
     boot: createBootScene,
     title: createTitleScene,
+    partyCreator: createPartyCreatorScene,
     floorgen: createFloorgenScene,
     explore: createExploreScene,
     battle: createBattleScene,

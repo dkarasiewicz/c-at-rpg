@@ -23,9 +23,15 @@ import type {
 import { hash, mulberry32 } from "../../core/rng";
 import type { Rng } from "../../core/types";
 import type {
+  AttachedInteraction,
   PoweredBattleSetup,
   PowerScript,
 } from "../../core/combat/powerTypes";
+import {
+  getCachedResonance,
+  prefetchResonance,
+  resonancePairKey,
+} from "../../services/gm";
 import { createBattle } from "../../core/combat/setup";
 import { battleResult, isAutoSkip, startRound } from "../../core/combat/turns";
 import { resolveAction } from "../../core/combat/resolve";
@@ -156,6 +162,12 @@ const spriteHeightFor = (c: Combatant): number => {
 /* ---------------------------------------------------------------------- */
 /* The scene                                                               */
 /* ---------------------------------------------------------------------- */
+
+/**
+ * Resonance discoveries already shown as a banner this session (the banner
+ * fires ONCE per pair — stand-powers.md L3 "surfaced as a discovery").
+ */
+const announcedResonances = new Set<string>();
 
 export function createBattleScene(): Scene {
   let ctx: GameCtx | null = null;
@@ -1678,7 +1690,95 @@ export function createBattleScene(): Scene {
       canFlee: !isBoss,
     };
     if (Object.keys(powers).length > 0) setup.powers = powers;
+
+    // Stand resonance (stand-powers.md Layer 3): for every cross-side power
+    // pair, an already-cached compiled rule attaches to THIS battle as an
+    // extra power of the cat in the pair; uncached pairs kick a
+    // fire-and-forget compile whose rule applies from the NEXT battle.
+    // Nothing is awaited — zero latency, and offline nothing happens.
+    const interactions: AttachedInteraction[] = [];
+    const attached = new Set<string>();
+    for (const [catId, catPower] of Object.entries(powers)) {
+      if (!catId.startsWith("cat:")) continue;
+      for (const [enemyCid, enemyPower] of Object.entries(powers)) {
+        if (enemyCid.startsWith("cat:")) continue;
+        const key = resonancePairKey(
+          catPower.id,
+          enemyPower.id,
+          catPower.version,
+        );
+        const cached = getCachedResonance(key);
+        if (cached === undefined) {
+          prefetchResonance(catPower, enemyPower);
+          continue;
+        }
+        if (!cached.rule) continue; // definitive "no resonance"
+        const dedupe = `${catId}|${key}`; // two same-species enemies = one rule
+        if (attached.has(dedupe)) continue;
+        attached.add(dedupe);
+        interactions.push({ ownerId: catId, rule: cached.rule });
+        if (!announcedResonances.has(key) && cached.announce) {
+          announcedResonances.add(key);
+          pendingAnnounce.push(cached.announce);
+        }
+      }
+    }
+    if (interactions.length > 0) setup.interactions = interactions;
     return setup;
+  };
+
+  /* ---------------- resonance discovery banner ---------------- */
+
+  /** Announce lines queued by buildSetup for this battle's banner. */
+  const pendingAnnounce: string[] = [];
+
+  /**
+   * One-time "STAND RESONANCE DISCOVERED" banner (Cat Pile banner pattern:
+   * gold-stroked panel on the modal layer). Purely visual and non-blocking:
+   * it slides in over the opening round and fades out by itself — the
+   * engine pump is never held up.
+   */
+  const showResonanceBanner = (lines: string[]): void => {
+    if (!modalC || lines.length === 0) return;
+    const [bx, by, bw] = R.combat.catPileBanner;
+    const bh = 64 + lines.length * 26;
+    const view = new Container();
+    view.addChild(
+      new Graphics()
+        .roundRect(0, 0, bw, bh, RADIUS.panel)
+        .fill({ color: PAL.panel, alpha: 0.96 })
+        .stroke({ width: 3, color: PAL.gold }),
+    );
+    const title = new Text({
+      text: "STAND RESONANCE DISCOVERED",
+      style: display(26, { fill: PAL.gold }),
+    });
+    title.anchor.set(0.5, 0);
+    title.position.set(bw / 2, 10);
+    view.addChild(title);
+    lines.forEach((line, i) => {
+      const t = new Text({
+        text: line.replace(/^STAND RESONANCE DISCOVERED:\s*/, ""),
+        style: ui(14, {
+          fill: PAL.textDim,
+          wordWrap: true,
+          wordWrapWidth: bw - 40,
+          align: "center",
+        }),
+      });
+      t.anchor.set(0.5, 0);
+      t.position.set(bw / 2, 50 + i * 26);
+      view.addChild(t);
+    });
+    view.position.set(bx, by - 60);
+    view.alpha = 0;
+    modalC.addChild(view);
+    tween(view, { y: by, alpha: 1 }, 200, "backOut");
+    delay(3000, () => {
+      tween(view, { y: by - 30, alpha: 0 }, 220, "quadOut", () => {
+        view.destroy({ children: true });
+      });
+    });
   };
 
   /* ---------------- Scene contract ---------------- */
@@ -1695,6 +1795,7 @@ export function createBattleScene(): Scene {
       }
       isBoss = params.isBoss ?? params.encounterIndex === 0;
 
+      pendingAnnounce.length = 0;
       const setup = buildSetup();
       if (!setup || setup.cats.length === 0) {
         delay(0, () => ctx?.scenes.goto("explore"));
@@ -1721,6 +1822,7 @@ export function createBattleScene(): Scene {
 
       buildBattlefield(ctx.run);
       buildHud();
+      showResonanceBanner(pendingAnnounce);
 
       // right-click anywhere cancels targeting
       const catcher = new Graphics()

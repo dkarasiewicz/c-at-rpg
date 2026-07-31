@@ -47,6 +47,19 @@ import { ART_STYLE } from "../src/content/artStyle";
 import { resonancePairKey as clientPairKey } from "../src/services/gm";
 import { createPartyHandler } from "../api/gm/party";
 import { createResonanceHandler } from "../api/gm/resonance";
+import {
+  createEventResolveHandler,
+  lintResolvePayload,
+} from "../api/gm/eventResolve";
+import type { BattleSetup, ClassId, Effect } from "../src/core/types";
+import type {
+  PoweredBattleSetup,
+  PoweredBattleState,
+} from "../src/core/combat/powerTypes";
+import { CLASSES } from "../src/content/classes";
+import { createBattle } from "../src/core/combat/setup";
+import { startRound } from "../src/core/combat/turns";
+import { mulberry32 } from "../src/core/rng";
 
 /* ------------------------------------------------------------------------ */
 /* fixtures                                                                  */
@@ -775,5 +788,250 @@ describe("POST /api/gm/resonance (mocked client)", () => {
       effects: [{ kind: "damage", target: "enemies", pct: 100 }],
     } as const;
     expect(lintInteractionRule(tooStrong).join("\n")).toMatch("exceeds cap");
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* POST /api/gm/eventResolve (mocked client)                                 */
+/* ------------------------------------------------------------------------ */
+
+function resolveRequest(body: unknown): Request {
+  return new Request("http://localhost/api/gm/eventResolve", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(body),
+    ...({ duplex: "half" } as object),
+  });
+}
+
+describe("POST /api/gm/eventResolve (mocked client)", () => {
+  const goodEffects: Effect[] = [
+    { kind: "shinies", amount: 8 },
+    { kind: "damage", target: "random", amount: 3 },
+  ];
+  const goodJson = JSON.stringify({
+    outcome: { text: "The sock yields, grudgingly.", effects: goodEffects },
+  });
+  const body = (over: Record<string, unknown> = {}): unknown => ({
+    floor: 1,
+    text: "I bat the sock off the ledge with great ceremony",
+    eventId: "gmTestOmen",
+    eventPrompt: "The sock stares back.",
+    optionLabels: ["Poke it", "Walk away"],
+    partyHp: [30, 28, 24, 26],
+    shinies: 12,
+    ...over,
+  });
+
+  it("returns a bounded Outcome-shaped verdict (memoizing nothing)", async () => {
+    const gen = new FakeGen([goodJson]);
+    const handler = createEventResolveHandler({ gen });
+
+    const res = await handler(resolveRequest(body()));
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as {
+      outcome: { text: string; effects: Effect[] };
+      source: string;
+    };
+    expect(out.source).toBe("generated");
+    expect(out.outcome.effects).toEqual(goodEffects);
+    expect(gen.calls).toHaveLength(1);
+    // the request context reaches the model verbatim
+    expect(gen.calls[0].messages[0].content).toMatch("The sock stares back.");
+    expect(gen.calls[0].messages[0].content).toMatch("bat the sock");
+  });
+
+  it("allows a trailing fight effect (same rules as fixed options)", async () => {
+    const withFight = JSON.stringify({
+      outcome: {
+        text: "The sock was three rats. It is ALWAYS three rats.",
+        effects: [
+          { kind: "shinies", amount: 5 },
+          { kind: "fight", encounter: ["ratThug", "ratThug"], loot: "normal" },
+        ],
+      },
+    });
+    const gen = new FakeGen([withFight]);
+    const res = await createEventResolveHandler({ gen })(
+      resolveRequest(body()),
+    );
+    expect(res.status).toBe(200);
+    const out = (await res.json()) as { outcome: { effects: Effect[] } };
+    expect(out.outcome.effects[1].kind).toBe("fight");
+  });
+
+  it("regenerates ONCE on a cap-busting verdict, echoing the violation", async () => {
+    const overCap = JSON.stringify({
+      outcome: {
+        text: "Everything explodes.",
+        effects: [{ kind: "damage", target: "party", amount: 50 }],
+      },
+    });
+    const gen = new FakeGen([overCap, goodJson]);
+    const res = await createEventResolveHandler({ gen })(
+      resolveRequest(body()),
+    );
+    expect(res.status).toBe(200);
+    expect(gen.calls).toHaveLength(2);
+    // the retry turn carries the exact cap violation back to the model
+    expect(gen.calls[1].messages[2].content).toMatch(
+      `above cap ${EVENT_CAPS.damageMax(1)} on floor 1`,
+    );
+  });
+
+  it("gives up with 502 after two invalid outputs", async () => {
+    const overCap = JSON.stringify({
+      outcome: {
+        text: "No.",
+        effects: [{ kind: "shinies", amount: 999 }],
+      },
+    });
+    const gen = new FakeGen([overCap, overCap]);
+    const res = await createEventResolveHandler({ gen })(
+      resolveRequest(body()),
+    );
+    expect(res.status).toBe(502);
+    expect(gen.calls).toHaveLength(2);
+  });
+
+  it("rejects malformed requests without calling the model", async () => {
+    const gen = new FakeGen([goodJson]);
+    const handler = createEventResolveHandler({ gen });
+    expect((await handler(resolveRequest({ text: "hi" }))).status).toBe(400);
+    expect((await handler(resolveRequest({ floor: 2 }))).status).toBe(400);
+    expect(
+      (await handler(resolveRequest(body({ text: "x".repeat(281) })))).status,
+    ).toBe(400);
+    expect(gen.calls).toHaveLength(0);
+  });
+
+  it("lintResolvePayload rejects gateCat targets and oversized bundles", () => {
+    const gate = lintResolvePayload(
+      {
+        outcome: {
+          text: "t",
+          effects: [{ kind: "damage", target: "gateCat", amount: 2 }],
+        },
+      },
+      1,
+    );
+    expect(gate.errors.join("\n")).toMatch("gateCat");
+    const four = lintResolvePayload(
+      {
+        outcome: {
+          text: "t",
+          effects: Array.from({ length: 4 }, () => ({ kind: "nothing" })),
+        },
+      },
+      1,
+    );
+    expect(four.errors.join("\n")).toMatch("0..3");
+    const empty = lintResolvePayload({ outcome: { text: "", effects: [] } }, 1);
+    expect(empty.errors.join("\n")).toMatch("1..400");
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* Resonance attachment — rules execute as extra owner-side powers           */
+/* ------------------------------------------------------------------------ */
+
+describe("PoweredBattleSetup.interactions (stand-powers.md L3 wiring)", () => {
+  const ORDER: ClassId[] = ["bruiser", "trickster", "hexer", "medic"];
+
+  function l1Cats(): BattleSetup["cats"] {
+    return ORDER.map((id) => {
+      const cls = CLASSES[id];
+      return {
+        classId: id,
+        name: cls.catName,
+        stats: { ...cls.base },
+        hp: cls.base.hp,
+        lives: 9,
+        skills: cls.skills
+          .filter((s) => s.unlockLevel <= 1)
+          .map((s) => s.skillId),
+        traits: [],
+        hooks: [],
+        startEnergyBonus: 0,
+      };
+    });
+  }
+
+  function rule(overrides: Partial<InteractionRule> = {}): InteractionRule {
+    // energy self +2 on battle start: budget = 1 × (2·|2|) = 4 (cap 8)
+    return {
+      pairKey: "power:a+power:b@v1",
+      version: POWER_FRAMEWORK_VERSION,
+      trigger: "onBattleStart",
+      conditions: [],
+      effects: [{ kind: "energy", target: "self", amount: 2 }],
+      flavor: "The threads hum in sympathy.",
+      announce: "STAND RESONANCE DISCOVERED: A+B.",
+      budget: 4,
+      ...overrides,
+    };
+  }
+
+  it("an attached rule fires as an extra chargeless power of its owner", () => {
+    const setup: PoweredBattleSetup = {
+      cats: l1Cats(),
+      enemies: ["ratThug"],
+      encounterIndex: 1,
+      canFlee: true,
+      interactions: [{ ownerId: "cat:bruiser", rule: rule() }],
+    };
+    const bs = createBattle(setup);
+    const powers = (bs as PoweredBattleState).powers;
+    expect(powers?.resonances?.["cat:bruiser"]).toHaveLength(1);
+
+    const r = startRound(bs, mulberry32(7)); // round 1 → onBattleStart consults
+    const logs = r.events.filter(
+      (e) => e.t === "log" && e.text.includes("「RESONANCE」"),
+    );
+    expect(logs).toHaveLength(1);
+    const energy = r.events.find(
+      (e) => e.t === "energy" && e.id === "cat:bruiser",
+    );
+    expect(energy).toBeTruthy();
+    const bruno = r.state.combatants.find((c) => c.id === "cat:bruiser");
+    expect(bruno?.energy).toBe(6); // 4 start + 2 resonance
+  });
+
+  it("rules busting the resonance cap (or lying budgets) are dropped", () => {
+    const overCap = rule({
+      trigger: "onTurnStart",
+      effects: [{ kind: "damage", target: "enemies", pct: 100 }],
+      budget: 60,
+    });
+    const lying = rule({ budget: 1 }); // declared != computed
+    const setup: PoweredBattleSetup = {
+      cats: l1Cats(),
+      enemies: ["ratThug"],
+      encounterIndex: 1,
+      canFlee: true,
+      interactions: [
+        { ownerId: "cat:bruiser", rule: overCap },
+        { ownerId: "cat:hexer", rule: lying },
+        { ownerId: "cat:nobody", rule: rule() }, // unknown owner id
+      ],
+    };
+    const bs = createBattle(setup);
+    // nothing valid attached → no powers key at all (legacy behavior)
+    expect((bs as PoweredBattleState).powers).toBeUndefined();
+  });
+
+  it("interactions ride alongside per-combatant scripts without changes", () => {
+    const setup: PoweredBattleSetup = {
+      cats: l1Cats(),
+      enemies: ["ratThug"],
+      encounterIndex: 1,
+      canFlee: true,
+      powers: { "cat:medic": STOCK_POWERS.support },
+      interactions: [{ ownerId: "cat:medic", rule: rule() }],
+    };
+    const bs = createBattle(setup);
+    const powers = (bs as PoweredBattleState).powers;
+    expect(powers?.scripts["cat:medic"]?.id).toBe(STOCK_POWERS.support.id);
+    expect(powers?.resonances?.["cat:medic"]).toHaveLength(1);
   });
 });

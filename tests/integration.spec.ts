@@ -259,8 +259,12 @@ describe("SceneManager FSM", () => {
     expect(TRANSITIONS.event).toContain("battle"); // ambush fight
     expect(TRANSITIONS.landing).toContain("floorgen"); // Descend
     expect(TRANSITIONS.results).toEqual(["floorgen", "title"]);
+    // party creator (GM custom parties): title ⇄ creator, accept/fallback
+    // always lands in floorgen — a run start is never blocked
+    expect(TRANSITIONS.title).toContain("partyCreator");
+    expect(TRANSITIONS.partyCreator).toEqual(["floorgen", "title"]);
     // LOOT/PAUSE are overlays, not states:
-    expect(Object.keys(TRANSITIONS)).toHaveLength(8);
+    expect(Object.keys(TRANSITIONS)).toHaveLength(9);
   });
 });
 
@@ -340,7 +344,8 @@ describe("SceneManager key routing", () => {
     manager.goto("results");
     manager.handleKey("esc");
     expect(manager.overlay).toBeNull(); // results blocked
-    expect(PAUSE_BLOCKED).toEqual(["boot", "results"]);
+    // partyCreator has no run — its Esc navigates, never pauses
+    expect(PAUSE_BLOCKED).toEqual(["boot", "results", "partyCreator"]);
   });
 
   it("routes keys overlay-first and swallows them beneath an overlay", () => {

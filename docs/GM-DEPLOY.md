@@ -11,6 +11,7 @@ content on any failure.
 |---|---|
 | `api/gm/party.ts` | POST — free-text cats → 4 legal CatClass-shaped kits + Stands (GM_PARTY_MODEL) |
 | `api/gm/event.ts` | POST — run context → one `GameEvent` in the events.md schema, pool-first |
+| `api/gm/eventResolve.ts` | POST — player free text at an event → one Outcome-shaped verdict (bounded effect menu, per-floor caps, one retry, nothing memoized) |
 | `api/gm/item.ts` | POST — floor/rarity/party → one `EquipDef` + icon prompt, pool-first |
 | `api/gm/resonance.ts` | POST — power pair → memoized `InteractionRule\|null` (stand-powers.md Layer 3); pool hit = no model call |
 | `api/gm/steer.ts` | POST — run summary → bounded director nudges |
@@ -119,6 +120,40 @@ The party endpoint now also emits one budget-linted `PowerScript` per kit
 (schema-enforced, one regenerate on lint failure, then per-power fallback to
 a stock power — the party never 502s because of powers alone).
 
+**Client wiring (shipped):** `battle.ts buildSetup` computes the pairKey for
+every cross-side power pair. A pair with a cached verdict and a non-null rule
+attaches it via `PoweredBattleSetup.interactions` — the rule executes as an
+extra chargeless power of the cat in the pair, re-linted at the resonance cap
+by `initPowersState` (drop-on-failure, defense in depth) and consulted after
+the owner's own script. Uncached pairs fire `prefetchResonance()` (never
+awaited — zero latency added to battle start; offline nothing happens) and
+the compiled rule applies from the NEXT battle featuring the pair, announced
+once per session by the "STAND RESONANCE DISCOVERED" banner (Cat Pile banner
+pattern). Verdicts — including definitive `rule: null` — live in a
+session-scoped cache in `src/services/gm.ts` (`getCachedResonance`).
+
+## Event free-text resolver
+
+`POST /api/gm/eventResolve` (note: the literal file route, not
+`/event/resolve` — Vercel routes mirror filenames) with `{ floor, text,
+eventId?, eventPrompt?, optionLabels?, partyHp?, shinies? }`. The model maps
+the player's free text onto the events.md effect union ONLY (json-schema
+excludes `gateCat` — there is no gate) and the result is linted by wrapping
+it in a synthetic event and running the full `lintEvent` (shipped validator +
+per-floor caps), so a free-text verdict can never exceed what a generated
+event option could do. One regenerate on lint failure, then 502. Nothing is
+pooled: free text is one-shot.
+
+Client wiring (shipped): the event modal probes the GM once per session
+(`probeGm()` — an empty POST answered by a JSON 400, no model call; cached).
+When reachable, the PROMPT gains a "[T] Do something else…" row beside the
+Leave row; the player types into a DOM overlay input, and the verdict is
+applied through the exact same `resolveOption` path as a fixed option
+(clamps, fired-id bookkeeping and the `Fight!` handoff intact) then shown as
+a normal RESULT. Offline — or on any mid-flight failure — the modal is
+byte-identical to the static game (the row is simply absent / the prompt
+returns untouched).
+
 ## Seeding the pool (generation zero)
 
 ```sh
@@ -149,10 +184,12 @@ constructor parameter properties in `api/_lib/pool.ts`.)
 - Guardrails: per-IP rate limit (30/min, best-effort per instance) in
   `api/_lib/http.ts`; one retry max per generation; `max_tokens` 2000.
 
-## UI wiring plan (not wired yet — UI is owned by another workstream)
+## UI wiring plan
 
 All client entry points live in `src/services/gm.ts` and return `null` on
-any failure; the UI must always keep the static path working:
+any failure; the UI must always keep the static path working. Already wired:
+the event free-text option and battle resonance (see the sections above).
+Still to wire:
 
 1. **Title screen / party creator** — on "describe your own cats", call
    `requestGmParty(descriptions)`. On kits: build the run's `BattleSetup.cats`
@@ -180,8 +217,6 @@ any failure; the UI must always keep the static path working:
   (now composed from the style contract) but no image jobs are enqueued;
   clients keep procedural art. `/api/gm/event` returns no image prompts at
   all — generated events reuse shipped scene art or the procedural overlay.
-- **No `/api/gm/event/resolve`** — the free-text event option from
-  gm-system.md is not implemented; generated events use fixed options only.
 - **Items are equipment-only** — GM consumables (which embed a battle
   `Skill` payload) are out of scope for the scaffold.
 - **Party endpoint skips pool-first reads** — descriptions are personal;

@@ -14,12 +14,14 @@
  *
  * Not wired into any scene yet — see docs/GM-DEPLOY.md "UI wiring plan".
  */
-import type { GameEvent, Skill, Stats } from "../core/types";
+import type { Effect, GameEvent, Skill, Stats } from "../core/types";
 import { validateEvents } from "../core/events/validate";
 import type {
   GeneratedCatKit,
   GeneratedEquip,
   GmEventRequest,
+  GmEventResolveOutcome,
+  GmEventResolveRequest,
   GmItemRequest,
   GmPartyRequest,
   GmResonanceRequest,
@@ -38,6 +40,49 @@ let baseUrl: string =
 /** Point the client at a non-default GM deployment (tests, previews). */
 export function setGmBaseUrl(url: string): void {
   baseUrl = url.replace(/\/$/, "");
+  probeResult = null; // a new base invalidates the reachability probe
+}
+
+/* ------------------------------------------------------------------------ */
+/* Reachability probe                                                        */
+/* ------------------------------------------------------------------------ */
+
+let probeResult: Promise<boolean> | null = null;
+
+/**
+ * Is a GM deployment reachable? One cheap request (an empty POST that the
+ * service answers with a JSON 400, no model call), cached for the rest of
+ * the session. UI features that need the GM (the event free-text option)
+ * appear only when this resolves true — offline the game is unchanged.
+ */
+export function probeGm(): Promise<boolean> {
+  probeResult ??= (async () => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    try {
+      const res = await fetch(`${baseUrl}/gm/eventResolve`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: "{}",
+        signal: controller.signal,
+      });
+      // any JSON answer (200/400/405/429) proves a live function; a dev
+      // server without /api returns 404/HTML instead.
+      const isJson =
+        res.headers.get("content-type")?.includes("application/json") ?? false;
+      return isJson && res.status !== 404;
+    } catch {
+      return false;
+    } finally {
+      clearTimeout(timer);
+    }
+  })();
+  return probeResult;
+}
+
+/** Test hook: forget the cached probe verdict. */
+export function resetGmProbe(): void {
+  probeResult = null;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -243,6 +288,55 @@ export async function requestGmEvent(
 }
 
 /**
+ * Resolve a player's free-text event action into an Outcome-shaped verdict
+ * (bounded effect menu, per-floor caps — linted server-side with the same
+ * validator + caps the generated events pass). The returned effects are
+ * re-validated here by wrapping them in a synthetic event and running the
+ * shipped validator (structure, id cross-refs, gateCat ban). Null on any
+ * failure — the caller returns to the untouched prompt.
+ */
+export async function requestGmEventResolve(
+  req: GmEventResolveRequest,
+): Promise<GmEventResolveOutcome | null> {
+  const raw = await post("/gm/eventResolve", req);
+  if (!isRecord(raw) || !isRecord(raw.outcome)) return null;
+  const outcome = raw.outcome;
+  if (!isNonEmptyString(outcome.text) || outcome.text.length > 400) return null;
+  if (!Array.isArray(outcome.effects) || outcome.effects.length > 3) {
+    return null;
+  }
+  const effects = outcome.effects as Effect[];
+  // structural re-validation through the SAME validator static events pass:
+  // a synthetic 2-option event (the verdict + a dummy walk-away).
+  const synthetic: GameEvent = {
+    id: "gmFreeTextVerdict",
+    title: "verdict",
+    prompt: "verdict",
+    weight: 1,
+    floors: [
+      Math.max(1, Math.min(6, Math.floor(req.floor))),
+      Math.max(1, Math.min(6, Math.floor(req.floor))),
+    ],
+    options: [
+      {
+        label: "do it",
+        outcomes: [{ weight: 1, text: outcome.text, effects }],
+      },
+      {
+        label: "walk away",
+        outcomes: [{ weight: 1, text: "-", effects: [{ kind: "nothing" }] }],
+      },
+    ],
+  };
+  try {
+    if (validateEvents([synthetic]).length > 0) return null;
+  } catch {
+    return null;
+  }
+  return { text: outcome.text, effects };
+}
+
+/**
  * Generate one themed EquipDef-shaped item (+ icon prompt). Null on any
  * failure — caller rolls from the static loot tables.
  */
@@ -295,6 +389,54 @@ export async function requestGmResonance(
       : undefined,
     source: raw.source,
   };
+}
+
+/* ------------------------------------------------------------------------ */
+/* Resonance cache (run-scoped, fire-and-forget)                             */
+/* ------------------------------------------------------------------------ */
+
+/**
+ * Definitive resonance verdicts by pairKey (a stored `rule: null` is a
+ * definitive "no resonance"). Session-scoped: resonances are globally
+ * memoized server-side, so keeping them across runs is free and correct.
+ */
+const resonanceVerdicts = new Map<string, GmResonanceResponse>();
+const resonanceInFlight = new Set<string>();
+
+/**
+ * The cached verdict for a pair, or undefined when it has not been fetched
+ * (yet). Battle setup attaches `rule` when present; a `rule: null` verdict
+ * means the pair definitively does not resonate.
+ */
+export function getCachedResonance(
+  pairKey: string,
+): GmResonanceResponse | undefined {
+  return resonanceVerdicts.get(pairKey);
+}
+
+/**
+ * Fire-and-forget resonance lookup/compilation for a power pair. Never
+ * awaited by battle setup (zero latency added); a transport failure simply
+ * clears the in-flight mark so the NEXT battle retries. The compiled rule
+ * applies from the next battle featuring the pair (stand-powers.md L3).
+ */
+export function prefetchResonance(a: PowerScript, b: PowerScript): void {
+  const pairKey = resonancePairKey(a.id, b.id, a.version);
+  if (resonanceVerdicts.has(pairKey) || resonanceInFlight.has(pairKey)) return;
+  resonanceInFlight.add(pairKey);
+  void requestGmResonance({ pairKey, powers: [a, b] })
+    .then((res) => {
+      if (res && res.pairKey === pairKey) resonanceVerdicts.set(pairKey, res);
+    })
+    .finally(() => {
+      resonanceInFlight.delete(pairKey);
+    });
+}
+
+/** Test hook: drop every cached verdict and in-flight mark. */
+export function resetResonanceCache(): void {
+  resonanceVerdicts.clear();
+  resonanceInFlight.clear();
 }
 
 /**

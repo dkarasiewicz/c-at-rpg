@@ -12,6 +12,7 @@
  */
 import type {
   BattleResult,
+  CatClass,
   CatRunState,
   ClassId,
   EquipDef,
@@ -20,7 +21,10 @@ import type {
   Roamer,
   RunState,
   ScoreCounters,
+  Skill,
+  Stats,
 } from "../types";
+import type { PowerScript } from "../combat/powerTypes";
 import { EQUIP_DEFS } from "../../content/equipment";
 import { FLOORS } from "../../content/floors";
 import { STARTING_KIT } from "../../content/lootTables";
@@ -50,6 +54,54 @@ export const PARTY_ORDER: readonly ClassId[] = [
   "medic",
 ];
 
+/* ------------------------------------------------------------------ */
+/* Custom party (GM party creator — docs/design/gm-system.md)          */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A GM-generated cat kit, snapshotted into the run at creation. Composed of
+ * core types only (the ui-layer party creator maps the wire-shape
+ * `GeneratedCatKit` from src/services/gmTypes.ts into this — core never
+ * imports from services). Each kit occupies one of the four fixed ClassId
+ * slots (role-mapped: tank→bruiser, striker→trickster, control→hexer,
+ * support→medic) so every classId-keyed system keeps working; the ui layer
+ * overlays the kit's stats/skills/flavor onto the content tables for the
+ * duration of the run.
+ */
+export interface CustomCatKit {
+  /** The fixed party slot this kit occupies. */
+  classId: ClassId;
+  role: "tank" | "striker" | "control" | "support";
+  catName: string;
+  className: string;
+  epithet: string;
+  /** L1 stats (GM budget-linted per role). */
+  base: Stats;
+  /** 7 rows, applied at L2..L8. */
+  growth: Partial<Stats>[];
+  /** Exactly 4 full Skill defs (ids namespaced, not in content/skills.ts). */
+  skills: Skill[];
+  /** Prose-only in v1 — custom trait hooks are not executable. */
+  trait: { name: string; desc: string };
+  /** Dramatic ALL-CAPS Stand name. */
+  standName: string;
+  /** Masonry image prompt kept for future sprite generation (no art yet). */
+  visualPrompt: string;
+  /** Budget-linted Power Script (stand-powers.md Layer 2). */
+  power: PowerScript;
+  flavor: CatClass["flavor"];
+}
+
+// Additive, optional extension of the frozen §2.9 RunState contract: a run
+// started from the party creator carries its generated kits (they serialize
+// with the save via serializeRun's rest-spread). Absent = the four Strays.
+declare module "../types" {
+  interface RunState {
+    /** GM-generated custom party (party creator); absent = default Strays. */
+    customParty?: CustomCatKit[];
+  }
+}
+
 export const FLOOR_COUNT = FLOORS.length; // 6
 /** Landing catnap: free `floor(0.25 × maxHP)` per living cat (GDD §7). */
 export const CATNAP_PCT = 0.25;
@@ -78,8 +130,17 @@ function weaponDefFor(classId: ClassId): EquipDef {
  * 2 Tuna Snacks + 1 Cardboard Box; default marching order. The floor is
  * NOT generated yet — FLOORGEN calls `generateCurrentFloor` (floorNum
  * starts at 1, floorsReached counts it as entered).
+ *
+ * `customParty` (optional, additive — default behavior is unchanged): a
+ * party-creator run records its GM-generated kits on the RunState. NOTE the
+ * caller must have overlaid the kits onto the content tables BEFORE calling
+ * (ui/scenes/partyCreator.ts applyPartyContent) so starting HP derives from
+ * the custom base stats; cats still occupy the four fixed ClassId slots.
  */
-export function newRun(runSeed: string): RunState {
+export function newRun(
+  runSeed: string,
+  customParty?: CustomCatKit[],
+): RunState {
   let inventory = emptyInventory();
   inventory = addShinies(inventory, STARTING_KIT.shinies);
   for (const c of STARTING_KIT.consumables) {
@@ -124,6 +185,7 @@ export function newRun(runSeed: string): RunState {
     uniquesDropped: [],
     floor: null,
     playTimeMs: 0,
+    ...(customParty && customParty.length > 0 ? { customParty } : {}),
   };
 }
 
