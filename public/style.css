@@ -1,15 +1,243 @@
+/*
+ * Page shell + touch chrome (docs/design/mobile.md §6).
+ *
+ * The game itself is drawn by pixi into #pixi-container at a fixed 1280×720
+ * design resolution, letterboxed by src/main.ts. Everything here is the page
+ * AROUND that canvas: stopping the browser's own touch gestures from fighting
+ * the game, keeping chrome out from under a notch, the landscape gate, and
+ * the one DOM control (the system menu button) that touch needs and pixi
+ * cannot guarantee at 44 CSS px.
+ *
+ * `<html data-touch="1|0">` is stamped by src/ui/touch.ts before the first
+ * scene mounts; every touch-only rule below keys off it, so a desktop browser
+ * renders exactly what it did before this file grew.
+ */
+
+:root {
+    /* ui-art §2 "Midnight Picture-Book" — the handful of colours the page
+       chrome needs, mirrored from src/ui/palette.ts. */
+    --void: #0e0c16;
+    --bg-deep: #1a1626;
+    --panel: #262038;
+    --border: #4a3f66;
+    --gold: #f5c84c;
+    --text: #f2ede4;
+    --text-dim: #9c93b0;
+
+    /* Safe-area insets, defaulted to 0 so the same expressions work on a
+       desktop browser that has never heard of a notch. */
+    --safe-top: env(safe-area-inset-top, 0px);
+    --safe-right: env(safe-area-inset-right, 0px);
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-left: env(safe-area-inset-left, 0px);
+}
+
+html,
 body {
     margin: 0;
     padding: 0;
-    color: rgba(255, 255, 255, 0.87);
-    background-color: #000000;
+    height: 100%;
+    /* Pull-to-refresh and rubber-band scroll are the two gestures that most
+       reliably ruin a full-screen canvas game. */
+    overscroll-behavior: none;
+    background-color: var(--void);
+    color: var(--text);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 
+body {
+    overflow: hidden;
+    /* No pinch-zoom, no double-tap zoom, no scroll — pixi owns every pointer
+       event inside the canvas. Elements that DO want native gestures (the
+       typed-action <input>) opt back in with `touch-action: manipulation`. */
+    touch-action: none;
+    /* iOS: no long-press callout / magnifier over the canvas, and no blue
+       tap flash on the DOM controls. */
+    -webkit-touch-callout: none;
+    -webkit-tap-highlight-color: transparent;
+}
+
+/* The canvas host is not selectable — a drag across it must never start a
+   text selection. The typed-action field re-enables selection on itself. */
 #app {
     width: 100%;
+    /* dvh tracks the browser's collapsing toolbars; vh is the fallback for
+       engines without it. */
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
     display: flex;
     justify-content: center;
     align-items: center;
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+}
+
+#pixi-container {
+    line-height: 0;
+}
+
+#pixi-container canvas {
+    display: block;
+    touch-action: none;
+}
+
+/* ---------------------------------------------------------------------- */
+/* System menu button — the tap equivalent of Esc                          */
+/* ---------------------------------------------------------------------- */
+
+/*
+ * Esc is the single busiest key in the game: it pauses from the run map, the
+ * battle and the landing, closes whichever overlay is up, backs out of the
+ * Den and the shop's sell mode, cancels targeting and shuts the inspect card.
+ * The scene manager already routes all of that (src/ui/sceneManager.ts
+ * `handleKey`), so touch needs exactly ONE control — this one — to reach
+ * every Esc-shaped affordance in the game.
+ *
+ * It lives in the DOM rather than on the pixi stage because the letterbox
+ * gutter it sits in is outside the design rect, and because 44 CSS px must be
+ * 44 CSS px at any scale.
+ */
+#sys-menu {
+    display: none;
+    position: fixed;
+    top: calc(var(--safe-top) + 8px);
+    right: calc(var(--safe-right) + 8px);
+    z-index: 30;
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: rgba(38, 32, 56, 0.82);
+    color: var(--text);
+    cursor: pointer;
+    touch-action: manipulation;
+    -webkit-tap-highlight-color: transparent;
+    backdrop-filter: blur(3px);
+}
+
+#sys-menu svg {
+    width: 22px;
+    height: 22px;
+    stroke: currentColor;
+    stroke-width: 2;
+    stroke-linecap: round;
+    fill: none;
+}
+
+#sys-menu:active {
+    background: rgba(74, 63, 102, 0.95);
+    border-color: var(--gold);
+    color: var(--gold);
+}
+
+:root[data-touch="1"] #sys-menu {
+    display: grid;
+    place-items: center;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Landscape gate                                                          */
+/* ---------------------------------------------------------------------- */
+
+#rotate {
+    display: none;
+    position: fixed;
+    inset: 0;
+    z-index: 40;
+    background: var(--void);
+    /* the card keeps clear of a notch in either orientation */
+    padding: calc(var(--safe-top) + 16px) calc(var(--safe-right) + 16px)
+        calc(var(--safe-bottom) + 16px) calc(var(--safe-left) + 16px);
+    place-items: center;
+    text-align: center;
+    touch-action: none;
+}
+
+/* Touch + portrait only. A narrow desktop window is the user's business and
+   is never gated. The second rule is belt-and-braces for the frame before
+   src/ui/touch.ts stamps data-touch (and for `?touch=0`, which opts out). */
+@media (orientation: portrait) {
+    :root[data-touch="1"] #rotate {
+        display: grid;
+    }
+}
+
+@media (orientation: portrait) and (pointer: coarse) {
+    :root:not([data-touch="0"]) #rotate {
+        display: grid;
+    }
+}
+
+.rotate-card {
+    max-width: 22rem;
+    display: grid;
+    justify-items: center;
+    gap: 12px;
+    padding: 28px 24px 32px;
+    border-radius: 14px;
+    border: 1px solid var(--border);
+    background: var(--bg-deep);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.6);
+}
+
+.rotate-phone {
+    width: 92px;
+    height: 92px;
+    fill: none;
+    stroke: var(--text-dim);
+    stroke-width: 2.4;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    /* the handset tips over and back — the instruction, animated */
+    transform-origin: 50% 50%;
+    animation: rotate-hint 2.6s ease-in-out infinite;
+}
+
+.rotate-phone .rotate-arrow,
+.rotate-phone .rotate-arrow-head {
+    stroke: var(--gold);
+}
+
+.rotate-phone circle {
+    fill: var(--text-dim);
+    stroke: none;
+}
+
+@keyframes rotate-hint {
+    0%,
+    26% {
+        transform: rotate(0deg);
+    }
+    56%,
+    82% {
+        transform: rotate(-90deg);
+    }
+    100% {
+        transform: rotate(0deg);
+    }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .rotate-phone {
+        animation: none;
+        transform: rotate(-90deg);
+    }
+}
+
+.rotate-card h1 {
+    margin: 0;
+    font-size: 1.1rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    color: var(--gold);
+}
+
+.rotate-card p {
+    margin: 0;
+    font-size: 0.9rem;
+    line-height: 1.45;
+    color: var(--text-dim);
 }

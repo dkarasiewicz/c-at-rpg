@@ -2,23 +2,45 @@
  * c(at)rpg — score table (gameloop.md §7, restated in ARCHITECTURE.md §2.9)
  * and the results-screen summary struct.
  *
- * floorsCleared×100, floorsReached×50, enemiesDefeated×10, bossesDefeated
- * ×300, shinies×5, catPiles×20, livesRemaining×25 (victory only), victory
- * bonus 1000. Time is shown, never scored.
+ * ── WHY THESE NUMBERS (the 2nd-pass rebalance) ──────────────────────────
+ * The first table paid shinies ×5. A measured six-floor descent
+ * (tests/support/scriptedRun.ts, 400 seeds) collects ~950-1000 shinies and
+ * fells ~50 enemies, so that one line was 56-71% of every total: the results
+ * screen counted up nine rows of which one mattered, and the fastest way to
+ * "score" was to hoover up coins rather than to go deep, fight well or find
+ * anything. Every other line was decoration.
+ *
+ * So the table now pays for what the run DID:
+ *   DEPTH      floors cleared ×250 and reached ×100 — the run's spine.
+ *   DEEDS      enemies ×15, bosses ×500, Cat Piles ×75.
+ *   DISCOVERY  events survived ×80 and Mewthical relics ×250 — the run map's
+ *              other half. Both are read straight off the RunState
+ *              (`firedEventIds`, `uniquesDropped`), so nothing new has to be
+ *              counted anywhere for them to exist.
+ *   SPOILS     shinies ×1 — still worth having, no longer the whole score.
+ *   SURVIVAL   lives remaining ×25 (victory only) and a 2000 victory bonus.
+ * On the measured victory above that is ~1500/600/720/1000/300/400/250/980/
+ * 875/2000 ≈ 8600, with no line over ~23% and shinies at ~11%.
+ *
+ * Time is shown, never scored.
  */
-import type { ScoreCounters } from "../types.js";
+import type { RunState, ScoreCounters } from "../types.js";
 
 export const SCORE_MULT = {
-  floorsCleared: 100,
-  floorsReached: 50,
-  enemiesDefeated: 10,
-  bossesDefeated: 300,
-  shiniesCollected: 5,
-  catPiles: 20,
+  floorsCleared: 250,
+  floorsReached: 100,
+  enemiesDefeated: 15,
+  bossesDefeated: 500,
+  catPiles: 75,
+  /** one per event the run resolved (`RunState.firedEventIds`) */
+  eventsSurvived: 80,
+  /** one per Mewthical unique the run turned up (`RunState.uniquesDropped`) */
+  relicsFound: 250,
+  shiniesCollected: 1,
   livesRemaining: 25, // victory only; max 36 → up to 900
 } as const;
 
-export const VICTORY_BONUS = 1000;
+export const VICTORY_BONUS = 2000;
 
 /** One tallied line of the results table (UI counts these up in order). */
 export interface ScoreLine {
@@ -40,20 +62,42 @@ const LABELS: Record<keyof typeof SCORE_MULT, string> = {
   floorsReached: "floors reached",
   enemiesDefeated: "enemies defeated",
   bossesDefeated: "bosses defeated",
-  shiniesCollected: "shinies collected",
   catPiles: "Cat Piles triggered",
+  eventsSurvived: "events survived",
+  relicsFound: "Mewthical relics found",
+  shiniesCollected: "shinies collected",
   livesRemaining: "lives remaining",
 };
 
 /**
+ * The two DISCOVERY counts, read off the run rather than tallied into
+ * `ScoreCounters`. They are already exact: `firedEventIds` is the run-scoped
+ * `once` ledger every resolved event writes to, and `uniquesDropped` is the
+ * Mewthical downgrade ledger. Absent (a hand-built RunState) reads as zero.
+ */
+export interface Discoveries {
+  eventsSurvived: number;
+  relicsFound: number;
+}
+
+export function discoveriesOf(run: RunState): Discoveries {
+  return {
+    eventsSurvived: run.firedEventIds.length,
+    relicsFound: run.uniquesDropped.length,
+  };
+}
+
+/**
  * Compute the full score breakdown, lines in gameloop.md §7 table order.
  * `livesRemaining` = sum of Lives across all cats (dead cats contribute 0);
- * it and the flat victory bonus appear on victory only.
+ * it and the flat victory bonus appear on victory only. `discoveries` is
+ * optional so a caller with only counters in hand still gets a valid table.
  */
 export function computeScore(
   counters: ScoreCounters,
   victory: boolean,
   livesRemaining: number,
+  discoveries: Discoveries = { eventsSurvived: 0, relicsFound: 0 },
 ): ScoreSummary {
   const lines: ScoreLine[] = [];
   const push = (id: keyof typeof SCORE_MULT, count: number): void => {
@@ -64,8 +108,10 @@ export function computeScore(
   push("floorsReached", counters.floorsReached);
   push("enemiesDefeated", counters.enemiesDefeated);
   push("bossesDefeated", counters.bossesDefeated);
-  push("shiniesCollected", counters.shiniesCollected);
   push("catPiles", counters.catPiles);
+  push("eventsSurvived", discoveries.eventsSurvived);
+  push("relicsFound", discoveries.relicsFound);
+  push("shiniesCollected", counters.shiniesCollected);
   if (victory) {
     push("livesRemaining", livesRemaining);
     lines.push({

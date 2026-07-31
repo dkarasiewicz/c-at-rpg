@@ -1,17 +1,28 @@
 # Game Master System — dynamic content service
 
-> ## ⚠️ REFRAMED — `run-map-and-dm.md` §4 is now canonical
+> ## ⚠️ HISTORICAL — the transport on this page NO LONGER EXISTS
 >
-> The six **stateless** endpoints described below have become **one persistent
-> agent with a durable session per run** (`agent/`, Vercel eve), so the GM
-> remembers the whole adventure instead of each request in isolation. The
-> capability set, the schemas and — critically — the *bounds* on this page are
-> unchanged and still canonical; only the transport and the memory model moved.
+> Read this page for the **capability set, the schemas and the bounds**, which
+> are unchanged and still canonical. Do NOT read it for how any of it is
+> called: `run-map-and-dm.md` §4 is canonical for that.
 >
-> `api/gm/*` keeps working and is still the fallback. Each capability migrates
-> behind the single client seam (`src/services/gm.ts` beside
-> `src/services/dm.ts`), and the endpoints are deleted last. See
-> `docs/DM-DEPLOY.md` for the agent, `docs/GM-DEPLOY.md` for these endpoints.
+> The six **stateless** endpoints described below became **one persistent agent
+> with a durable session per run** (`agent/`, Vercel eve), so the GM remembers
+> the whole adventure instead of each request in isolation. That migration is
+> **finished**: `api/` and the client seam `src/services/gm.ts` are deleted, and
+> there is no fallback endpoint behind the agent. Wherever this page says
+> `POST /api/gm/x`, the live code is:
+>
+> | this page | today |
+> |---|---|
+> | `/api/gm/party` | `src/services/oneshot.ts#requestDmParty` |
+> | `/api/gm/resonance` | `src/services/oneshot.ts#requestDmResonance` |
+> | `/api/gm/eventResolve` | `src/services/dm.ts#requestEncounterVerdict` |
+> | `/api/gm/event`, `/item`, `/steer` | never had a game caller; subsumed by the agent's skills |
+> | `/api/gm/health` | `GET /eve/v1/health` (curl) · `GET /eve/v1/info` (browser — the only one carrying CORS) |
+>
+> The caps themselves have one home each now: `src/services/caps.ts`,
+> `contentLint.ts`, `powerLint.ts`, `artPrompt.ts`. See `docs/DM-DEPLOY.md`.
 >
 > **New in the agent, not described here:** the tabletop layer — a typed action
 > at *any* encounter, a fight included, adjudicated into the engine's own
@@ -22,7 +33,26 @@ A lightweight AI Game Master that steers runs and generates content on the fly.
 The core game stays fully playable offline (static content = fallback); the GM
 service is an enhancement layer.
 
-## Architecture
+## Architecture — SUPERSEDED, kept for the reasoning
+
+**This diagram no longer describes the code.** The shipped one is:
+
+```
+browser (PixiJS game)
+   │  services/dm.ts      — one durable eve session per run
+   │  services/oneshot.ts — schema'd party + resonance
+   ▼
+Vercel eve agent  (separate project; OIDC, no provider secret)
+   │  anthropic/claude-haiku-4.5 via AI Gateway
+   ▼
+agent/lib/pool.ts  — the content pool, reached by the agent's own tools
+```
+
+The pool survived; the transport did not. And note the measured caveat in
+`DM-DEPLOY.md`: Upstash was never actually provisioned in production, so the
+"shared pool grows" promise below has never been true in a deployment.
+
+<details><summary>The original stateless design (historical)</summary>
 
 ```
 browser (PixiJS game)
@@ -37,6 +67,8 @@ Content pool (Vercel KV / Upstash Redis or Supabase Postgres)
    – every generated stand/item/event/enemy is persisted and REUSED:
      the more people play, the bigger the shared pool grows.
 ```
+
+</details>
 
 - Official Anthropic SDK (`@anthropic-ai/sdk`) inside the functions — not an
   OpenAI-compat shim. All generation uses **structured outputs**

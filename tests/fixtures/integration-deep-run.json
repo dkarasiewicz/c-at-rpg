@@ -1,0 +1,212 @@
+{
+  "version": 3,
+  "run": {
+    "runSeed": "DEEP-0",
+    "floorNum": 6,
+    "cats": [
+      {
+        "classId": "bruiser",
+        "hp": 24,
+        "lives": 9,
+        "weapon": {
+          "uid": 1,
+          "defId": "mittsOfMenace",
+          "itemLevel": 1,
+          "rarity": "stray",
+          "stats": {
+            "atk": 2
+          }
+        },
+        "trinket": {
+          "uid": 5,
+          "defId": "spikedCollar",
+          "itemLevel": 4,
+          "rarity": "pedigree",
+          "stats": {
+            "atk": 5,
+            "def": 2,
+            "crt": 5
+          }
+        },
+        "tempMods": [],
+        "energyNextBattle": 0,
+        "points": {
+          "hp": 4,
+          "atk": 3
+        },
+        "collar": {
+          "uid": 7,
+          "defId": "batteryCollar",
+          "itemLevel": 7,
+          "rarity": "pedigree",
+          "stats": {
+            "enMax": 3,
+            "def": 2,
+            "hp": 13
+          }
+        }
+      },
+      {
+        "classId": "trickster",
+        "hp": 1,
+        "lives": 8,
+        "weapon": {
+          "uid": 2,
+          "defId": "ribbonRapier",
+          "itemLevel": 1,
+          "rarity": "stray",
+          "stats": {
+            "atk": 2
+          }
+        },
+        "trinket": null,
+        "tempMods": [],
+        "energyNextBattle": 0,
+        "points": {
+          "hp": 4,
+          "atk": 3
+        }
+      },
+      {
+        "classId": "hexer",
+        "hp": 27,
+        "lives": 9,
+        "weapon": {
+          "uid": 3,
+          "defId": "tangleTalisman",
+          "itemLevel": 1,
+          "rarity": "stray",
+          "stats": {
+            "atk": 2
+          }
+        },
+        "trinket": null,
+        "tempMods": [
+          {
+            "stat": "crt",
+            "amount": 5,
+            "duration": "run",
+            "sourceEventId": "redDot"
+          }
+        ],
+        "energyNextBattle": 0,
+        "points": {
+          "hp": 4,
+          "atk": 3
+        }
+      },
+      {
+        "classId": "medic",
+        "hp": 66,
+        "lives": 9,
+        "weapon": {
+          "uid": 6,
+          "defId": "chimeBell",
+          "itemLevel": 4,
+          "rarity": "sleek",
+          "stats": {
+            "atk": 6,
+            "hp": 7
+          }
+        },
+        "trinket": null,
+        "tempMods": [],
+        "energyNextBattle": 0,
+        "points": {
+          "hp": 4,
+          "atk": 3
+        }
+      }
+    ],
+    "marchingOrder": [
+      "bruiser",
+      "hexer",
+      "trickster"
+    ],
+    "xp": 570,
+    "level": 8,
+    "inventory": {
+      "shinies": 999,
+      "slots": [
+        {
+          "defId": "tunaSnack",
+          "count": 4
+        },
+        {
+          "defId": "cardboardBox",
+          "count": 1
+        },
+        {
+          "defId": "featherWand",
+          "count": 1
+        },
+        {
+          "uid": 4,
+          "defId": "chimeBell",
+          "itemLevel": 1,
+          "rarity": "stray",
+          "stats": {
+            "atk": 2
+          }
+        },
+        {
+          "defId": "canOpenerRecording",
+          "count": 1
+        },
+        {
+          "defId": "squeakyToy",
+          "count": 5
+        },
+        {
+          "defId": "sardineTin",
+          "count": 1
+        },
+        {
+          "defId": "bagOfFleas",
+          "count": 2
+        },
+        {
+          "defId": "catnip",
+          "count": 1
+        },
+        null,
+        {
+          "defId": "theCucumber",
+          "count": 1
+        },
+        null,
+        null,
+        null,
+        null,
+        null
+      ],
+      "nextUid": 8
+    },
+    "score": {
+      "floorsCleared": 6,
+      "floorsReached": 6,
+      "enemiesDefeated": 52,
+      "bossesDefeated": 2,
+      "catPiles": 0,
+      "shiniesCollected": 984
+    },
+    "firedEventIds": [
+      "yarnBall",
+      "redDot",
+      "milkBowl",
+      "catnipPatch"
+    ],
+    "floorFiredEventIds": [],
+    "uniquesDropped": [],
+    "currentNodeId": 11,
+    "visitedNodeIds": [
+      0,
+      1,
+      3,
+      5,
+      8,
+      11
+    ],
+    "playTimeMs": 0
+  }
+}

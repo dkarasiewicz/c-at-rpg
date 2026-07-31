@@ -11,12 +11,11 @@
 import { CONSUMABLES } from "../../src/content/consumables.js";
 import { EQUIP_DEFS } from "../../src/content/equipment.js";
 import type { ItemId } from "../../src/core/types.js";
-// MIGRATION NOTE: `EVENT_CAPS` is the per-floor numeric cap table
-// (docs/design/run-map-and-dm.md §3 "per-floor numeric caps, exactly as
-// /api/gm/eventResolve already does"). It lives in the api package today. When
-// `api/gm/*` is retired, move EVENT_CAPS into `src/core` (or here) and update
-// this one import — do NOT copy the numbers.
-import { EVENT_CAPS } from "../../api/_lib/constraints.js";
+// `EVENT_CAPS` is the per-floor numeric cap table (docs/design/run-map-and-dm.md
+// §3). It has exactly one home — `src/services/caps.ts` — which the browser's
+// re-lint reads too, so the DM cannot be briefed on numbers the client will
+// then reject. Never copy them.
+import { EVENT_CAPS } from "../../src/services/caps.js";
 
 export { EVENT_CAPS };
 

@@ -107,8 +107,11 @@ export function placeDef(id: PlaceId): PlaceDef {
  */
 export const BUILTIN_UNLOCKS: readonly UnlockDef[] = [
   /* ---- THE BOWLS — how many cats descend ----------------------------
-   * A run fields two and recruits a third on its own (§2). The FOURTH
-   * bowl is the only one the town has to buy. */
+   * A run FIELDS two and has room for a third from the start (§2), but the
+   * third has to be somebody the town actually houses: `startRun` stamps the
+   * class pool onto the run and `recruitCat` recruits from it, so the stoop
+   * below is what makes floor 3's recruit possible at all. The FOURTH bowl
+   * is what the town buys on top of that. */
   {
     id: "slot:fourth",
     name: "A Fourth Bowl",

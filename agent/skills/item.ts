@@ -1,12 +1,12 @@
 /**
- * One-shot parity with POST /api/gm/item.
+ * The one-shot item generator (was POST /api/gm/item).
  *
  * The Mewthical hook menu is interpolated from `MEW_HOOKS` (the shipped
  * `MewHookId` union) so the instructions cannot advertise a hook the engine
  * does not implement.
  */
 import { defineSkill } from "eve/skills";
-import { MEW_HOOKS } from "../../api/_lib/constraints.js";
+import { MEW_HOOKS } from "../../src/services/caps.js";
 
 export default defineSkill({
   description:
@@ -18,7 +18,7 @@ export default defineSkill({
 You author ONE equipment definition in the exact \`EquipDef\` shape. Answer the
 schema and nothing else.
 
-## Hard rules (a server-side lint rejects violations)
+## Hard rules (\`lintItem\` rejects violations before anything is kept)
 
 - \`id\`: fresh camelCase; must not collide with a shipped item.
 - \`slot\`: \`weapon\` or \`trinket\`. \`classId\` only on weapons, and only

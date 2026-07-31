@@ -17,13 +17,13 @@
  * `lintImprovisation()` from `core/combat/powers.ts` — literally the function
  * `resolveAction`'s improvise case runs a second time. Out of combat the
  * structure is `validateEvents()` from `core/events/validate.ts` — literally
- * the validator the shipped content passes. The only local numbers are the two
- * per-floor cap tables, which are MIRRORS of the authoring-side tables and are
- * asserted equal to them in tests/tabletop.spec.ts (the same pattern
- * `resonancePairKey` in gm.ts already uses).
+ * the validator the shipped content passes. The per-floor numbers are
+ * `services/caps.ts` — literally the table the agent is briefed from. There
+ * are no mirrors left to keep in step (there were two, and two parity tests
+ * to police them; both went with `api/gm/*`).
  *
- * Layer note: this is the ui-side services package, like gm.ts — no pixi, no
- * network, no `Math.random`, so it is unit-testable headless.
+ * Layer note: this is the ui-side services package — no pixi, no network, no
+ * `Math.random`, so it is unit-testable headless.
  */
 import type {
   BattleState,
@@ -33,21 +33,38 @@ import type {
   Scalar,
 } from "../core/types.js";
 import type { EffectSpec } from "../core/combat/powerTypes.js";
-import {
-  BUDGET_CAPS,
-  EFFECT_CAPS,
-  lintImprovisation,
-} from "../core/combat/powers.js";
+import { lintImprovisation } from "../core/combat/powers.js";
 import type { ImproviseAction } from "../core/combat/resolve.js";
 import { validateEvents } from "../core/events/validate.js";
 import { resolveScalar } from "../core/events/resolve.js";
+import {
+  EVENT_CAPS,
+  MAX_FLOOR,
+  MIN_FLOOR,
+  floorDamageCap,
+  floorHealCap,
+  floorRamp,
+  improvBudgetCap,
+} from "./caps.js";
 
 /* ------------------------------------------------------------------------ */
 /* §1 Contracts                                                              */
 /* ------------------------------------------------------------------------ */
 
-export const MIN_FLOOR = 1;
-export const MAX_FLOOR = 6;
+/**
+ * The per-floor tables live in `./caps.ts` — the ONE home the agent reads
+ * them from too. Re-exported here so the scenes and tests that have always
+ * imported them from the tabletop layer still can.
+ */
+export {
+  EVENT_CAPS,
+  MAX_FLOOR,
+  MIN_FLOOR,
+  floorDamageCap,
+  floorHealCap,
+  floorRamp,
+  improvBudgetCap,
+};
 
 /** Longest narration the UI will render (the agent schema caps it too). */
 export const MAX_NARRATION = 400;
@@ -87,7 +104,7 @@ export interface CombatVerdict {
  * consequences the design lists are "damage, heal, status, shinies, an item,
  * a remembered flag" — shinies and items only exist in the event union, and
  * `resolveOption` is the shipped path that applies them with every clamp
- * intact. `GmEventResolveOutcome` (gm.ts) is this minus `allowed`.
+ * intact.
  */
 export interface EncounterVerdict {
   allowed: boolean;
@@ -163,53 +180,7 @@ export type TabletopRun = RunState & {
 };
 
 /* ------------------------------------------------------------------------ */
-/* §2 Per-floor caps (mirrors — parity-asserted in tests/tabletop.spec.ts)   */
-/* ------------------------------------------------------------------------ */
-
-/**
- * MIRROR of `floorRamp` in `agent/lib/effects.ts`. Floor 1 improvisation is
- * worth 3/8 of a full Stand power, floor 6 exactly one — never more.
- * The browser cannot import agent code (and must not pull zod into the game
- * bundle), so the formula is restated and pinned by a parity test.
- */
-export function floorRamp(floor: number): number {
-  const f = Math.min(MAX_FLOOR, Math.max(MIN_FLOOR, Math.floor(floor)));
-  return (2 + f) / 8;
-}
-
-/** Budget ceiling for one improvised action on this floor. */
-export function improvBudgetCap(floor: number): number {
-  return BUDGET_CAPS.cat * floorRamp(floor);
-}
-
-/** Per-floor ceiling on a single damage effect. */
-export function floorDamageCap(floor: number): number {
-  return Math.round(EFFECT_CAPS.damagePct * floorRamp(floor));
-}
-
-/** Per-floor ceiling on a single heal effect. */
-export function floorHealCap(floor: number): number {
-  return Math.round(EFFECT_CAPS.healPct * floorRamp(floor));
-}
-
-/**
- * MIRROR of `EVENT_CAPS` in `api/_lib/constraints.ts` — the numeric caps the
- * GM's free-text event verdicts have always been linted against server-side.
- * `src/` must not import from `api/`, so the table is restated and pinned by
- * a parity test, exactly like `resonancePairKey` in gm.ts.
- */
-export const EVENT_CAPS_MIRROR = {
-  damageMax: (floor: number): number => 5 + 3 * floor,
-  healMax: (floor: number): number => 10 + 5 * floor,
-  shiniesMax: (floor: number): number => 30 + 10 * floor,
-  buffMax: 3,
-  energyMax: 6,
-  restoreLifeMax: 2,
-  itemCountMax: 3,
-} as const;
-
-/* ------------------------------------------------------------------------ */
-/* §3 Structural guards (hand-rolled, no deps — gm.ts house style)           */
+/* §2 Structural guards (hand-rolled, no deps)                               */
 /* ------------------------------------------------------------------------ */
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -256,8 +227,41 @@ function isEffectSpec(v: unknown): v is EffectSpec {
   }
 }
 
+/**
+ * The CLOSED set of `Effect.kind`s an out-of-combat verdict may contain —
+ * the `core/types.ts` union, spelled out.
+ *
+ * `validateEvents` checks the *shape* of the effects it recognises but has no
+ * opinion on a `kind` it has never heard of, so a payload like
+ * `{ kind: "grantOmnipotence", … }` used to sail through the structural pass
+ * and land in `resolveOption` as an unhandled branch. Defence in depth means
+ * an unknown kind is REJECTED, not ignored: a verdict is only applied when
+ * every effect in it is one the engine actually implements.
+ */
+export const ENCOUNTER_EFFECT_KINDS: readonly Effect["kind"][] = [
+  "heal",
+  "damage",
+  "buff",
+  "shinies",
+  "giveItem",
+  "takeItem",
+  "restoreLife",
+  "energyNextBattle",
+  "fight",
+  "nothing",
+];
+
+const KNOWN_EFFECT_KINDS: ReadonlySet<string> = new Set(ENCOUNTER_EFFECT_KINDS);
+
+/** Is `v` an object whose `kind` is a member of the shipped Effect union? */
+function isKnownEffectKind(v: unknown): v is Effect {
+  return (
+    isRecord(v) && typeof v.kind === "string" && KNOWN_EFFECT_KINDS.has(v.kind)
+  );
+}
+
 /* ------------------------------------------------------------------------ */
-/* §4 Verdict validation — defence in depth                                  */
+/* §3 Verdict validation — defence in depth                                  */
 /* ------------------------------------------------------------------------ */
 
 export interface VerdictCheck<T> {
@@ -391,8 +395,8 @@ const numericScalar = (s: Scalar, floor: number): number =>
 /**
  * Re-lint an out-of-combat verdict CLIENT-SIDE. Structure goes through the
  * SAME `validateEvents` the shipped content passes (by wrapping the verdict
- * in a synthetic two-option event, exactly as `gm.ts#requestGmEventResolve`
- * does), then the per-floor `EVENT_CAPS` mirror runs on top.
+ * in a synthetic two-option event), then the per-floor `EVENT_CAPS` table
+ * from `./caps.ts` runs on top.
  */
 export function validateEncounterVerdict(
   raw: unknown,
@@ -417,6 +421,12 @@ export function validateEncounterVerdict(
   const problems: string[] = [];
   if (rawEffects.length > 3) problems.push("more than 3 effects");
   if (!rawEffects.every(isRecord)) problems.push("effect is not an object");
+  // an unknown `kind` is a rejection, not a shrug: `validateEvents` only
+  // inspects the members it knows, so this is the gate that keeps a made-up
+  // effect out of `resolveOption` entirely.
+  else if (!rawEffects.every(isKnownEffectKind)) {
+    problems.push("effect kind outside the engine's union");
+  }
   if (problems.length > 0)
     return { verdict: narrated, applied: false, problems };
 
@@ -444,38 +454,38 @@ export function validateEncounterVerdict(
   for (const e of effects) {
     switch (e.kind) {
       case "damage":
-        if (numericScalar(e.amount, f) > EVENT_CAPS_MIRROR.damageMax(f)) {
+        if (numericScalar(e.amount, f) > EVENT_CAPS.damageMax(f)) {
           problems.push(`damage above floor-${f} cap`);
         }
         break;
       case "heal":
-        if (numericScalar(e.amount, f) > EVENT_CAPS_MIRROR.healMax(f)) {
+        if (numericScalar(e.amount, f) > EVENT_CAPS.healMax(f)) {
           problems.push(`heal above floor-${f} cap`);
         }
         break;
       case "shinies":
-        if (numericScalar(e.amount, f) > EVENT_CAPS_MIRROR.shiniesMax(f)) {
+        if (numericScalar(e.amount, f) > EVENT_CAPS.shiniesMax(f)) {
           problems.push(`shinies above floor-${f} cap`);
         }
         break;
       case "buff":
-        if (Math.abs(e.amount) > EVENT_CAPS_MIRROR.buffMax) {
+        if (Math.abs(e.amount) > EVENT_CAPS.buffMax) {
           problems.push("buff above cap");
         }
         break;
       case "energyNextBattle":
-        if (Math.abs(e.amount) > EVENT_CAPS_MIRROR.energyMax) {
+        if (Math.abs(e.amount) > EVENT_CAPS.energyMax) {
           problems.push("energy above cap");
         }
         break;
       case "restoreLife":
-        if (e.amount > EVENT_CAPS_MIRROR.restoreLifeMax) {
+        if (e.amount > EVENT_CAPS.restoreLifeMax) {
           problems.push("restoreLife above cap");
         }
         break;
       case "giveItem":
       case "takeItem":
-        if ((e.count ?? 1) > EVENT_CAPS_MIRROR.itemCountMax) {
+        if ((e.count ?? 1) > EVENT_CAPS.itemCountMax) {
           problems.push("item count above cap");
         }
         break;
@@ -487,6 +497,17 @@ export function validateEncounterVerdict(
         break;
       case "nothing":
         break;
+      default: {
+        // compile-time exhaustiveness: adding an Effect kind to core/types.ts
+        // without deciding its tabletop cap breaks the build here.
+        const unreachable: never = e;
+        problems.push(
+          `effect kind outside the engine's union: ${String(
+            (unreachable as { kind?: unknown }).kind,
+          )}`,
+        );
+        break;
+      }
     }
   }
   if (problems.length > 0)
@@ -495,7 +516,7 @@ export function validateEncounterVerdict(
 }
 
 /* ------------------------------------------------------------------------ */
-/* §5 The transcript                                                         */
+/* §4 The transcript                                                         */
 /* ------------------------------------------------------------------------ */
 
 /**

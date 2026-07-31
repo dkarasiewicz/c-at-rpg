@@ -15,7 +15,7 @@
  * versions migrate forward instead — a v1/v2 (tile-dungeon) save loads into a
  * freshly generated run map at the same floor rather than being thrown away.
  */
-import type { MetaFile, RunState, SaveFile, SaveVersion } from "../types.js";
+import type { RunState, SaveFile, SaveVersion } from "../types.js";
 import type { MetaProfile } from "../meta/types.js";
 import { generateFloorMap } from "../map/generate.js";
 import { META_VERSION, emptyProfile, migrateMeta } from "../meta/profile.js";
@@ -54,6 +54,24 @@ export const localStorageAdapter: StorageAdapter = {
   set: (k, v) => globalThis.localStorage?.setItem(k, v),
   remove: (k) => globalThis.localStorage?.removeItem(k),
 };
+
+/**
+ * How every function in this file takes its storage.
+ *
+ * It used to be a trailing positional parameter, which put it in a DIFFERENT
+ * argument position depending on whether the call had a payload
+ * (`saveMeta(meta, storage)` vs `loadMeta(storage)`) — two orders for one
+ * concept, and an easy mis-call. Naming it removes the order entirely: the
+ * slot is `opts.storage` in all five functions, and production callers (which
+ * never inject) keep writing `saveMeta(meta)` / `loadMeta()`.
+ */
+export interface SaveOpts {
+  /** Where to read/write. Defaults to real localStorage. */
+  storage?: StorageAdapter;
+}
+
+const storageOf = (opts?: SaveOpts): StorageAdapter =>
+  opts?.storage ?? localStorageAdapter;
 
 /** Map-backed stub for tests. */
 export function memoryStorage(): StorageAdapter {
@@ -146,20 +164,16 @@ export function deserializeRun(sf: SaveFile): RunState {
 /* ------------------------------------------------------------------ */
 
 /** Autosave: one synchronous JSON blob (gameloop.md §9). */
-export function saveRun(
-  run: RunState,
-  storage: StorageAdapter = localStorageAdapter,
-): void {
-  storage.set(SAVE_KEY, JSON.stringify(serializeRun(run)));
+export function saveRun(run: RunState, opts?: SaveOpts): void {
+  storageOf(opts).set(SAVE_KEY, JSON.stringify(serializeRun(run)));
 }
 
 /**
  * Load the save, or null. Unparseable / version-mismatched saves are
  * silently DELETED (title's Continue shows iff this returns non-null).
  */
-export function loadRun(
-  storage: StorageAdapter = localStorageAdapter,
-): RunState | null {
+export function loadRun(opts?: SaveOpts): RunState | null {
+  const storage = storageOf(opts);
   const raw = storage.get(SAVE_KEY);
   if (raw === null) return null;
   try {
@@ -176,10 +190,8 @@ export function loadRun(
 }
 
 /** Deleted on RESULTS entry (both outcomes) and on Abandon. */
-export function deleteSave(
-  storage: StorageAdapter = localStorageAdapter,
-): void {
-  storage.remove(SAVE_KEY);
+export function deleteSave(opts?: SaveOpts): void {
+  storageOf(opts).remove(SAVE_KEY);
 }
 
 /* ------------------------------------------------------------------ */
@@ -204,10 +216,8 @@ export function emptyMeta(): MetaProfile {
  * or unknown-version payloads fall back to a fresh profile — the same
  * silent-discard rule the run save uses.
  */
-export function loadMeta(
-  storage: StorageAdapter = localStorageAdapter,
-): MetaProfile {
-  const raw = storage.get(META_KEY);
+export function loadMeta(opts?: SaveOpts): MetaProfile {
+  const raw = storageOf(opts).get(META_KEY);
   if (raw === null) return emptyProfile();
   try {
     return migrateMeta(JSON.parse(raw)) ?? emptyProfile();
@@ -216,11 +226,14 @@ export function loadMeta(
   }
 }
 
-export function saveMeta(
-  meta: MetaFile,
-  storage: StorageAdapter = localStorageAdapter,
-): void {
-  storage.set(META_KEY, JSON.stringify(meta));
+/**
+ * Write the profile. Takes a `MetaProfile`, NOT the narrower `MetaFile`:
+ * `loadMeta` returns a profile, and accepting the v1 records-only shape here
+ * made `saveMeta(loadMeta())` type-check while silently allowing a caller to
+ * persist a blob with no wallet, unlocks, history or bestiary.
+ */
+export function saveMeta(meta: MetaProfile, opts?: SaveOpts): void {
+  storageOf(opts).set(META_KEY, JSON.stringify(meta));
 }
 
 /**

@@ -489,8 +489,8 @@ describe("the run log — replay never re-consults a model", () => {
       problems: [],
     });
     const storage = memoryStorage();
-    saveRun(r, storage);
-    const back = loadRun(storage) as PresenceRun | null;
+    saveRun(r, { storage });
+    const back = loadRun({ storage }) as PresenceRun | null;
     const p = presenceOf(back);
     expect(p.used).toBe(1);
     expect(p.lastAtMs).toBe(5_000);

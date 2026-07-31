@@ -2,13 +2,16 @@
 
 The Dungeon Master (docs/design/run-map-and-dm.md §4) is a
 [Vercel **eve**](https://eve.dev/docs) agent living in `agent/` at the repo
-root. It replaces the six stateless `api/gm/*` functions with **one agent that
+root. It replaced the six stateless `api/gm/*` functions with **one agent that
 holds a durable session per run**, so it remembers the whole adventure: that the
 party bribed the rat king on floor 2, that Baguette is out of lives, that they
 promised the elder stray they would come back.
 
-`api/gm/*` is still live and still what the client calls. Nothing is deleted
-until parity is proven — see [Migration](#migration).
+**`api/gm/*` is gone.** The migration is finished: the endpoints, their
+`api/_lib` support and the game's whole `api/` directory are deleted, and the
+browser talks only to this agent. What each endpoint became is recorded in
+[Where the endpoints went](#where-the-endpoints-went); the one capability that
+did NOT survive is in [What the agent does not cover](#what-the-agent-does-not-cover).
 
 The offline-first invariant is unchanged: no DM reachable ⇒ the typed-action
 input is hidden and the game is fully playable on authored content. A 401, a
@@ -25,6 +28,7 @@ chose not to use the DM".
 | `agent/lib/effects.ts` | the zod mirror of the engine's `EffectSpec` union + the per-floor ramp; pricing is **imported** from `src/core/combat/powers.ts`, never reimplemented |
 | `agent/lib/memory.ts` | `defineState` run memory: the fact ledger and the emission ledger |
 | `agent/lib/catalog.ts` | the closed item menu and the per-floor shinies cap |
+| `agent/lib/pool.ts` | the shared content pool (Upstash REST or in-memory). SERVER-SIDE ONLY — it reads `process.env`, so `src/` never imports it. It outlived `api/` because `contribute_content` and `scripts/seed-pool.ts` write to it |
 | `agent/lib/oneshot.ts` | output schemas for the one-shot capabilities, with compile-time parity assertions against `src/core/types.ts` / `src/services/gmTypes.ts` |
 | `agent/tools/narrate.ts` | flavour text only — no mechanics, and the home of refusals |
 | `agent/tools/apply_effect.ts` | 1–3 bounded `EffectSpec`s, floor-capped, budget-linted |
@@ -48,10 +52,14 @@ emits is checked by machinery that already exists and is already tested:
 - **The price.** `lintImprovisedEffects()` wraps the effects in a synthetic
   `activated` `PowerScript` and runs the engine's own `powerBudget()` +
   `validatePowerScript()` — the same functions `initPowersState()` runs at
-  battle setup and `api/_lib/powers.ts` runs server-side.
+  battle setup and `src/services/powerLint.ts` runs in the browser on every
+  verdict.
 - **The floor.** A ramp of `(2 + floor) / 8` scales the shipped caps: floor 1
   improvisation is worth 3/8 of a full Stand power, floor 6 exactly one. It can
-  never exceed `BUDGET_CAPS.cat`, `EFFECT_CAPS.damagePct`, or the rest.
+  never exceed `BUDGET_CAPS.cat`, `EFFECT_CAPS.damagePct`, or the rest. The ramp
+  and the per-floor `EVENT_CAPS` table live in **`src/services/caps.ts`, once**;
+  the agent and the browser both import them, so the numbers the DM is briefed
+  with are by construction the numbers the client will accept.
 - **Defence in depth.** The tools *authorise*; they do not execute. The client
   re-lints on application (docs/design/run-map-and-dm.md §3), so a tampered
   response degrades to pure narration.
@@ -62,8 +70,9 @@ emits is checked by machinery that already exists and is already tested:
 
 Model ids are **AI Gateway slugs** (`anthropic/claude-haiku-4.5`), so the
 deployment authenticates with its own OIDC token. **There is no provider API
-key to manage** — nothing like the `ANTHROPIC_API_KEY` the `api/gm/*` functions
-need.
+key to manage** — nothing like the `ANTHROPIC_API_KEY` the retired `api/gm/*`
+functions needed. The game's own Vercel project now ships **no serverless
+functions at all**; `vercel.json` carries only the schema line.
 
 For local development against the gateway, either link the Vercel project (eve
 pulls `VERCEL_OIDC_TOKEN`) or set `AI_GATEWAY_API_KEY` in `.env.local`.
@@ -76,7 +85,7 @@ pulls `VERCEL_OIDC_TOKEN`) or set `AI_GATEWAY_API_KEY` in `.env.local`.
 | `AI_GATEWAY_API_KEY` | local only | no | gateway credential when the project is not linked |
 | `VERCEL_OIDC_TOKEN` | pulled by `eve link` | — | how a linked project reaches the gateway |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | local | no | set before `eve dev <url>` if the deployment has Deployment Protection on |
-| `VITE_GM_URL` | game build | later | points the client seam at the DM. Not used yet — the client still calls `/api/gm/*`. |
+| `VITE_DM_URL` | game build | **yes, for any DM feature** | absolute origin of this deployment, e.g. `https://c-at-rpg-dm.vercel.app`. UNSET IS A SUPPORTED STATE: the probe short-circuits without a request and the game plays offline on authored content. But with it unset there is no party generation, no typed actions and no resonance — there is no `/api` fallback any more. |
 
 ## Deploy
 
@@ -183,9 +192,9 @@ keep the ordering.
 
 ## Structured (one-shot) calls
 
-Everything `api/gm/*` does today survives as a schema'd one-shot. Pass the
-matching schema from `agent/lib/oneshot.ts` as `outputSchema` and read
-`result.data`:
+Everything `api/gm/*` did survives as a schema'd one-shot. A server-side caller
+passes the matching zod schema from `agent/lib/oneshot.ts` as `outputSchema`
+and reads `result.data`:
 
 ```ts
 import { Client } from "eve/client";
@@ -200,25 +209,115 @@ const { data } = await response.result();   // GeneratedCatKit[4], schema-valid
 ```
 
 Each schema carries a compile-time parity assertion against the shipped core
-contract, so the payload shape cannot drift from what `src/services/gm.ts`
-already re-validates.
+contract, so the payload shape cannot drift from what the browser re-validates.
 
-### Endpoint → capability
+**The browser does not use `eve/client`.** It would drag zod and a
+server-and-tooling SDK into the game bundle for four routes, so
+`src/services/dm.ts` speaks the HTTP protocol with `fetch` and
+`src/services/oneshot.ts` passes the same schemas **as raw JSON Schema**
+(`PARTY_SCHEMA`, `RESONANCE_SCHEMA`) — eve rehydrates them server-side. The two
+spellings are the same contract; the zod ones carry the compile-time assertions.
 
-| Today | On the agent |
+### Where the endpoints went
+
+| Retired | Where it lives now |
 |---|---|
-| `POST /api/gm/party` | `session.send({ outputSchema: partyOutputSchema })` + the `party` skill |
-| `POST /api/gm/item` | `session.send({ outputSchema: itemOutputSchema })` + the `item` skill |
-| `POST /api/gm/event` | `session.send({ outputSchema: eventOutputSchema })` + the `event` skill |
-| `POST /api/gm/resonance` | `session.send({ outputSchema: resonanceOutputSchema })` + the `resonance` skill |
-| `POST /api/gm/eventResolve` | a conversational beat → the `apply_effect` tool (same caps, now with run memory behind it) |
-| `POST /api/gm/steer` | subsumed by durable memory + `offer_encounter` (the director no longer needs a round trip to know how the run is going) |
-| `GET /api/gm/health` | `GET /eve/v1/health` |
+| `POST /api/gm/party` | `services/oneshot.ts#requestDmParty` → `session.send({ outputSchema: PARTY_SCHEMA })` + the `party` skill, then **lint → regenerate → salvage** (see below), budget stamping via `normalizePower()`, and `stand.visualPrompt` composed through `artPrompt.ts`. Every one of those steps used to happen inside the function |
+| `POST /api/gm/resonance` | `services/oneshot.ts#requestDmResonance` + the `resonance` skill. `readResonanceVerdict` stamps `pairKey` / `version` / recomputed `budget` and lints at `BUDGET_CAPS.resonance`. **The memo store did not survive — see below** |
+| `POST /api/gm/eventResolve` | a conversational beat: `services/dm.ts#requestEncounterVerdict`, re-linted by `tabletop.ts#validateEncounterVerdict` against the same `EVENT_CAPS`, now with run memory behind it |
+| `POST /api/gm/item` | `session.send({ outputSchema: itemOutputSchema })` + the `item` skill. **No game caller** — loot rolls from the static tables |
+| `POST /api/gm/event` | `session.send({ outputSchema: eventOutputSchema })` + the `event` skill. **No game caller** — events draw from `content/events.ts` |
+| `POST /api/gm/steer` | subsumed by durable memory + `offer_encounter`. **No game caller** — it was never wired |
+| `GET /api/gm/health` | deleted. It reported which Anthropic credential the function resolved; there is no such credential any more. Liveness is `GET /eve/v1/health` (curl) / `GET /eve/v1/info` (browser) |
 
-Memoisation (the Redis pool behind `party` / `item` / `event` / `resonance`) is
-**not** part of the agent. Resonance compilation in particular is memoized
-forever by design (stand-powers.md Layer 3), so whatever calls the agent keeps
-owning that cache — the agent is the compiler, not the store.
+The lints those endpoints ran did not move to the model — they moved to the
+CONSUMER. `src/services/contentLint.ts` (`lintParty`, `lintEvent`, `lintItem`)
+and `src/services/powerLint.ts` are imported by the browser AND by the agent's
+`contribute_content` tool, so a payload is checked by the same function
+wherever it lands.
+
+### The regenerate-on-invalid turn is load-bearing
+
+`api/_lib/generate.ts` wrapped every generation in *generate → lint →
+regenerate once with the violations → salvage*. The agent has no equivalent:
+`agent/skills/party.ts` states the budgets, but nothing makes it check its own
+arithmetic (only the `encounter` subagent has a self-correcting tool,
+`check_effect_budget`). Measured against the deployed DM, a first party answer
+routinely breaks them — a representative run:
+
+```
+kit 0 (Sparks): base.crt=3 outside 5..15
+kit 2 (Velocity): base.crt=17 outside 5..15
+kit 0 (Sparks) skill 3 ('staticBurst'): row-pattern power above 60
+power 'power:staticWhispers': budget 16.5 exceeds cap 12      (3 of 4 powers over cap)
+```
+
+So `requestDmParty` sends the violation list back as **the next turn of the
+same session** — the model sees its own answer and the exact arithmetic it got
+wrong, which is cheaper and more effective than a fresh generation. It gets
+`PARTY_RETRIES` (2) of those, one more than the endpoint's single regenerate,
+because the endpoint's retry was a Sonnet-class re-roll and these are haiku-class
+corrections that tend to fix one thing and break another. Only when the turns
+run out does `salvagePartyPowers` swap the offending powers for
+`STOCK_POWERS[role]`; only a kit-level failure loses the party, and then the
+creator falls back to the four canonical strays exactly as it always did.
+
+**Budget the wait accordingly.** Measured turn latencies against the deployed
+agent: 39s, 60s, 68s, and once over 90s. `DM_PARTY_TIMEOUT_MS` is therefore
+**120s per turn**, and a party is minutes, not seconds. Two consecutive
+end-to-end runs of `requestDmParty` at the 90s setting:
+
+```
+run 0: 155053ms -> OK    (2 turns; lintParty clean; 3 powers kept,
+                          1 salvaged to the stock control power; all
+                          budgets stamped, all art prompts composed)
+run 1:  90012ms -> NULL  (first turn exceeded the timeout → the Strays)
+```
+
+A `NULL` there is not a bug, it is the offline path: the creator toasts and
+starts a normal run. (`src/services/gm.ts` used a flat 8s for every call — which
+the old Sonnet-backed `/api/gm/party` with `maxDuration: 60` cannot ever have
+beaten. The creator's "GM offline, using the Strays" path was quietly doubling
+as its timeout path.)
+
+**If party generation needs to be more reliable, change the model, not the
+prompt.** The endpoint ran party on `GM_PARTY_MODEL`
+(`anthropic/claude-sonnet-5`) precisely because it is the hard creative ask;
+`agent/agent.ts` runs everything on `anthropic/claude-haiku-4.5`. A party
+subagent with its own stronger model is the clean fix, and it is an `agent/`
+change, not a client one.
+
+## What the agent does not cover
+
+Two things. Neither is a reason to bring an endpoint back; both are recorded
+here so the next person does not rediscover them by accident.
+
+**1. Self-correcting arithmetic on the one-shots.** Covered above — the client
+now owns the regenerate loop `api/_lib/generate.ts` used to. The proper fix
+lives in `agent/`.
+
+**2. Global resonance memoisation.** `POST /api/gm/resonance` kept a keyed
+`interactions` row per pair, so a verdict compiled by one player was reused by
+every other player, forever — stand-powers.md Layer 3 calls that memoisation
+part of the design. The agent has no such store (memoisation was always the
+caller's job, and the caller is now a browser), so verdicts are cached in a
+`Map` for the life of one browser session and `firstDiscoveredBy` is gone.
+
+Two things make this a smaller regression than it reads:
+
+- it was **never live**. `GET /api/gm/health` on the production game reported
+  `poolBacked: false` — `UPSTASH_REDIS_REST_URL` was never set, so the "shared"
+  memo was a per-warm-lambda `Map` that evaporated on every cold start;
+- a wrong or missing verdict is not a failure. `rule: null` and "not fetched
+  yet" both mean the battle runs on base rules, and the pair recompiles next
+  session.
+
+The right home for it is the agent, not another endpoint: `agent/lib/pool.ts`
+already offers `getEntry`/`setEntry` on a keyed `interactions` table and the DM
+already writes to the pool via `contribute_content`. A `resonance_memo` tool (or
+a pool read inside the `resonance` skill) restores the global codex without
+bringing back a serverless function or a second model credential. Provision
+Upstash first, or it will be exactly as inert as it was.
 
 ## The combat path
 
@@ -245,40 +344,50 @@ Every adjudication should be recorded into the run log as
 same transcript reproduces the run exactly and never re-consults the model
 (docs/design/run-map-and-dm.md §3).
 
-## Migration
+## Migration (done)
 
-1. `api/gm/*` keeps working while the agent is built. **Do not delete it yet.**
-2. Move one capability at a time behind the single client seam
-   (`src/services/gm.ts`), prove parity, then retire that endpoint.
-3. **`agent/lib/catalog.ts` imports `EVENT_CAPS` from
-   `api/_lib/constraints.ts`** — the per-floor numeric cap table, deliberately
-   shared rather than copied. When `api/gm/*` is finally deleted, move
-   `EVENT_CAPS` (and `ROLE_STAT_TOTALS` / `MEW_HOOKS`, used by
-   `agent/skills/*.ts`) into `src/core` and update those imports. Do not
-   duplicate the numbers.
-4. **The tabletop UI has landed** (`src/services/tabletop.ts`,
-   `src/services/dm.ts`, `src/ui/overlays/tabletopBar.ts`, and the `[T]` paths
-   in `scenes/battle.ts` / `scenes/event.ts`). The client mirrors
-   `agent/lib/effects.ts`'s floor ramp and `api/_lib/constraints.ts`'s
-   `EVENT_CAPS` rather than importing them (the browser must not pull in agent
-   or api code, or zod); both mirrors are pinned to their originals by parity
-   tests in `tests/tabletop.spec.ts` over every floor. When `EVENT_CAPS` and
-   `floorRamp` move into `src/core` per item 3, delete the mirrors and the
-   parity tests with them.
-5. **The event scene asks the DM first.** `probeDm()` runs, and only if it says
-   no does `probeGm()` fire — so a reachable agent costs zero legacy requests.
+Kept as a record of where things moved, because half of it is load-bearing.
+
+| Was | Is |
+|---|---|
+| `api/_lib/constraints.ts` | split: numeric tables → `src/services/caps.ts`, lints → `src/services/contentLint.ts` |
+| `api/_lib/powers.ts` | `src/services/powerLint.ts` (still a wrapper over `core/combat/powers.ts`, which still owns the pricing) |
+| `api/_lib/artPrompt.ts` | `src/services/artPrompt.ts` |
+| `api/_lib/pool.ts` | `agent/lib/pool.ts` — server-side only, and the one `api/_lib` module that outlived the endpoints |
+| `api/_lib/{anthropic,generate,http}.ts` | deleted. The model client, the generate→lint→retry loop and the Vercel Request/Response shim are eve's job now |
+| `src/services/gm.ts` | deleted. `dm.ts` (transport + beats) and `oneshot.ts` (party, resonance) |
+| `EVENT_CAPS_MIRROR` in `tabletop.ts`, `floorRamp` in `agent/lib/effects.ts` | both re-export `src/services/caps.ts`. The two parity tests that pinned the mirrors are deleted — there is nothing left to pin |
+| `tests/gm.spec.ts` endpoint smokes | the client-side pipelines: `lintGeneratedParty`, `readResonanceVerdict` |
+
+Three rules survived the move and are still non-negotiable:
+
+1. **The numbers have one home.** `src/services/caps.ts`. The agent imports it,
+   the browser imports it. Never copy a cap into a prompt or a mirror.
+2. **`src/` never imports from the agent, and the agent never imports pixi.**
+   The dependency runs one way: `agent/` → `src/services` → `src/core`.
+3. **A model never computes its own budget.** `normalizePower()` stamps it on
+   receipt, wherever receipt happens to be.
 
 ## Gotchas
 
 1. **Explicit `.js` import specifiers are mandatory.** `package.json` is
    `"type": "module"` and Vercel transpiles without bundling, so every relative
-   specifier under `agent/` carries `.js` — same rule as `src/`, `api/`,
-   `tests/` and `scripts/`. Do not "tidy" them away.
-2. **The agent is excluded from the app's typecheck.** The root tsconfig still
-   includes only `src/`, exactly like `api/`. Check it with
-   `npm run typecheck:agent`; `npm run lint` (`eslint .`) does cover `agent/`.
-3. **State is never shared with subagents.** `defineState` values do not cross
+   specifier under `agent/` carries `.js` — same rule as `src/`, `tests/` and
+   `scripts/`. Do not "tidy" them away.
+2. **The agent is excluded from the app's typecheck.** The root tsconfig
+   includes only `src/`. Check the agent with `npm run typecheck:agent` (which
+   pulls `src/` in transitively, since the agent imports the shipped lints);
+   `npm run lint` (`eslint .`) does cover `agent/`.
+3. **A schema'd turn sometimes answers in PROSE.** Roughly one turn in three on
+   the resonance one-shot came back with no `result.completed` event and the
+   schema-shaped object sitting in the assistant text instead. `sendDmTurn`
+   therefore falls back to `parseEmbeddedJson(text)` when a turn that asked for
+   an `outputSchema` produced no structured result. It is a fallback, not a
+   parser: the caller re-lints whatever comes out, so a bad guess costs exactly
+   what a missing result costs. Do not remove it — the failure it covers is
+   intermittent and looks like "the DM ignored me".
+4. **State is never shared with subagents.** `defineState` values do not cross
    the parent/child boundary — pack context into `message`.
-4. **A tool call is an authorisation, not an application.** Nothing under
+5. **A tool call is an authorisation, not an application.** Nothing under
    `agent/tools/` mutates game state; the client applies the emission and
    re-lints it. Anything that skips that step has skipped the safety net.

@@ -1,5 +1,6 @@
 /**
- * One-shot parity with POST /api/gm/resonance (stand-powers.md Layer 3).
+ * The one-shot resonance compiler (was POST /api/gm/resonance;
+ * stand-powers.md Layer 3).
  *
  * The caps come from the shipped budget tables; the verdict is memoized
  * forever by the caller, which is why "no resonance" must be a first-class,

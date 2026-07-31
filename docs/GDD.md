@@ -56,7 +56,7 @@ Design pillars (the whole game in four lines):
 | Thing | Value |
 |---|---|
 | Run length | **6 floors**, bosses on floors **3 and 6** |
-| Party | Up to 4 cats from a fixed roster — Bruno (Bruiser), Pixel (Trickster), Mora (Hexer), Baguette (Medic). A run **starts with two** (Bruno + one, drawn from the run seed), recruits a third mid-run, and only fields a fourth if Cat Town unlocked the slot (balance-and-meta.md §2/§4). Ranks, Cat Pile, targeting and the AI all work at 2, 3 and 4 |
+| Party | Up to 4 cats from a fixed roster — Bruno (Bruiser), Pixel (Trickster), Mora (Hexer), Baguette (Medic). A run **starts with two** (Bruno + one, drawn from the run seed) and can recruit a third mid-run — but only from the classes Cat Town actually houses (`RunState.eligibleClasses`, stamped by `startRun`), so a brand-new town fields two until Mora's Corner or Baguette's Basket is bought. A fourth needs the slot unlock on top (balance-and-meta.md §2/§4). Ranks, Cat Pile, targeting and the AI all work at 2, 3 and 4 |
 | Combat formation | Cats ranks 1–4 vs enemies ranks 1–5, single file, no gaps |
 | Energy (cats) | 0–10, battle starts at 4, +2 regen at own turn start |
 | Lives | 9 paw pips per cat; 0 Lives = gone for the run |
@@ -687,8 +687,11 @@ re-consulted on replay — the same memoisation principle as Stand resonances.
 
 No DM reachable ⇒ the typed-action affordance is **never built**, encounters run on
 authored content, and the game is byte-identically playable. This is verified in the
-release gate by playing a run with the DM pointed at a dead URL. The DM is a Vercel
-**eve** agent with one durable session per run (so it remembers that you bribed the
-rat king on floor 2); the six stateless `api/gm/*` endpoints remain as the fallback
-until the agent reaches full parity. The client keeps one seam
-(`src/services/gm.ts` + `src/services/dm.ts`) so the swap is invisible to the scenes.
+release gate by playing a run with the DM pointed at a dead URL, and by playing one
+with no DM configured at all — the probe then short-circuits without a single
+request. The DM is a Vercel **eve** agent with one durable session per run (so it
+remembers that you bribed the rat king on floor 2), and it is the ONLY back end:
+the six stateless `api/gm/*` endpoints and their client seam `src/services/gm.ts`
+have been deleted. What they did now lives in `src/services/dm.ts` (transport,
+verdicts, presence) and `src/services/oneshot.ts` (the schema'd party and
+resonance one-shots). See `docs/DM-DEPLOY.md`.

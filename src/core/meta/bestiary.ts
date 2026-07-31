@@ -267,6 +267,46 @@ export interface KnownIntel {
 /** The profile shape this module needs — anything carrying a bestiary. */
 export interface HasBestiary {
   bestiary?: Bestiary;
+  /**
+   * Lifetime run counters (`MetaProfile.counters`). Only `runs` is read, and
+   * only to decide the first-floor grace below; absent ⇒ treated as a brand
+   * new profile, which is what a caller that has never banked a run is.
+   */
+  counters?: { runs: number };
+}
+
+/* ------------------------------------------------------------------ */
+/* the novice grace (enemy-intel.md §4 "learning is the reward")       */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The deepest floor the grace reaches. Floor 1 only: past it the wall of
+ * `???` IS the game, and the whole point of the Bestiary is that it comes
+ * down one fact at a time.
+ */
+export const GRACE_FLOOR = 1;
+
+/**
+ * A first-time player's floor-1 screen used to be nothing but `?`: they had
+ * met no species, so every nameplate, every stat and every telegraph was
+ * masked at the exact moment they were learning what a telegraph even IS.
+ * "Learning is the reward" only works if the first lesson is legible.
+ *
+ * So the FIRST floor of a player's FIRST run reveals the basics of tier-1
+ * enemies on sight — name, level, tier, description, tell and the intent
+ * telegraph. Nothing that has to be watched is given away: skills,
+ * weaknesses and resistances are still earned by seeing them fire, and the
+ * grace lifts the moment the player banks their first run (`counters.runs`)
+ * or steps onto floor 2.
+ */
+export function hasIntelGrace(
+  meta: HasBestiary,
+  enemyId: EnemyId,
+  floor: number,
+): boolean {
+  if (floor > GRACE_FLOOR) return false;
+  if ((meta.counters?.runs ?? 0) > 0) return false;
+  return ENEMIES[enemyId]?.tier === 1;
 }
 
 export function knowledgeOf(
@@ -286,10 +326,21 @@ const fact = <T>(known: boolean, value: T): Fact<T> => ({
  * the displayed level with `ENEMY_CURVE`, exactly as the stat block moves
  * (enemy-intel.md §1) — pass the floor the fight is on.
  */
+export interface KnownIntelOpts {
+  /**
+   * May the floor-1 novice grace open the basics? True at an encounter (the
+   * inspect card, the nameplate); FALSE in Cat Town's Bestiary, where the
+   * page is a checklist of what has actually been earned and a graced entry
+   * would read as progress the player never made.
+   */
+  grace?: boolean;
+}
+
 export function knownIntel(
   meta: HasBestiary,
   enemyId: EnemyId,
   floor = 1,
+  opts: KnownIntelOpts = {},
 ): KnownIntel {
   const def = ENEMIES[enemyId];
   const k = knowledgeOf(meta, enemyId);
@@ -315,7 +366,10 @@ export function knownIntel(
       intentsVisible: false,
     };
   }
-  const open = complete || seen;
+  // the floor-1 grace opens the same five basics a meeting opens, and only
+  // those — `skills` / `weaknesses` / `resistances` below are untouched by it
+  const graced = (opts.grace ?? true) && hasIntelGrace(meta, enemyId, floor);
+  const open = complete || seen || graced;
   const skills: SkillFact[] = allSkillsOf(def).map((id) => ({
     id,
     known: complete || k.skills.includes(id),
@@ -357,13 +411,21 @@ export function knownIntel(
  * Rule §2/§5: a telegraph is only readable for an enemy you have MET in an
  * earlier battle. A first-timer shows `?` — until it acts once, at which
  * point you have seen it move and the mask lifts for the rest of the fight.
+ *
+ * `floor` is what the novice grace above keys on; omitted (a caller with no
+ * run in hand) means no grace, never a free one.
  */
 export function intentsVisibleFor(
   meta: HasBestiary,
   enemyId: EnemyId,
   hasActedThisBattle = false,
+  floor = Number.POSITIVE_INFINITY,
 ): boolean {
-  return hasActedThisBattle || knowledgeOf(meta, enemyId).met > 0;
+  return (
+    hasActedThisBattle ||
+    knowledgeOf(meta, enemyId).met > 0 ||
+    hasIntelGrace(meta, enemyId, floor)
+  );
 }
 
 /**

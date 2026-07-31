@@ -32,6 +32,8 @@ import { DESIGN_H, DESIGN_W, SPACE, type Rect } from "../layout.js";
 import { PAL } from "../palette.js";
 import { TYPE } from "../textStyles.js";
 import { button, heading, label, panel } from "../widgets.js";
+import { createDomInput, type DomInput } from "../domInput.js";
+import { isTouch } from "../touch.js";
 import { MAX_PROMPT } from "../../services/tabletop.js";
 
 /** How the DM's answer reads. */
@@ -145,27 +147,6 @@ const DEFAULT_RECT: Rect = [(DESIGN_W - 760) / 2, DESIGN_H / 2 - 150, 760, 212];
 
 type Phase = "closed" | "typing" | "waiting" | "reply" | "interjection";
 
-/**
- * The design→client transform main.ts installs on the root container:
- * uniform letterbox scale, centred. Returns null when the canvas is not in
- * the document (headless tests), and the caller falls back to fixed CSS.
- */
-function designToClient(): { x: number; y: number; scale: number } | null {
-  if (typeof document === "undefined") return null;
-  const canvas = document.querySelector("canvas");
-  if (!canvas) return null;
-  const box = canvas.getBoundingClientRect();
-  if (box.width <= 0 || box.height <= 0) return null;
-  const scale = Math.min(box.width / DESIGN_W, box.height / DESIGN_H);
-  return {
-    x: box.left + (box.width - DESIGN_W * scale) / 2,
-    y: box.top + (box.height - DESIGN_H * scale) / 2,
-    scale,
-  };
-}
-
-const css = (c: number): string => `#${c.toString(16).padStart(6, "0")}`;
-
 export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
   const [rx, ry, rw] = opts.rect ?? DEFAULT_RECT;
   const copy = MODE_COPY[opts.mode ?? "encounter"];
@@ -219,10 +200,12 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
   guide.position.set(SPACE.lg, wellY + wellH + SPACE.md);
   view.addChild(guide);
 
-  const hint = label("Enter to act  ·  Esc to think better of it", {
-    size: TYPE.tiny,
-    dim: true,
-  });
+  const hint = label(
+    isTouch()
+      ? "type your line, then Say it"
+      : "Enter to act  ·  Esc to think better of it",
+    { size: TYPE.tiny, dim: true },
+  );
   view.addChild(hint);
 
   const dismiss = button("Continue", 160, 40, () => dismissReply(), {
@@ -231,6 +214,31 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
   });
   dismiss.view.visible = false;
   view.addChild(dismiss.view);
+
+  /**
+   * TOUCH PARITY FOR THE TYPING BEAT (docs/design/mobile.md §§1, 5).
+   *
+   * With a keyboard, Enter submits and Esc backs out. A virtual keyboard has
+   * a Go key that fires Enter, but it has NO Escape at all — so on touch the
+   * only way out of the field would be to submit something. These two kit
+   * buttons are the real controls; they sit on the typing beat only, and on a
+   * desktop they are a redundant (and harmless) second path to the same two
+   * calls.
+   */
+  const say = button("Say it", 150, 40, () => submitField(), {
+    primary: true,
+    hotkey: "Enter",
+    fontSize: TYPE.small,
+  });
+  say.view.visible = false;
+  view.addChild(say.view);
+
+  const nevermind = button("Never mind", 160, 40, () => cancelField(), {
+    hotkey: "Esc",
+    fontSize: TYPE.small,
+  });
+  nevermind.view.visible = false;
+  view.addChild(nevermind.view);
 
   /**
    * "Answer" — the button that makes an interjection a conversation instead of
@@ -243,14 +251,17 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
   answer.view.visible = false;
   view.addChild(answer.view);
 
-  /** Height of the typing beat: eyebrow, well, guide, key hint. */
+  /**
+   * Height of the typing beat: eyebrow, well, guide, then the action row
+   * (Say it / Never mind) with the key hint tucked beside it.
+   */
   const TYPING_H =
     wellY +
     wellH +
     SPACE.md +
     Math.ceil(guide.height) +
-    SPACE.lg +
-    14 +
+    SPACE.md +
+    40 +
     SPACE.md;
 
   /**
@@ -265,16 +276,24 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
    */
   let accent: number = PAL.gold;
 
+  // Declared before `fitCard` because resizing the card must re-place the DOM
+  // field that hangs off its well.
+  let phase: Phase = "closed";
+  let field: DomInput | null = null;
+  let ellipsis = 0;
+  let waitingBase = "";
+
   const fitCard = (h: number): void => {
     card.destroy({ children: true });
     card = panel(rw, h, { variant: "raised", accent });
     view.addChildAt(card, 0);
-    hint.position.set(SPACE.lg, h - 14 - SPACE.md);
-    dismiss.view.position.set(rw - 160 - SPACE.lg, h - 40 - SPACE.md);
-    answer.view.position.set(
-      rw - 160 - SPACE.lg - 170 - SPACE.md,
-      h - 40 - SPACE.md,
-    );
+    const rowY = h - 40 - SPACE.md;
+    hint.position.set(SPACE.lg, rowY + 13);
+    dismiss.view.position.set(rw - 160 - SPACE.lg, rowY);
+    answer.view.position.set(rw - 160 - SPACE.lg - 170 - SPACE.md, rowY);
+    say.view.position.set(rw - 150 - SPACE.lg, rowY);
+    nevermind.view.position.set(rw - 150 - SPACE.lg - 160 - SPACE.sm, rowY);
+    field?.reflow();
   };
 
   /**
@@ -292,73 +311,42 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
 
   fitCard(TYPING_H);
 
-  let phase: Phase = "closed";
-  let inputEl: HTMLInputElement | null = null;
-  let ellipsis = 0;
-  let waitingBase = "";
-
   /* ---- the DOM field ------------------------------------------------- */
+  /*
+   * `createDomInput` owns the element AND the virtual keyboard: it places the
+   * field inside the well through main.ts's letterbox transform, and when a
+   * phone keyboard would cover it, it floats the field (on its own backing
+   * plate) up to just above the keyboard using the `visualViewport` API. So
+   * the player can always see what they are typing (mobile.md §5).
+   */
 
-  const placeField = (): void => {
-    if (!inputEl) return;
-    const t = designToClient();
-    const fx = rx + SPACE.lg;
-    const fy = ry + wellY;
-    const fw = rw - SPACE.lg * 2;
-    if (t) {
-      inputEl.style.left = `${t.x + fx * t.scale}px`;
-      inputEl.style.top = `${t.y + fy * t.scale}px`;
-      inputEl.style.width = `${fw * t.scale}px`;
-      inputEl.style.height = `${wellH * t.scale}px`;
-      inputEl.style.fontSize = `${Math.max(11, Math.round(17 * t.scale))}px`;
-    } else {
-      // headless / canvas-less fallback: centred, like the old event input
-      inputEl.style.left = "50%";
-      inputEl.style.top = "62%";
-      inputEl.style.transform = "translateX(-50%)";
-      inputEl.style.width = "min(600px, 86vw)";
-      inputEl.style.fontSize = "16px";
-    }
+  const submitField = (): void => {
+    const text = field?.value() ?? "";
+    if (text.length > 0) opts.onSubmit(text);
+  };
+
+  const cancelField = (): void => {
+    closeField();
+    bar.close();
+    opts.onCancel?.();
   };
 
   const openField = (): void => {
-    if (inputEl || typeof document === "undefined") return;
-    const el = document.createElement("input");
-    el.type = "text";
-    el.maxLength = MAX_PROMPT;
-    el.placeholder = opts.placeholder ?? copy.placeholder;
-    el.autocomplete = "off";
-    el.spellcheck = false;
-    el.style.cssText =
-      "position:fixed;box-sizing:border-box;padding:0 14px;" +
-      `color:${css(PAL.text)};background:transparent;` +
-      "border:none;outline:none;z-index:10;font-family:inherit;";
-    // the game's single window key listener must never see typing
-    el.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-      if (e.key === "Enter") {
-        const text = el.value.trim().slice(0, MAX_PROMPT);
-        if (text.length > 0) opts.onSubmit(text);
-      } else if (e.key === "Escape") {
-        closeField();
-        bar.close();
-        opts.onCancel?.();
-      }
+    if (field) return;
+    field = createDomInput({
+      rect: { x: rx + SPACE.lg, y: ry + wellY, w: rw - SPACE.lg * 2, h: wellH },
+      placeholder: opts.placeholder ?? copy.placeholder,
+      maxLength: MAX_PROMPT,
+      enterKeyHint: "send",
+      onSubmit: (text) => opts.onSubmit(text),
+      onCancel: cancelField,
     });
-    el.addEventListener("keyup", (e) => e.stopPropagation());
-    document.body.appendChild(el);
-    inputEl = el;
-    placeField();
-    window.addEventListener("resize", placeField);
-    el.focus();
+    field.focus();
   };
 
   const closeField = (): void => {
-    if (typeof window !== "undefined") {
-      window.removeEventListener("resize", placeField);
-    }
-    inputEl?.remove();
-    inputEl = null;
+    field?.destroy();
+    field = null;
   };
 
   const dismissReply = (): void => {
@@ -392,6 +380,10 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
       hint.visible = true;
       dismiss.view.visible = false;
       answer.view.visible = false;
+      // the typing beat is the ONLY one with a field, so it is the only one
+      // that shows the field's two controls
+      say.view.visible = true;
+      nevermind.view.visible = true;
       fitCard(TYPING_H);
       openField();
     },
@@ -399,6 +391,8 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
     close() {
       phase = "closed";
       closeField();
+      say.view.visible = false;
+      nevermind.view.visible = false;
       view.visible = false;
     },
 
@@ -420,6 +414,8 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
       body.text = waitingBase;
       hint.visible = false;
       dismiss.view.visible = false;
+      say.view.visible = false;
+      nevermind.view.visible = false;
       ellipsis = 0;
       fitToBody();
     },
@@ -454,6 +450,8 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
       hint.visible = false;
       dismiss.view.visible = true;
       answer.view.visible = false;
+      say.view.visible = false;
+      nevermind.view.visible = false;
       fitToBody();
     },
 
@@ -478,6 +476,8 @@ export function createTabletopBar(opts: TabletopBarOpts): TabletopBar {
       hint.visible = false;
       dismiss.view.visible = true;
       answer.view.visible = opts.onAnswer !== undefined;
+      say.view.visible = false;
+      nevermind.view.visible = false;
       fitToBody();
     },
 

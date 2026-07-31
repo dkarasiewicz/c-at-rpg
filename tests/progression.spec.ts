@@ -530,7 +530,7 @@ describe("save v1 → v3 (progression.md §5 + run-map-and-dm.md §2)", () => {
 
     const storage = memoryStorage();
     storage.set(SAVE_KEY, JSON.stringify(v1));
-    const loaded = loadRun(storage)!;
+    const loaded = loadRun({ storage })!;
     expect(loaded).not.toBeNull();
     expect(loaded.cats.map((c) => c.classId)).toEqual(
       run.cats.map((c) => c.classId),
@@ -563,7 +563,7 @@ describe("save v1 → v3 (progression.md §5 + run-map-and-dm.md §2)", () => {
 
     const storage = memoryStorage();
     storage.set(SAVE_KEY, JSON.stringify(serializeRun(withProgress)));
-    const loaded = loadRun(storage)!;
+    const loaded = loadRun({ storage })!;
     const back = loaded.cats[0];
     expect(back.points).toEqual({ hp: 1, crt: 1 });
     expect(back.loadout).toEqual(["hiss", "dumpsterDunk", "scruffToss"]);

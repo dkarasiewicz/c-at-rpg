@@ -43,6 +43,7 @@ import {
   type LabelOpts,
 } from "./textStyles.js";
 import { tween } from "./tween.js";
+import { isTouch, padHit } from "./touch.js";
 import { drawCatPortrait, drawPaw } from "./draw/cats.js";
 import { drawEnemy } from "./draw/enemies.js";
 import { makeBustSprite } from "./draw/spriteFrame.js";
@@ -285,8 +286,16 @@ export function makeStatusChip(
     };
     chip.eventMode = "static";
     chip.cursor = "help";
-    chip.on("pointerover", raise);
-    chip.on("pointerout", drop);
+    // A 16px chip is 9 CSS px under a finger — unhittable without padding.
+    padHit(chip, s, s);
+    // Hover explains on a mouse; tap toggles on both (a status chip commits
+    // nothing, so "tap to inspect" needs no second tap to confirm).
+    chip.on("pointerover", () => {
+      if (!isTouch()) raise();
+    });
+    chip.on("pointerout", () => {
+      if (!isTouch()) drop();
+    });
     chip.on("pointertap", () => {
       if (tip) drop();
       else raise();
@@ -373,6 +382,7 @@ export function makeButton(
 
   view.eventMode = "static";
   view.cursor = "pointer";
+  padHit(view, w, h);
   view.on("pointerover", () => {
     hover = true;
     paint();
@@ -971,7 +981,17 @@ export function button(
   const r = RADIUS.button;
 
   let chipW = 0;
-  if (opts.hotkey !== undefined && opts.hotkey !== "") {
+  // The hotkey chip names a KEY, and a phone has no keys. Printing "Esc",
+  // "Enter", "E" or "T" beside a button a finger is about to press is dead
+  // chrome at best and a promise the device cannot keep at worst — the
+  // player goes looking for an Escape key that a virtual keyboard does not
+  // have. So on a coarse pointer the chip is not built at all, and the label
+  // simply centres in the full width (`chipW` stays 0). Nothing moves on a
+  // mouse. The skill cards' 1-6 are drawn elsewhere and stay: those read as
+  // slot numbers, not as keys.
+  const showHotkey =
+    opts.hotkey !== undefined && opts.hotkey !== "" && !isTouch();
+  if (showHotkey) {
     const chip = new Container();
     const key = new Text({
       text: opts.hotkey,
@@ -1039,7 +1059,17 @@ export function button(
 
   view.eventMode = enabled ? "static" : "none";
   view.cursor = "pointer";
+  // THE touch-parity line for the whole game (docs/design/mobile.md §3): the
+  // kit's buttons are 30-52 design px tall, which at an iPhone-class 0.54
+  // letterbox scale is 16-28 CSS px — well under a fingertip. `padHit` grows
+  // the TARGET to 44 CSS px without touching a pixel of the art, and it reads
+  // the live scale on every hit test, so it keeps up with a rotate.
+  padHit(view, w, h);
   view.on("pointerover", () => {
+    // Touch emits a synthetic hover around every tap; honouring it would
+    // leave the last-tapped button lit up as though the finger were resting
+    // on it. Hover is a mouse affordance and stays one.
+    if (isTouch()) return;
     hover = true;
     paint();
   });

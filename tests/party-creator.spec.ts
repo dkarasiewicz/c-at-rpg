@@ -18,10 +18,17 @@
 import { afterEach, describe, expect, it } from "vitest";
 import type { Stats } from "../src/core/types.js";
 import {
+  canRecruit,
   generateCurrentFloorMap,
   newRun,
   PARTY_ORDER,
 } from "../src/core/run/runState.js";
+import {
+  applyUnlocks,
+  emptyProfile,
+  MAX_PARTY_CAPACITY,
+  startRun,
+} from "../src/core/meta/index.js";
 import {
   effectiveStats,
   growthStats,
@@ -320,5 +327,51 @@ describe("newRun customParty (additive)", () => {
     const restored = deserializeRun(serializeRun(run));
     expect(restored.customParty).toEqual(run.customParty);
     expect(restored.customParty?.[0].visualPrompt).toContain("ghostly stand");
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* the run-start seam: a custom party still gets Cat Town's overlay    */
+/* ------------------------------------------------------------------ */
+//
+// `partyCreator` used to call `newRun` directly, which is the ONE entry
+// point that knows nothing about the meta layer — so describing your own
+// cats silently threw away the fourth bowl, the starting tin and every
+// piece of gear the town had bought. It goes through `startRun` now, the
+// same door Cat Town and RESULTS use.
+
+describe("a custom-party run is started through startRun", () => {
+  const overlay = () =>
+    applyUnlocks({
+      ...emptyProfile(),
+      unlocked: ["slot:fourth", "class:hexer", "shinies:tin"],
+    });
+
+  it("keeps the town's party capacity, tin and gear", () => {
+    const party = mapKitsToCustomParty(fakeParty());
+    applyPartyContent(party);
+    const run = startRun("EEEEEEEE", overlay(), party);
+    expect(run.customParty).toHaveLength(4);
+    expect(run.partyCapacity).toBe(MAX_PARTY_CAPACITY);
+    expect(run.inventory.shinies).toBeGreaterThan(
+      newRun("EEEEEEEE").inventory.shinies,
+    );
+  });
+
+  it("does NOT bench the cats the player just described", () => {
+    const party = mapKitsToCustomParty(fakeParty());
+    applyPartyContent(party);
+    // the town owns nothing, so a stock run could only field bruiser+trickster
+    const run = startRun("EEEEEEEE", applyUnlocks(emptyProfile()), party);
+    expect(run.eligibleClasses).toEqual([...PARTY_ORDER]);
+    expect(canRecruit(run)).toBe(true);
+  });
+
+  it("is still deterministic for a fixed seed", () => {
+    const a = mapKitsToCustomParty(fakeParty());
+    applyPartyContent(a);
+    const first = startRun("EEEEEEEE", overlay(), a);
+    const second = startRun("EEEEEEEE", overlay(), a);
+    expect(second).toEqual(first);
   });
 });

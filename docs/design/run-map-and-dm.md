@@ -66,8 +66,8 @@ constrained by machinery that already exists and is already tested:
   `core/combat/powers.ts`, applied server-side at authoring time **and**
   client-side at application time (defence in depth — a tampered response is
   rejected and degrades to pure narration);
-- per-floor numeric caps, exactly as `/api/gm/eventResolve` already does for
-  free-text event options.
+- per-floor numeric caps (`services/caps.ts`), applied to free-text event
+  options by `tabletop.ts#validateEncounterVerdict`.
 
 ### Determinism & replay
 
@@ -78,8 +78,9 @@ memoisation principle as Stand resonances (`stand-powers.md` Layer 3).
 
 ## 4. The DM agent (Vercel eve)
 
-The six stateless `api/gm/*` endpoints become one **persistent agent with a
-durable session per run**, so the GM remembers the whole adventure: that you
+The six stateless `api/gm/*` endpoints became one **persistent agent with a
+durable session per run** (and have since been deleted — see "Migration —
+DONE" below), so the GM remembers the whole adventure: that you
 bribed the rat king on floor 2, that Baguette is out of lives, that you
 promised the elder stray you would come back.
 
@@ -115,11 +116,19 @@ Why eve rather than more endpoints:
 - Model calls resolve through **AI Gateway** with the deployment's OIDC token,
   so there is no provider secret to manage.
 
-### Migration
+### Migration — DONE
 
-`api/gm/*` keeps working while the agent is built; each capability moves over
-once the agent reaches parity, and the endpoints are deleted last. The client
-keeps one seam (`src/services/gm.ts`) so the swap is invisible to the scenes.
+`api/gm/*` kept working while the agent was built; each capability moved over
+once the agent reached parity, and the endpoints were deleted last. That has
+happened: **there is no `api/` directory and no `src/services/gm.ts`.** The
+agent is the only back end, and there is no endpoint fallback behind it.
+
+The client seam is now two files: `src/services/dm.ts` (transport, combat and
+encounter verdicts, the presence layer) and `src/services/oneshot.ts` (the
+schema'd party and resonance one-shots, including the lint → regenerate →
+salvage loop the endpoints used to run server-side). The shared bounds live in
+`src/services/caps.ts`, imported by BOTH the browser and `agent/`, so there is
+one copy of `EVENT_CAPS` and the floor ramp rather than the three there were.
 
 ### Offline-first (unchanged invariant)
 

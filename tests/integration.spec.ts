@@ -38,9 +38,8 @@ import {
   type SceneId,
 } from "../src/ui/sceneManager.js";
 import {
-  applyBattleResult,
-  applyLootGrant,
-  descend,
+  FLOOR_COUNT,
+  floorConfig,
   generateCurrentFloorMap,
   newRun,
 } from "../src/core/run/runState.js";
@@ -51,58 +50,8 @@ import {
   serializeRun,
   emptyMeta,
 } from "../src/core/run/save.js";
-import type {
-  BattleAction,
-  BattleEvent,
-  BattleResult,
-  BattleSetup,
-  BattleState,
-  EnemyId,
-  EventOption,
-  MapNode,
-  MewHookId,
-  NodeType,
-  RunState,
-  SaveFile,
-} from "../src/core/types.js";
-import { hash, mulberry32 } from "../src/core/rng.js";
-import { CLASSES } from "../src/content/classes.js";
-import { FLOORS } from "../src/content/floors.js";
-import { encounterFor, encounterIndexOf } from "../src/core/map/encounter.js";
-import {
-  advance,
-  atTerminal,
-  optionsForRun,
-} from "../src/core/map/traverse.js";
-import { SKILLS } from "../src/content/skills.js";
-import { EVENTS } from "../src/content/events.js";
-import { createBattle } from "../src/core/combat/setup.js";
-import {
-  battleResult,
-  isAutoSkip,
-  startRound,
-} from "../src/core/combat/turns.js";
-import { legalActions, nextActor } from "../src/core/combat/state.js";
-import { resolveAction } from "../src/core/combat/resolve.js";
-import { takeEnemyTurn } from "../src/core/combat/ai.js";
-import {
-  rollBossLoot,
-  rollChest,
-  rollVictory,
-  type LootCtx,
-} from "../src/core/loot/roll.js";
-import { addShinies } from "../src/core/loot/inventory.js";
-import { selectEvent } from "../src/core/events/select.js";
-import {
-  applyEventEffects,
-  isOptionAvailable,
-  resolveOption,
-} from "../src/core/events/resolve.js";
-import {
-  effectiveStats,
-  skillsForLevel,
-  traitTier,
-} from "../src/core/run/party.js";
+import type { SaveFile } from "../src/core/types.js";
+import { GATE_SEED, scriptedRun } from "./support/scriptedRun.js";
 
 /* ------------------------------------------------------------------ */
 /* harness                                                             */
@@ -442,11 +391,11 @@ describe("shell handoff determinism (title → floorgen → run map)", () => {
   it("autosave at the floorgen point round-trips to a deep-equal run", () => {
     const storage = memoryStorage();
     const run = generateCurrentFloorMap(newRun("MEOW-1987"));
-    saveRun(run, storage);
-    const loaded = loadRun(storage);
+    saveRun(run, { storage });
+    const loaded = loadRun({ storage });
     expect(loaded).toEqual(run);
     // determinism: loading twice gives the same thing
-    expect(loadRun(storage)).toEqual(loaded);
+    expect(loadRun({ storage })).toEqual(loaded);
   });
 
   it("different seeds diverge (sanity)", () => {
@@ -455,273 +404,6 @@ describe("shell handoff determinism (title → floorgen → run map)", () => {
     expect(b.floorMap).not.toEqual(a.floorMap);
   });
 });
-
-/* ------------------------------------------------------------------ */
-/* §5 integration gate: headless scripted run on a fixed seed          */
-/* ------------------------------------------------------------------ */
-
-const GATE_SEED = "MEOW-1987";
-
-/** Mirror of battle.ts buildSetup: BattleSetup from the live RunState. */
-function buildSetup(
-  run: RunState,
-  enemies: EnemyId[],
-  encounterIndex: number,
-  isBoss: boolean,
-): BattleSetup {
-  const cats: BattleSetup["cats"] = [];
-  for (const classId of run.marchingOrder) {
-    const cat = run.cats.find((c) => c.classId === classId);
-    if (!cat || cat.lives <= 0) continue;
-    const stats = effectiveStats(cat, run.level);
-    const cls = CLASSES[classId];
-    const traits =
-      traitTier(classId, run.level) >= 2
-        ? [cls.trait.id, cls.trait.id]
-        : [cls.trait.id];
-    const hooks: MewHookId[] = [];
-    for (const item of [cat.weapon, cat.trinket]) {
-      if (item?.hook && !item.hookSpent) hooks.push(item.hook);
-    }
-    cats.push({
-      classId,
-      name: cls.catName,
-      stats,
-      hp: Math.min(cat.hp, stats.hp),
-      lives: cat.lives,
-      skills: skillsForLevel(classId, run.level),
-      traits,
-      hooks,
-      startEnergyBonus: cat.energyNextBattle,
-    });
-  }
-  return { cats, enemies, encounterIndex, canFlee: !isBoss };
-}
-
-/** Mirror of the scenes' LootCtx construction. */
-function lootCtxOf(run: RunState): LootCtx {
-  return {
-    floor: run.floorNum,
-    livingClasses: run.cats.filter((c) => c.lives > 0).map((c) => c.classId),
-    uniquesDropped: run.uniquesDropped,
-    nextUid: run.inventory.nextUid,
-    currentShinies: run.inventory.shinies,
-  };
-}
-
-/**
- * Drive one battle to completion with a scripted, deterministic cat
- * policy: first legal skill (in class skill order) on its first listed
- * target, otherwise guard. Enemies run the real AI; the rng stream is
- * §4's `mulberry32(hash(runSeed, floor, encounterIndex))` exactly as
- * the battle scene keys it.
- */
-function driveBattle(
-  run: RunState,
-  enemies: EnemyId[],
-  encounterIndex: number,
-  isBoss: boolean,
-): BattleResult {
-  let bs: BattleState = createBattle(
-    buildSetup(run, enemies, encounterIndex, isBoss),
-  );
-  const rng = mulberry32(hash(run.runSeed, run.floorNum, encounterIndex));
-  const log: BattleEvent[] = [];
-  const apply = (r: { state: BattleState; events: BattleEvent[] }): void => {
-    bs = r.state;
-    log.push(...r.events);
-  };
-  for (let guard = 0; bs.outcome === "ongoing"; guard++) {
-    if (guard > 4000) throw new Error("scripted battle did not terminate");
-    if (bs.catPilePrompt) {
-      apply(resolveAction(bs, { type: "catPile", accept: true }, rng));
-      continue;
-    }
-    const actor = nextActor(bs);
-    if (!actor) {
-      apply(startRound(bs, rng));
-      continue;
-    }
-    if (actor.side === "enemy") {
-      apply(resolveAction(bs, takeEnemyTurn(actor, bs, rng), rng));
-      continue;
-    }
-    if (isAutoSkip(bs)) {
-      apply(resolveAction(bs, { type: "guard" }, rng));
-      continue;
-    }
-    const la = legalActions(bs);
-    const opt = la.skills.find((s) => s.ok);
-    let action: BattleAction = { type: "guard" };
-    if (opt) {
-      const def = SKILLS[opt.skillId];
-      const needsTarget =
-        def.target.pattern === "single" && def.target.side !== "self";
-      action = needsTarget
-        ? { type: "skill", skillId: opt.skillId, targetId: opt.targetIds[0] }
-        : { type: "skill", skillId: opt.skillId };
-    }
-    apply(resolveAction(bs, action, rng));
-  }
-  return battleResult(bs, log);
-}
-
-interface ScriptedOutcome {
-  run: RunState;
-  nodesVisited: NodeType[];
-  fights: number;
-  treasures: number;
-  eventsResolved: number;
-}
-
-/**
- * The §5 scripted mini-run, on the run map: new run → generate floor 1's
- * graph → walk entry → boss, always taking the FIRST offered route, and
- * resolve every node the party lands on with the real engines (packs from
- * the node's payload seed, victory loot on the §4 victory stream, treasure
- * on a chest roll, events through selectEvent/resolveOption) → descend.
- */
-function scriptedRun(seed: string): ScriptedOutcome {
-  let run = generateCurrentFloorMap(newRun(seed));
-  const map = run.floorMap;
-  if (!map) throw new Error("floor 1 map did not generate");
-  const cfg = FLOORS[run.floorNum - 1];
-  const nodesVisited: NodeType[] = [];
-  let fights = 0;
-  let treasures = 0;
-  let eventsResolved = 0;
-
-  // Victory write-back + §4 victory-loot stream, exactly as battle.ts
-  // finish() does it (applyBattleResult → roll → applyLootGrant).
-  const afterVictory = (
-    result: BattleResult,
-    encounterIndex: number,
-    nodeId: number | undefined,
-    isBoss: boolean,
-  ): void => {
-    run = applyBattleResult(run, result, nodeId).run;
-    const vrng = mulberry32(
-      hash(run.runSeed, run.floorNum, "loot", 100 + encounterIndex),
-    );
-    const grant = isBoss
-      ? rollBossLoot(vrng, lootCtxOf(run))
-      : rollVictory(vrng, lootCtxOf(run));
-    run = applyLootGrant(run, grant).run; // overflow = Leave (none expected)
-  };
-
-  const resolveEventNode = (node: MapNode): void => {
-    const erng = mulberry32(node.seed);
-    const sel = selectEvent(
-      EVENTS,
-      run.floorNum,
-      run.firedEventIds,
-      run.floorFiredEventIds,
-      erng,
-    );
-    if (sel.kind === "fallback") {
-      // mirror of event.ts: shinies + score, no rng draws
-      const inv = addShinies(run.inventory, sel.shinies);
-      run = {
-        ...run,
-        inventory: inv,
-        score: {
-          ...run.score,
-          shiniesCollected:
-            run.score.shiniesCollected + (inv.shinies - run.inventory.shinies),
-        },
-      };
-      eventsResolved++;
-      return;
-    }
-    const evt = sel.event;
-    const noFight = (o: EventOption): boolean =>
-      o.outcomes.every((oc) => oc.effects.every((e) => e.kind !== "fight"));
-    let optIdx = evt.options.findIndex(
-      (o) => isOptionAvailable(run, o) && noFight(o),
-    );
-    if (optIdx < 0) {
-      optIdx = evt.options.findIndex((o) => isOptionAvailable(run, o));
-    }
-    if (optIdx < 0) throw new Error(`no available option on ${evt.id}`);
-    const out = resolveOption(run, evt, optIdx, erng);
-    run = out.state;
-    if (out.fightRequest) {
-      const fr = out.fightRequest;
-      const encIdx = 1000 + node.id; // event.ts convention
-      const result = driveBattle(run, fr.encounter, encIdx, false);
-      if (result.outcome !== "victory") {
-        throw new Error(`scripted event fight ended in ${result.outcome}`);
-      }
-      run = applyBattleResult(run, result).run; // event fights: no node id
-      // loot overlay order: onWinEffects (same eventRng) → grant
-      const vrng = mulberry32(
-        hash(run.runSeed, run.floorNum, "loot", 100 + encIdx),
-      );
-      const grant =
-        fr.loot === "none"
-          ? null
-          : fr.loot === "bonus"
-            ? rollChest(vrng, lootCtxOf(run))
-            : rollVictory(vrng, lootCtxOf(run));
-      run = applyEventEffects(
-        run,
-        fr.onWinEffects,
-        fr.eventId,
-        erng,
-        fr.gateCatIndex,
-      ).state;
-      if (grant) run = applyLootGrant(run, grant).run;
-    }
-    eventsResolved++;
-  };
-
-  /** Resolve the node the party is standing on, by type. */
-  const resolveNode = (node: MapNode): void => {
-    nodesVisited.push(node.type);
-    switch (node.type) {
-      case "fight":
-      case "elite":
-      case "boss": {
-        const enemies = encounterFor(node, cfg);
-        if (!enemies) throw new Error(`fight node ${node.id} has no pack`);
-        const isBoss = node.type === "boss";
-        const encIdx = encounterIndexOf(node);
-        const result = driveBattle(run, enemies, encIdx, isBoss);
-        if (result.outcome !== "victory") {
-          throw new Error(`scripted node fight ended in ${result.outcome}`);
-        }
-        afterVictory(result, encIdx, node.id, isBoss);
-        fights++;
-        break;
-      }
-      case "treasure": {
-        // mirror of the treasure node: one fresh stream per node seed (§4)
-        const crng = mulberry32(node.seed);
-        run = applyLootGrant(run, rollChest(crng, lootCtxOf(run))).run;
-        treasures++;
-        break;
-      }
-      case "event":
-        resolveEventNode(node);
-        break;
-      default:
-        break; // shop / rest — the landing-style scenes own those
-    }
-  };
-
-  resolveNode(map.nodes[run.currentNodeId!]);
-  for (let steps = 0; !atTerminal(run); steps++) {
-    if (steps > 32) throw new Error("scripted run: never reached the boss");
-    const opts = optionsForRun(run);
-    if (opts.length === 0) throw new Error("scripted run: dead end");
-    run = advance(run, opts[0].node.id);
-    resolveNode(map.nodes[run.currentNodeId!]);
-  }
-
-  // descend (core descend = floor-mod expiry → catnap → generate floor 2)
-  run = descend(run);
-  return { run, nodesVisited, fights, treasures, eventsResolved };
-}
 
 const FIXTURE_URL = new URL("./fixtures/integration-run.json", import.meta.url);
 
@@ -761,6 +443,80 @@ describe("integration gate: scripted mini-run (ARCHITECTURE.md §5)", () => {
     if (!existsSync(path)) {
       throw new Error(
         "missing tests/fixtures/integration-run.json — record it with " +
+          "RECORD_FIXTURES=1 npx vitest run tests/integration.spec.ts",
+      );
+    }
+    const fixture = JSON.parse(readFileSync(path, "utf8")) as SaveFile;
+    expect(snapshot).toEqual(fixture);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* the DEEP gate: floors 1-6 and the Dogfather                         */
+/* ------------------------------------------------------------------ */
+//
+// The floor-1 gate above pins the shell, but every number it touches comes
+// from `ENEMY_CURVE`'s shallow end: floor-1 packs, level-1 cats, tier-1
+// stats. Nothing in the repo guarded the other end — floors 5-6, the tier-3
+// roster, the level-8 party or the run's final boss — so a curve change
+// could sail through green and only fail in a browser on floor 5.
+//
+// This walks the SAME driver all the way to the floor-6 boss and pins the
+// resulting RunState as its own fixture. It is deliberately a second seed:
+// the shallow gate and the deep gate must be able to fail independently.
+
+const DEEP_SEED = "DEEP-0";
+const DEEP_FIXTURE_URL = new URL(
+  "./fixtures/integration-deep-run.json",
+  import.meta.url,
+);
+
+describe("integration gate: the full descent (floors 1-6 + the boss)", () => {
+  const out = scriptedRun(DEEP_SEED, { throughFloor: FLOOR_COUNT });
+
+  it("walks every floor entry → terminal and clears all six", () => {
+    expect(out.floorsWalked).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(out.run.floorNum).toBe(FLOOR_COUNT);
+    expect(out.run.score.floorsReached).toBe(FLOOR_COUNT);
+    expect(out.run.score.floorsCleared).toBe(FLOOR_COUNT);
+  });
+
+  it("puts down both authored bosses, the floor-6 one last", () => {
+    expect(out.run.score.bossesDefeated).toBe(2);
+    expect(out.bossesFelled).toHaveLength(2);
+    // the run's final boss is whatever floor 6 authored as its lair holder
+    expect(out.bossesFelled[1]).toBe(floorConfig(FLOOR_COUNT).boss?.bossId);
+  });
+
+  it("reaches the level cap and fights the deep roster", () => {
+    // ENEMY_CURVE guard: a party that walked six floors is level 8 and has
+    // felled a lot more than a floor-1 sample.
+    expect(out.run.level).toBe(8);
+    expect(out.run.score.enemiesDefeated).toBeGreaterThan(20);
+    expect(out.fights).toBeGreaterThan(8);
+    // somebody is still standing — a driver that wipes throws, but a run
+    // that limps home with one cat is worth noticing in the assertion too
+    expect(out.run.cats.filter((c) => c.lives > 0).length).toBeGreaterThan(0);
+  });
+
+  it("is deterministic: two executions produce deep-equal RunStates", () => {
+    const again = scriptedRun(DEEP_SEED, { throughFloor: FLOOR_COUNT });
+    expect(again.nodesVisited).toEqual(out.nodesVisited);
+    expect(again.run).toEqual(out.run);
+  });
+
+  it("deep-equals the recorded late-floor RunState fixture", () => {
+    const snapshot = JSON.parse(
+      JSON.stringify(serializeRun(out.run)),
+    ) as SaveFile;
+    const path = fileURLToPath(DEEP_FIXTURE_URL);
+    if (process.env.RECORD_FIXTURES) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(snapshot, null, 2) + "\n");
+    }
+    if (!existsSync(path)) {
+      throw new Error(
+        "missing tests/fixtures/integration-deep-run.json — record it with " +
           "RECORD_FIXTURES=1 npx vitest run tests/integration.spec.ts",
       );
     }

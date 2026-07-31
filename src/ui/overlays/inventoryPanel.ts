@@ -55,6 +55,7 @@ import {
   panel,
   scrim,
 } from "../widgets.js";
+import { isTouch, padHit, tapToReveal } from "../touch.js";
 
 /* ---------------------------------------------------------------------- */
 /* Shared item-presentation helpers (also used by the loot overlay)        */
@@ -272,22 +273,36 @@ function makeCell(o: CellOpts): Container {
     cell.addChild(corner);
 
     let tip: Container | null = null;
-    cell.eventMode = "static";
-    cell.cursor = "pointer";
-    cell.on("pointerover", () => {
+    const raise = (): void => {
+      if (tip) return;
       hoverRing.visible = true;
       tip = makeTooltip(slotTooltipText(slot, o.sellMode));
       tip.position.set(cell.x + 12, cell.y + CELL + 4);
       o.tipLayer.addChild(tip);
-    });
-    cell.on("pointerout", () => {
+    };
+    const drop = (): void => {
       hoverRing.visible = false;
       tip?.destroy({ children: true });
       tip = null;
+    };
+    cell.eventMode = "static";
+    cell.cursor = "pointer";
+    // 64 design px is 35 CSS px on a phone (docs/design/mobile.md §3).
+    padHit(cell, CELL, CELL);
+    cell.on("pointerover", () => {
+      if (!isTouch()) raise();
     });
+    cell.on("pointerout", drop);
     cell.on("pointertap", () => {
-      tip?.destroy({ children: true });
-      tip = null;
+      // Selecting an item commits nothing (equipping needs a second tap on a
+      // cat row), so touch can select AND reveal in one gesture: the tooltip
+      // is what tells you whether this is the item you meant.
+      if (isTouch()) {
+        o.onTap(o.index);
+        raise();
+        return;
+      }
+      drop();
       o.onTap(o.index);
     });
   }
@@ -540,24 +555,32 @@ export function makeInventoryPanel(
         }
         if (!dead) {
           let tip: Container | null = null;
-          chip.eventMode = "static";
-          chip.cursor = "pointer";
-          chip.on("pointerover", () => {
+          const raise = (): void => {
+            if (tip) return;
             tip = makeTooltip(
-              `${slotTooltipText(item, false)}\n(click to unequip)`,
+              `${slotTooltipText(item, false)}\n${
+                isTouch() ? "(tap again to unequip)" : "(click to unequip)"
+              }`,
             );
             tip.position.set(rightLayer.x + 180, rightLayer.y + y + CARD_H);
             tipLayer.addChild(tip);
             view.addChild(tipLayer); // keep tips on top
-          });
-          chip.on("pointerout", () => {
+          };
+          const drop = (): void => {
             tip?.destroy({ children: true });
             tip = null;
-          });
-          chip.on("pointertap", () => {
-            tip?.destroy({ children: true });
-            tip = null;
-            unequip(catIndex, slotName);
+          };
+          chip.eventMode = "static";
+          chip.cursor = "pointer";
+          padHit(chip, CHIP, CHIP);
+          // Unequipping is destructive-ish and the chip is tiny, so touch
+          // gets the §2 two-tap: the first shows what it is, the second
+          // takes it off.
+          tapToReveal(chip, {
+            show: raise,
+            hide: drop,
+            isShown: () => tip !== null,
+            commit: () => unequip(catIndex, slotName),
           });
         }
       } else {

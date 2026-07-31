@@ -54,6 +54,7 @@ import {
   actedThisBattle,
   allSkillsOf,
   emptyKnowledge,
+  hasIntelGrace,
   intentsVisibleFor,
   KILLS_TO_COMPLETE,
   knownIntel,
@@ -747,6 +748,65 @@ describe("§2/§5 intent visibility", () => {
       value: 0,
       round: 1,
     });
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* the floor-1 novice grace                                            */
+/* ------------------------------------------------------------------ */
+//
+// "Learning is the reward" only works if the first lesson is legible. A
+// brand-new player's very first floor used to be a wall of `?` — no names,
+// no levels, no telegraphs — at the exact moment they were learning what a
+// telegraph is. Floor 1 of run 1 now opens the BASICS of tier-1 enemies on
+// sight, and nothing else: skills, weaknesses and resistances are still
+// earned by watching them fire.
+
+describe("first-run floor-1 intel grace", () => {
+  const novice = emptyProfile(); // counters.runs === 0
+  const veteran: MetaProfile = {
+    ...emptyProfile(),
+    counters: { runs: 1, victories: 0 },
+  };
+
+  it("opens name / level / tier / description / tell on sight", () => {
+    const view = knownIntel(novice, "ratThug", 1);
+    expect(view.met).toBe(0); // never actually met
+    expect(view.name.value).toBe(ENEMIES.ratThug.name);
+    expect(view.level.known).toBe(true);
+    expect(view.tier.known).toBe(true);
+    expect(view.description.known).toBe(true);
+    expect(view.tell.known).toBe(true);
+    expect(view.intentsVisible).toBe(true);
+    expect(intentsVisibleFor(novice, "ratThug", false, 1)).toBe(true);
+  });
+
+  it("still makes you EARN skills, weaknesses and resistances", () => {
+    const view = knownIntel(novice, "ratThug", 1);
+    expect(view.skills.every((s) => !s.known)).toBe(true);
+    expect(view.weaknesses.every((w) => !w.known)).toBe(true);
+    expect(view.resistances.every((r) => !r.known)).toBe(true);
+    expect(view.complete).toBe(false);
+    expect(view.unknownCount).toBeGreaterThan(0);
+  });
+
+  it("does not reach floor 2, tier-2 enemies, or a second run", () => {
+    expect(hasIntelGrace(novice, "ratThug", 1)).toBe(true);
+    expect(hasIntelGrace(novice, "ratThug", 2)).toBe(false);
+    expect(hasIntelGrace(novice, "roombaScout", 1)).toBe(false); // tier 2
+    expect(hasIntelGrace(veteran, "ratThug", 1)).toBe(false);
+    expect(knownIntel(veteran, "ratThug", 1).name.known).toBe(false);
+    expect(knownIntel(novice, "ratThug", 2).name.known).toBe(false);
+  });
+
+  it("never applies without a floor — a caller that cannot say gets none", () => {
+    expect(intentsVisibleFor(novice, "ratThug")).toBe(false);
+  });
+
+  it("the Bestiary page opts OUT: the checklist shows only what was earned", () => {
+    const codex = knownIntel(novice, "ratThug", 1, { grace: false });
+    expect(codex.name.known).toBe(false);
+    expect(codex.intentsVisible).toBe(false);
   });
 });
 

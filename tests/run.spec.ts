@@ -44,7 +44,11 @@ import {
   PARTY_ORDER,
   STARTING_PARTY_SIZE,
 } from "../src/core/run/runState.js";
-import { computeScore, VICTORY_BONUS } from "../src/core/run/score.js";
+import {
+  computeScore,
+  discoveriesOf,
+  VICTORY_BONUS,
+} from "../src/core/run/score.js";
 import {
   deleteSave,
   deserializeRun,
@@ -522,28 +526,79 @@ describe("score", () => {
     shiniesCollected: 120,
   };
 
+  /** 3 events resolved, 1 Mewthical relic turned up. */
+  const found = { eventsSurvived: 3, relicsFound: 1 };
+  // 2·250 + 3·100 + 14·15 + 1·500 + 5·75 + 3·80 + 1·250 + 120·1
+  const DEFEAT_TOTAL = 500 + 300 + 210 + 500 + 375 + 240 + 250 + 120;
+
   it("hand-computed defeat fixture", () => {
-    // 2·100 + 3·50 + 14·10 + 1·300 + 120·5 + 5·20 = 1490
-    const s = computeScore(counters, false, 17);
-    expect(s.total).toBe(1490);
+    const s = computeScore(counters, false, 17, found);
+    expect(s.total).toBe(DEFEAT_TOTAL);
     expect(s.lines.map((l) => l.points)).toEqual([
-      200, 150, 140, 300, 600, 100,
+      500, 300, 210, 500, 375, 240, 250, 120,
     ]);
     expect(s.lines.some((l) => l.id === "livesRemaining")).toBe(false);
     expect(s.lines.some((l) => l.id === "victoryBonus")).toBe(false);
   });
 
-  it("victory adds lives ×25 and the 1000 bonus", () => {
-    const s = computeScore(counters, true, 20);
-    expect(s.total).toBe(1490 + 20 * 25 + VICTORY_BONUS);
+  it("discoveries default to zero when the caller has only counters", () => {
+    const s = computeScore(counters, false, 17);
+    expect(s.lines.find((l) => l.id === "eventsSurvived")!.points).toBe(0);
+    expect(s.lines.find((l) => l.id === "relicsFound")!.points).toBe(0);
+    expect(s.total).toBe(DEFEAT_TOTAL - 240 - 250);
+  });
+
+  it("victory adds lives ×25 and the victory bonus", () => {
+    const s = computeScore(counters, true, 20, found);
+    expect(s.total).toBe(DEFEAT_TOTAL + 20 * 25 + VICTORY_BONUS);
     const lives = s.lines.find((l) => l.id === "livesRemaining")!;
     expect(lives.points).toBe(500);
     expect(s.lines[s.lines.length - 1].id).toBe("victoryBonus");
   });
 
   it("max lives line: 36 lives → 900", () => {
-    const s = computeScore(counters, true, 36);
+    const s = computeScore(counters, true, 36, found);
     expect(s.lines.find((l) => l.id === "livesRemaining")!.points).toBe(900);
+  });
+
+  it("discoveriesOf reads the run's own ledgers", () => {
+    const r = {
+      ...newRun(SEED),
+      firedEventIds: ["a", "b"],
+      uniquesDropped: ["ninthBell"],
+    } as RunState;
+    expect(discoveriesOf(r)).toEqual({ eventsSurvived: 2, relicsFound: 1 });
+  });
+
+  /**
+   * THE REBALANCE INVARIANT (score.ts header): shinies ×5 used to be 56-71%
+   * of every total, which made eight of the nine other lines decorative.
+   * Measured against a real six-floor descent
+   * (tests/support/scriptedRun.ts, seed DEEP-0): 6/6 floors, 52 kills, 2
+   * bosses, 984 shinies, 35 Lives left, 5 events. No line may own the table.
+   */
+  it("no single line dominates a full victory", () => {
+    const s = computeScore(
+      {
+        floorsCleared: 6,
+        floorsReached: 6,
+        enemiesDefeated: 52,
+        bossesDefeated: 2,
+        catPiles: 4,
+        shiniesCollected: 984,
+      },
+      true,
+      35,
+      { eventsSurvived: 5, relicsFound: 1 },
+    );
+    const share = (id: string): number =>
+      (s.lines.find((l) => l.id === id)?.points ?? 0) / s.total;
+    expect(share("shiniesCollected")).toBeLessThan(0.2);
+    for (const l of s.lines) expect(l.points / s.total).toBeLessThan(0.3);
+    // depth and deeds together must outweigh the coins by a wide margin
+    const depth =
+      share("floorsCleared") + share("floorsReached") + share("bossesDefeated");
+    expect(depth).toBeGreaterThan(share("shiniesCollected") * 2);
   });
 });
 
@@ -586,8 +641,8 @@ describe("save", () => {
   it("saveRun/loadRun via the injected storage stub", () => {
     const storage = memoryStorage();
     const run = midFloorRun();
-    saveRun(run, storage);
-    const loaded = loadRun(storage);
+    saveRun(run, { storage });
+    const loaded = loadRun({ storage });
     expect(loaded).toEqual(run);
   });
 
@@ -596,7 +651,7 @@ describe("save", () => {
     const run = midFloorRun();
     const sf = serializeRun(run);
     storage.set(SAVE_KEY, JSON.stringify({ ...sf, version: 99 }));
-    expect(loadRun(storage)).toBeNull();
+    expect(loadRun({ storage })).toBeNull();
     expect(storage.get(SAVE_KEY)).toBeNull();
   });
 
@@ -609,7 +664,7 @@ describe("save", () => {
     delete legacy.run.currentNodeId;
     delete legacy.run.visitedNodeIds;
     storage.set(SAVE_KEY, JSON.stringify(legacy));
-    const loaded = loadRun(storage)!;
+    const loaded = loadRun({ storage })!;
     expect(storage.get(SAVE_KEY)).not.toBeNull(); // not deleted
     // the party, the wallet and the floor survive; the position resets
     expect(loaded.cats).toEqual(run.cats);
@@ -622,23 +677,23 @@ describe("save", () => {
 
   it("corrupt JSON silently deletes the save; empty storage loads null", () => {
     const storage = memoryStorage();
-    expect(loadRun(storage)).toBeNull();
+    expect(loadRun({ storage })).toBeNull();
     storage.set(SAVE_KEY, "{not json");
-    expect(loadRun(storage)).toBeNull();
+    expect(loadRun({ storage })).toBeNull();
     expect(storage.get(SAVE_KEY)).toBeNull();
   });
 
   it("deleteSave removes the blob", () => {
     const storage = memoryStorage();
     const run = midFloorRun();
-    saveRun(run, storage);
-    deleteSave(storage);
+    saveRun(run, { storage });
+    deleteSave({ storage });
     expect(storage.get(SAVE_KEY)).toBeNull();
   });
 
   it("MetaFile records update on run end", () => {
     const storage = memoryStorage();
-    expect(loadMeta(storage)).toEqual(emptyMeta());
+    expect(loadMeta({ storage })).toEqual(emptyMeta());
 
     let meta = emptyMeta();
     meta = recordRunEnd(meta, { victory: false, score: 800, playTimeMs: 100 });
@@ -667,7 +722,7 @@ describe("save", () => {
       fastestVictoryMs: 2_100_000,
     });
 
-    saveMeta(meta, storage);
-    expect(loadMeta(storage)).toEqual(meta);
+    saveMeta(meta, { storage });
+    expect(loadMeta({ storage })).toEqual(meta);
   });
 });

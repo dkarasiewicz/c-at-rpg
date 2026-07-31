@@ -6,7 +6,7 @@
     "cats": [
       {
         "classId": "bruiser",
-        "hp": 25,
+        "hp": 32,
         "lives": 9,
         "weapon": {
           "uid": 1,
@@ -19,11 +19,14 @@
         },
         "trinket": null,
         "tempMods": [],
-        "energyNextBattle": 0
+        "energyNextBattle": 0,
+        "points": {
+          "hp": 2
+        }
       },
       {
         "classId": "trickster",
-        "hp": 32,
+        "hp": 38,
         "lives": 9,
         "weapon": {
           "uid": 2,
@@ -36,11 +39,14 @@
         },
         "trinket": null,
         "tempMods": [],
-        "energyNextBattle": 0
+        "energyNextBattle": 0,
+        "points": {
+          "hp": 2
+        }
       },
       {
         "classId": "hexer",
-        "hp": 28,
+        "hp": 34,
         "lives": 9,
         "weapon": {
           "uid": 3,
@@ -53,11 +59,14 @@
         },
         "trinket": null,
         "tempMods": [],
-        "energyNextBattle": 0
+        "energyNextBattle": 0,
+        "points": {
+          "hp": 2
+        }
       },
       {
         "classId": "medic",
-        "hp": 32,
+        "hp": 38,
         "lives": 9,
         "weapon": {
           "uid": 4,
@@ -70,7 +79,10 @@
         },
         "trinket": null,
         "tempMods": [],
-        "energyNextBattle": 0
+        "energyNextBattle": 0,
+        "points": {
+          "hp": 2
+        }
       }
     ],
     "marchingOrder": [

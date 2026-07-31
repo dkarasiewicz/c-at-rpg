@@ -51,7 +51,8 @@ attached to a combatant, consulted at its trigger points by `resolveAction`/
 
 ## Layer 2 — compilation (LLM, out of combat)
 
-- **Party creation** (`/api/gm/party`): free-text cat description → the GM
+- **Party creation** (`services/oneshot.ts#requestDmParty` — this was
+  `/api/gm/party`, which no longer exists): free-text cat description → the GM
   returns the normal kit PLUS one `PowerScript` per cat, generated under the
   framework json-schema (structured outputs) and passed through the
   **budget lint** (below). Invalid → one regenerate → fallback to a stock
@@ -62,7 +63,9 @@ attached to a combatant, consulted at its trigger points by `resolveAction`/
 
 When combatants with powers A and B are in the same battle, the engine emits
 `interactionKey = sortedPair(A.id, B.id) + frameworkVersion` in the battle
-setup log. The client asks `/api/gm/resonance` for the key:
+setup log. The client asks `services/oneshot.ts#requestDmResonance` for the key
+(this was `/api/gm/resonance`; the endpoint is gone, and with it the shared
+memo store — verdicts are now cached per session only, see `DM-DEPLOY.md`):
 
 - **DB hit** → the `InteractionRule` (same DSL: trigger/conditions/effects +
   flavor line + `announce` text) is attached to the battle from the start.
@@ -106,8 +109,8 @@ The lint runs server-side at compile time AND client-side at battle setup
 
 1. MUST: DSL + interpreter + budget lint + stock powers for the 4 default
    cats and both bosses (hand-authored scripts prove the substrate).
-2. SHOULD: /api/gm/party emits PowerScripts; /api/gm/resonance with memoized
-   compilation + discovery banner.
+2. SHOULD: `requestDmParty` emits PowerScripts; `requestDmResonance` with
+   memoized compilation + discovery banner.
 3. COULD: rare "Wild Resonance" narrative event where a one-off free-text
    player action is adjudicated by the GM into a one-battle temporary rule
    (the only place an LLM output lands mid-run, still schema-bounded, and

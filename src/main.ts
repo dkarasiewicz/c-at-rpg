@@ -10,6 +10,7 @@ import { PAL } from "./ui/palette.js";
 import { DESIGN_H, DESIGN_W } from "./ui/layout.js";
 import { installFonts } from "./ui/textStyles.js";
 import { initInput, setSceneKeyHandler } from "./ui/input.js";
+import { initTouch, isTouch, setViewScale } from "./ui/touch.js";
 import { loadMeta, saveRun } from "./core/run/save.js";
 import { newRun } from "./core/run/runState.js";
 import {
@@ -45,6 +46,11 @@ const RUN_SCENES: readonly SceneId[] = [
 ];
 
 (async () => {
+  // Pointer kind first: it stamps `<html data-touch>`, which is what
+  // public/style.css keys the landscape gate and the system button off, and
+  // what every widget's hit-area padding asks (docs/design/mobile.md §§1-3).
+  initTouch();
+
   const app = new Application();
   await app.init({
     background: PAL.void,
@@ -73,6 +79,9 @@ const RUN_SCENES: readonly SceneId[] = [
       (app.screen.width - DESIGN_W * scale) / 2,
       (app.screen.height - DESIGN_H * scale) / 2,
     );
+    // Publish it: every touch hit-area asks this to convert 44 CSS px into
+    // design px, and it moves on every resize and every rotate.
+    setViewScale(scale);
   };
   layout();
   app.renderer.on("resize", layout);
@@ -120,6 +129,32 @@ const RUN_SCENES: readonly SceneId[] = [
   initInput();
   setSceneKeyHandler((key) => manager.handleKey(key));
 
+  /* ---- touch chrome (docs/design/mobile.md §1) ----------------------- */
+  // Esc is the busiest key in the game — it pauses, closes the active
+  // overlay, backs out of the Den and the sell panel, cancels targeting and
+  // shuts the inspect card — and the scene manager already routes every one
+  // of those. So touch parity for all of it is ONE control feeding the same
+  // router, rather than an Esc button bolted onto eight scenes.
+  const sysMenu = document.getElementById("sys-menu");
+  sysMenu?.addEventListener("click", (e) => {
+    e.preventDefault();
+    manager.handleKey("esc");
+  });
+  // The button is a real <button>, so a stray Enter/Space on it would fire
+  // twice (once as a click, once through the game's key listener).
+  sysMenu?.addEventListener("keydown", (e) => e.stopPropagation());
+  if (isTouch()) {
+    // A rotate is a resize plus a new letterbox; pixi's `resizeTo: window`
+    // handles the canvas, `layout` handles the root, and this settles the
+    // case where the two fire before the browser has finished rotating.
+    window.addEventListener("orientationchange", () => {
+      setTimeout(
+        () => app.renderer.resize(window.innerWidth, window.innerHeight),
+        120,
+      );
+    });
+  }
+
   app.ticker.add((t) => {
     manager.update(t.deltaMS);
     // play time accrues only while actually playing (never on title/
@@ -144,6 +179,69 @@ const RUN_SCENES: readonly SceneId[] = [
     manager.overlay;
   (window as unknown as { __run?: () => unknown }).__run = () => ctx.run;
 
+  // Read-only hit-area census, same family as the hooks above. A TAP-ONLY
+  // smoke has no keyboard to fall back on, so it must aim at whatever is
+  // actually interactive right now — guessing coordinates from a mockup is
+  // how a touch test passes while the shipped button sits 20px away.
+  //
+  // Walks the live stage for containers with a real `eventMode` and reports
+  // each one's bounds together with the text found inside it, so a caller can
+  // aim at "To Cat Town" by name instead of by pixel.
+  //
+  // The rectangles come from `getBounds()`, i.e. GLOBAL/stage space — the
+  // letterbox scale and offset are already baked in — so they are canvas CSS
+  // pixels and a caller taps their centre directly, no conversion. (They are
+  // the ART bounds, not the padded touch hit area; touch.ts grows `contains`
+  // without growing the box, which is the point of it.)
+  (
+    window as unknown as {
+      __hits?: () => {
+        text: string;
+        x: number;
+        y: number;
+        w: number;
+        h: number;
+      }[];
+    }
+  ).__hits = () => {
+    const out: { text: string; x: number; y: number; w: number; h: number }[] =
+      [];
+    const words = (c: Container): string => {
+      const acc: string[] = [];
+      const walk = (n: Container): void => {
+        const t = (n as unknown as { text?: unknown }).text;
+        if (typeof t === "string" && t.trim() !== "") acc.push(t.trim());
+        for (const k of n.children) walk(k as Container);
+      };
+      walk(c);
+      return acc.join(" ").slice(0, 80);
+    };
+    const walk = (n: Container): void => {
+      // `visible` is what pixi hides AND what its hit test skips, and it is a
+      // SEPARATE flag from `renderable` — a closed card keeps `renderable`
+      // true and still answers `getBounds()`. Descending into one lists
+      // buttons nobody can see or press, which reads to a caller as a button
+      // that ignores taps. So an invisible subtree is not walked at all.
+      if (!n.visible || n.alpha <= 0.01) return;
+      const mode = (n as unknown as { eventMode?: string }).eventMode;
+      if ((mode === "static" || mode === "dynamic") && n.renderable) {
+        const b = n.getBounds();
+        if (b.width > 0 && b.height > 0) {
+          out.push({
+            text: words(n),
+            x: b.x,
+            y: b.y,
+            w: b.width,
+            h: b.height,
+          });
+        }
+      }
+      for (const k of n.children) walk(k as Container);
+    };
+    walk(root);
+    return out;
+  };
+
   // ?smoke=battle — dev/CI hook (like ?gallery=1): skip boot/title, start a
   // fresh run and drop straight into a non-boss battle so automated UI
   // smokes can exercise combat deterministically. Follows the FSM legally:
@@ -167,4 +265,40 @@ const RUN_SCENES: readonly SceneId[] = [
   }
 
   manager.goto("boot");
+
+  /* ---- PWA (docs/design/mobile.md §5) -------------------------------- */
+  // The game already runs without the network, so the worker is packaging:
+  // it makes c(at)rpg installable and makes the second launch instant. It is
+  // registered LAST and fire-and-forget — a browser without service workers,
+  // an insecure origin, or a rejected registration must never cost a frame.
+  if ("serviceWorker" in navigator && import.meta.env?.DEV !== true) {
+    const register = (): void => {
+      void navigator.serviceWorker
+        .register("/sw.js")
+        .then(async () => {
+          await navigator.serviceWorker.ready;
+          // Hand the worker the real dependency set. The very first visit
+          // fetches the bundle BEFORE the worker exists, and the renderer
+          // chunk, the fonts and the first screen's art all arrive through
+          // dynamic imports that no static precache list can name — so the
+          // page reports what it actually loaded and the worker caches that.
+          const urls = performance
+            .getEntriesByType("resource")
+            .map((e) => e.name)
+            .filter((n) => n.startsWith(window.location.origin));
+          navigator.serviceWorker.controller?.postMessage({
+            type: "warm",
+            urls,
+          });
+        })
+        .catch(() => {
+          /* offline-first is a bonus here, never a requirement */
+        });
+    };
+    // This bootstrap awaits `app.init()` and `initSprites()`, so by the time
+    // we get here `load` has usually ALREADY fired and a bare
+    // addEventListener('load') would never run. Check first, listen second.
+    if (document.readyState === "complete") register();
+    else window.addEventListener("load", register, { once: true });
+  }
 })();

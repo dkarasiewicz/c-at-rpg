@@ -30,6 +30,8 @@ import {
   sceneBackdrop,
   vignette,
 } from "../widgets.js";
+import { createDomInput, type DomInput } from "../domInput.js";
+import { isTouch } from "../touch.js";
 import { drawCat } from "../draw/cats.js";
 import { catTexture, spriteTextureFor } from "../sprites.js";
 import { applyPartyContent } from "./partyCreator.js";
@@ -71,6 +73,14 @@ export function createTitleScene(): Scene {
   let seedBuffer = "";
   let seedChip: Text | null = null;
   let entryChip: Text | null = null;
+  /**
+   * Seed entry is the one place on the title screen that asks you to TYPE,
+   * and a phone has no keyboard until something focuses a real field. So on
+   * touch the chip is backed by a DOM `<input>` (docs/design/mobile.md §5) —
+   * the same keyboard-aware component the tabletop card uses.
+   */
+  let seedField: DomInput | null = null;
+  let seedRect = { x: MENU_X + 30, y: MENU_TOP + 200, w: MENU_W - 60, h: 34 };
 
   // twinkle + idle animation state
   const stars: { g: Graphics; base: number; phase: number; speed: number }[] =
@@ -85,6 +95,36 @@ export function createTitleScene(): Scene {
       entryChip.visible = entering || seedBuffer !== "";
       entryChip.text = entering ? `seed: ${seedBuffer}_` : `seed: ${seedLabel}`;
     }
+  };
+
+  const closeSeedEntry = (): void => {
+    entering = false;
+    seedField?.destroy();
+    seedField = null;
+    refreshSeedTexts();
+  };
+
+  const openSeedEntry = (): void => {
+    entering = true;
+    refreshSeedTexts();
+    if (!isTouch() || seedField) return;
+    seedField = createDomInput({
+      rect: seedRect,
+      placeholder: "SEED",
+      maxLength: 16,
+      enterKeyHint: "done",
+      // the keyboard path accepts [a-z0-9-] and upper-cases it; the field
+      // must not quietly widen the alphabet a run seed is hashed from
+      filter: (raw) => raw.toUpperCase().replace(/[^A-Z0-9-]/g, ""),
+      onInput: (text) => {
+        seedBuffer = text;
+        refreshSeedTexts();
+      },
+      onSubmit: () => closeSeedEntry(),
+      onCancel: () => closeSeedEntry(),
+    });
+    seedField.setValue(seedBuffer);
+    seedField.focus();
   };
 
   /**
@@ -147,6 +187,11 @@ export function createTitleScene(): Scene {
     },
 
     unmount() {
+      // the seed field is a DOM element: it must go before its pixi host, or
+      // it floats over the next scene
+      seedField?.destroy();
+      seedField = null;
+      entering = false;
       stars.length = 0;
       cats.length = 0;
       view.destroy({ children: true });
@@ -167,7 +212,8 @@ export function createTitleScene(): Scene {
     onKey(key) {
       if (entering) {
         if (key === "enter" || key === "esc") {
-          entering = false;
+          closeSeedEntry();
+          return true;
         } else if (key === "backspace") {
           seedBuffer = seedBuffer.slice(0, -1);
         } else if (/^[a-z0-9-]$/.test(key) && seedBuffer.length < 16) {
@@ -191,8 +237,7 @@ export function createTitleScene(): Scene {
         return true;
       }
       if (key === "s") {
-        entering = true;
-        refreshSeedTexts();
+        openSeedEntry();
         return true;
       }
       // K2: consume Esc — pause is a run-context overlay (gameloop.md §1
@@ -356,8 +401,8 @@ export function createTitleScene(): Scene {
       label: "Seed…",
       hotkey: "S",
       onTap: () => {
-        entering = !entering;
-        refreshSeedTexts();
+        if (entering) closeSeedEntry();
+        else openSeedEntry();
       },
     });
 
@@ -382,6 +427,13 @@ export function createTitleScene(): Scene {
     // live seed entry chip inside the menu foot
     entryChip = label("", { mono: true, fill: PAL.gold, center: true });
     entryChip.position.set(MENU_W / 2, menuH - SPACE.lg - SPACE.xs);
+    // where the DOM field lands when a finger opens seed entry
+    seedRect = {
+      x: MENU_X + 40,
+      y: MENU_TOP + menuH - SPACE.lg - SPACE.sm - 30,
+      w: MENU_W - 80,
+      h: 32,
+    };
     entryChip.visible = false;
     menu.addChild(entryChip);
 

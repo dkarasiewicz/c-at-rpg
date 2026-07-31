@@ -133,6 +133,7 @@ import {
   vignette,
   type ValueBar,
 } from "../widgets.js";
+import { isTouch, padHit, padHitCircle } from "../touch.js";
 import { drawChest, drawStairs } from "../draw/glyphs.js";
 import { catNameColor } from "../overlays/inventoryPanel.js";
 import { spriteTextureFor } from "../sprites.js";
@@ -236,6 +237,24 @@ const NODE_NAME: Record<NodeType, string> = {
   boss: "Boss",
 };
 
+/**
+ * CAPTION INK — the medallion label's colour, and the reason it is not just
+ * `NODE_TINT`.
+ *
+ * The tints are chosen to read as a *fill* behind a pictogram; painted at
+ * 11px on top of a dimmed painting they are barely there. `THE WAY DOWN` was
+ * `PAL.danger` over a red-haloed boss medallion — dark red on dark red — and
+ * `CATNAP` / `FIGHT` sank straight into the backdrop. These captions are
+ * load-bearing (a route only reads as a gamble if you can read what it is),
+ * so each one is lifted most of the way to the text white, keeping just
+ * enough hue to stay a colour code, and sits on its own ink plate below.
+ */
+const captionInk = (type: NodeType): number =>
+  mix(NODE_TINT[type], PAL.text, 0.6);
+
+/** Ink for the terminal (stairs-down) caption — the halo is gold, so is this. */
+const WAY_DOWN_INK = mix(PAL.gold, PAL.text, 0.35);
+
 /** What the party KNOWS about a node before walking into it. */
 const NODE_BLURB: Record<NodeType, string> = {
   fight: "Something is prowling this stretch. A normal pack, a normal scrap.",
@@ -307,6 +326,10 @@ interface NodeView {
   hotkey: Container;
   /** The node's type, spelled out under the medallion. */
   caption: Text;
+  /** The ink plate the caption sits on (redrawn when its state changes). */
+  captionPlate: Graphics;
+  /** Full-strength ink for this node's caption (see `captionInk`). */
+  captionTint: number;
   r: number;
   x: number;
   y: number;
@@ -348,6 +371,8 @@ export class RunMapScene implements Scene {
   private toastC: Container | null = null;
   private toastMs = 0;
   private tooltip: Container | null = null;
+  /** Which node the open tooltip belongs to — the touch two-tap needs it. */
+  private tooltipFor: number | null = null;
   /** What Enter does when the party is standing on the terminal node. */
   private enterFn: (() => void) | null = null;
 
@@ -356,6 +381,13 @@ export class RunMapScene implements Scene {
   private selected = 0;
   private busy = false;
   private restBox: Container | null = null;
+  /**
+   * THE FLOOR'S OPENING BEAT (see `arriveOnMount`). The entry node the party
+   * is standing on, held un-dispatched so the BOARD is the first thing a
+   * floor shows. Null once the way in has been taken — and null for every
+   * other arrival, which resolves the instant the marker lands.
+   */
+  private entryHold: MapNode | null = null;
 
   /**
    * The tabletop layer (run-map-and-dm.md §4b). Built ONLY when the DM probe
@@ -414,9 +446,8 @@ export class RunMapScene implements Scene {
     this.promptC = new Container();
     this.hudC.addChild(this.promptC);
 
-    // ---- arrive: resolve the node the party is standing on --------------
-    this.refresh();
-    this.resolveArrival();
+    // ---- arrive: the board first, THEN the node ------------------------
+    this.arriveOnMount();
 
     // ---- the tabletop layer: probe once per session, fire-and-forget -----
     // `resolveArrival` may already have handed the floor to another scene, so
@@ -439,7 +470,9 @@ export class RunMapScene implements Scene {
     this.talk = "idle";
     this.answering = null;
     this.tooltip = null;
+    this.tooltipFor = null;
     this.restBox = null;
+    this.entryHold = null;
     this.enterFn = null;
     this.toastC = null;
     this.nodeViews = [];
@@ -517,6 +550,16 @@ export class RunMapScene implements Scene {
       this.enterFn();
       return true;
     }
+    // Routes are shut while the way in is held — swallow the route keys so a
+    // stray "1" cannot look like it did nothing.
+    //
+    // But NOT Esc. The scene manager only opens the pause overlay when the
+    // scene declines the key (`if (scene?.onKey?.(key)) return true`), so
+    // swallowing Esc here made the menu unreachable on the first frame of
+    // every floor — on a phone too, since the gutter menu button feeds the
+    // same `handleKey("esc")`. The header promises "Esc menu" right there on
+    // screen; it has to be true even before the party has walked in.
+    if (this.entryHold && key !== "esc") return true;
     if (this.options.length === 0) return false;
 
     if (key === "up" || key === "left" || key === "w" || key === "a") {
@@ -672,14 +715,20 @@ export class RunMapScene implements Scene {
 
     // …and the type spelled out, because a colour code alone is not a
     // legend. Sits below the medallion; the hotkey chip moved to its left.
+    //
+    // On its OWN ink plate: the board is a painted backdrop with painted
+    // medallions on it, and 11px type has nothing to sit against out there.
+    // The plate is the contrast (near-black at 0.86 under light ink); the
+    // type colour survives as the plate's hairline and the ink's hue.
+    const wayDown = isTerminal && node.type !== "boss";
+    const captionTint = wayDown ? WAY_DOWN_INK : captionInk(node.type);
     const caption = label(
-      isTerminal && node.type !== "boss"
-        ? "THE WAY DOWN"
-        : NODE_NAME[node.type].toUpperCase(),
-      { size: TYPE.tiny, bold: true, center: true, fill: NODE_TINT[node.type] },
+      wayDown ? "THE WAY DOWN" : NODE_NAME[node.type].toUpperCase(),
+      { size: TYPE.tiny, bold: true, center: true, fill: captionTint },
     );
-    caption.position.set(0, r + 7);
-    view.addChild(caption);
+    const captionPlate = new Graphics();
+    caption.position.set(0, r + 9);
+    view.addChild(captionPlate, caption);
 
     const visitedMark = this.makeStateMark("node:visited", r);
     const lockedMark = this.makeStateMark("node:locked", r);
@@ -701,26 +750,87 @@ export class RunMapScene implements Scene {
       ring,
       hotkey,
       caption,
+      captionPlate,
+      captionTint,
       r,
       x,
       y,
     };
+    this.paintCaption(nv, "idle");
 
     view.eventMode = "static";
     view.cursor = "pointer";
-    view.hitArea = {
-      contains: (px: number, py: number) => px * px + py * py <= (r + 8) ** 2,
-    };
-    view.on("pointerover", () => this.showTooltip(nv));
-    view.on("pointerout", () => this.hideTooltip());
+    // A 66px medallion is 36 CSS px on a phone; the ring pushes it to 44
+    // under a finger and leaves the mouse target exactly as it was.
+    padHitCircle(view, r + 8);
+    view.on("pointerover", () => {
+      if (isTouch()) return;
+      this.showTooltip(nv);
+    });
+    view.on("pointerout", () => {
+      if (isTouch()) return;
+      this.hideTooltip();
+    });
     view.on("pointertap", () => {
       const opt = this.options.find((o) => o.id === node.id);
+      /*
+       * TAP TO READ, TAP AGAIN TO WALK (docs/design/mobile.md §2).
+       *
+       * A route is meant to be "a legible gamble", and what makes it legible
+       * is the blurb — which on a mouse lives in a hover tooltip. Committing
+       * to a fight with a boss on the other side because your thumb landed on
+       * a 36px disc is not a gamble, it is an accident. So on touch the first
+       * tap selects the node and opens its card; only a second tap on the
+       * SAME node walks. The route chips under the board stay one-tap for
+       * players who already know what they want.
+       */
+      if (isTouch()) {
+        if (this.tooltipFor !== node.id) {
+          if (opt) this.select(this.options.indexOf(opt));
+          this.showTooltip(nv);
+          return;
+        }
+        this.hideTooltip();
+        if (opt) this.take(opt);
+        return;
+      }
       if (opt) {
         this.select(this.options.indexOf(opt));
         this.take(opt);
       }
     });
     return nv;
+  }
+
+  /**
+   * Paint (or repaint) a medallion caption and the plate under it.
+   *
+   * Three states, all of which must stay READABLE — a receding label is still
+   * a label, so nothing here drops below the contrast the plate provides:
+   *   `live`   a route on offer, or the node the party is standing on:
+   *            full ink, opaque plate, type-coloured hairline.
+   *   `idle`   somewhere else on the board: the same ink at 85%, so the
+   *            offered routes lead without the rest going illegible.
+   *   `closed` sealed off: grey ink, no hairline — a scar, not a shout.
+   */
+  private paintCaption(nv: NodeView, state: "live" | "idle" | "closed"): void {
+    const ink = state === "closed" ? PAL.textDim : nv.captionTint;
+    nv.caption.style.fill = ink;
+    nv.caption.alpha = state === "idle" ? 0.85 : 1;
+
+    // the plate is measured from the laid-out text, so a long caption
+    // ("THE WAY DOWN", "THE PEDDLER") is never clipped by a fixed width
+    const w = Math.ceil(nv.caption.width) + 12;
+    const h = Math.ceil(nv.caption.height) + 4;
+    nv.captionPlate.clear();
+    nv.captionPlate
+      .roundRect(-w / 2, nv.caption.y - 2, w, h, 4)
+      .fill({ color: PAL.void, alpha: state === "closed" ? 0.55 : 0.86 });
+    if (state !== "closed") {
+      nv.captionPlate
+        .roundRect(-w / 2, nv.caption.y - 2, w, h, 4)
+        .stroke({ width: 1, color: nv.captionTint, alpha: 0.5 });
+    }
   }
 
   /**
@@ -932,7 +1042,9 @@ export class RunMapScene implements Scene {
     rail.addChild(seed);
 
     const hint = label(
-      "1-3 / arrows pick a route · Enter confirms · Esc menu",
+      isTouch()
+        ? "tap a node to read it, tap again to go · ☰ menu"
+        : "1-3 / arrows pick a route · Enter confirms · Esc menu",
       {
         dim: true,
         size: TYPE.tiny,
@@ -1109,6 +1221,7 @@ export class RunMapScene implements Scene {
       if (usable) {
         cell.eventMode = "static";
         cell.cursor = "pointer";
+        padHit(cell, 32, 32); // 17 CSS px on a phone without this
         cell.on("pointertap", () => this.useConsumable(defId));
       }
       this.beltC.addChild(cell);
@@ -1163,7 +1276,10 @@ export class RunMapScene implements Scene {
     const visited = new Set(run.visitedNodeIds);
     const closed = new Set(closedNodes(run));
     const resolved = new Set(this.resolvedIds());
-    this.options = optionsForRun(run).map((o) => o.node);
+    // While the way in is held there is nothing to pick yet: offering the
+    // routes would let the player walk straight past the floor's opening
+    // encounter without ever resolving it.
+    this.options = this.entryHold ? [] : optionsForRun(run).map((o) => o.node);
     if (this.selected >= this.options.length) this.selected = 0;
 
     // edges
@@ -1189,12 +1305,10 @@ export class RunMapScene implements Scene {
       nv.view.cursor = legal ? "pointer" : "default";
       // the type label leads on the routes on offer and recedes elsewhere,
       // so the board reads "these two, and here is what they are"
-      nv.caption.style.fill = isClosed
-        ? PAL.textDim
-        : legal || id === current
-          ? NODE_TINT[nv.node.type]
-          : mix(NODE_TINT[nv.node.type], PAL.textDim, 0.5);
-      nv.caption.alpha = legal || id === current ? 1 : 0.7;
+      this.paintCaption(
+        nv,
+        isClosed ? "closed" : legal || id === current ? "live" : "idle",
+      );
       if (!legal) nv.art.scale.set(1);
       this.setHotkey(
         nv,
@@ -1269,7 +1383,8 @@ export class RunMapScene implements Scene {
   /* ------------------------------ the choice ---------------------------- */
 
   private take(node: MapNode | undefined): void {
-    if (!node || this.busy || !this.mounted) return;
+    // the way in is not a route: nothing leaves this node until it resolves
+    if (!node || this.busy || !this.mounted || this.entryHold) return;
     // Walking on IS an answer to an unprompted beat. The card had its moment;
     // it must not ride along to the next node.
     if (this.tabletop?.isInterjecting()) this.closeTalk();
@@ -1323,6 +1438,48 @@ export class RunMapScene implements Scene {
   }
 
   /* --------------------------- node resolution -------------------------- */
+
+  /**
+   * FLOOR ENTRY — the map's first appearance must be the map.
+   *
+   * `mount` used to run `resolveArrival()` synchronously, and every floor's
+   * entry node carries content, so the player was thrown into a fight before
+   * a single medallion was ever on screen. The board — the thing the design
+   * calls "the gameplay" — was a screen you only saw *between* encounters.
+   *
+   * So a floor's OWN entry node is held: the board paints, the routes ahead
+   * are legible, and one confirm walks into whatever is waiting at the mouth
+   * of the floor. Every other arrival still resolves the instant the party
+   * marker lands — you chose that node, you already saw the board.
+   *
+   * Coming back from a battle/event/shop the entry node is already in
+   * `resolvedNodes`, so there is nothing to hold and nothing to confirm.
+   */
+  private arriveOnMount(): void {
+    const run = this.run;
+    const map = run.floorMap;
+    const id = run.currentNodeId;
+    const node = map && id !== null ? map.nodes[id] : undefined;
+    const firstArrival =
+      node !== undefined &&
+      map !== null &&
+      id === map.entryId &&
+      !this.resolvedIds().includes(id);
+    // a passive entry node (a Peddler, a warm spot) has nothing to brace for
+    const passive =
+      node !== undefined && (node.type === "shop" || node.type === "rest");
+    this.entryHold = firstArrival && !passive ? node : null;
+    this.refresh();
+    if (!this.entryHold) this.resolveArrival();
+  }
+
+  /** Take the way in: the held entry node is dispatched like any other. */
+  private enterFloor(): void {
+    if (!this.entryHold || this.busy || !this.mounted) return;
+    this.entryHold = null;
+    this.refresh();
+    this.resolveArrival();
+  }
 
   /**
    * Hand the node the party is standing on to whatever resolves it. Nodes are
@@ -1509,6 +1666,30 @@ export class RunMapScene implements Scene {
     const run = this.run;
     const [px, py, pw, ph] = RM.prompt;
 
+    // the floor's opening beat: the board is up, this is the way in
+    const held = this.entryHold;
+    if (held) {
+      const bw = 360;
+      const line = label(NODE_BLURB[held.type], {
+        center: true,
+        dim: true,
+        size: TYPE.small,
+        wrap: pw,
+      });
+      line.position.set(px + pw / 2, py + 2);
+      const go = button(
+        `Into the ${NODE_NAME[held.type].toLowerCase()}`,
+        bw,
+        34,
+        () => this.enterFloor(),
+        { primary: true, hotkey: "Enter" },
+      );
+      go.view.position.set(px + (pw - bw) / 2, py + 22);
+      this.promptC.addChild(line, go.view);
+      this.enterFn = () => this.enterFloor();
+      return;
+    }
+
     if (atTerminal(run)) {
       const bw = 320;
       if (!this.floorCleared()) {
@@ -1639,6 +1820,11 @@ export class RunMapScene implements Scene {
     const id = this.run.currentNodeId;
     const node = map && id !== null ? map.nodes[id] : undefined;
     if (!node) return "the mouth of the floor";
+    if (this.entryHold) {
+      return `the mouth of the floor, looking at a ${NODE_NAME[
+        node.type
+      ].toLowerCase()} they have not walked into yet`;
+    }
     const terminal = node.id === map?.bossId;
     return terminal && node.type !== "boss"
       ? "the stairs down"
@@ -1916,6 +2102,7 @@ export class RunMapScene implements Scene {
   private showTooltip(nv: NodeView): void {
     this.hideTooltip();
     if (!this.mounted) return;
+    this.tooltipFor = nv.node.id;
     const run = this.run;
     const node = nv.node;
     const closed = closedNodes(run).includes(node.id);
@@ -1981,6 +2168,7 @@ export class RunMapScene implements Scene {
   private hideTooltip(): void {
     this.tooltip?.destroy({ children: true });
     this.tooltip = null;
+    this.tooltipFor = null;
   }
 
   /* ------------------------------- toast -------------------------------- */

@@ -35,6 +35,7 @@ import { PAL, THEMES, darken, mix } from "../palette.js";
 import { DESIGN_H, DESIGN_W, R, RADIUS, SPACE, rh, rw } from "../layout.js";
 import { TYPE, mono, ui } from "../textStyles.js";
 import { tween } from "../tween.js";
+import { isTouch, padHit } from "../touch.js";
 import {
   avatar,
   bar,
@@ -1250,24 +1251,52 @@ function buildSlot(
   // interaction + tooltip (reason for disabled slots, desc otherwise)
   slot.eventMode = "static";
   slot.cursor = spec.ok ? "pointer" : "default";
-  slot.hitArea = { contains: (x, y) => x >= 0 && x <= w && y >= 0 && y <= h };
+  padHit(slot, w, h);
   slot.on("pointertap", onTap);
   const tipText = spec.ok
     ? (spec.skill?.desc ?? "")
     : (spec.reason ?? "unavailable");
   if (tipText) {
     let tip: Container | null = null;
-    slot.on("pointerover", () => {
+    const raise = (): void => {
       if (tip) return;
       const built = makeSlotTooltip(tipText);
       tip = built.view;
       tip.position.set(0, -built.height - 6);
       slot.addChild(tip);
-    });
-    slot.on("pointerout", () => {
+    };
+    const drop = (): void => {
       tip?.destroy({ children: true });
       tip = null;
+    };
+    slot.on("pointerover", () => {
+      if (!isTouch()) raise();
     });
+    slot.on("pointerout", drop);
+    if (isTouch()) {
+      /*
+       * TOUCH (docs/design/mobile.md §2). A card's tooltip is the only place
+       * a skill's rules text lives, and touch has no hover — but a card is
+       * also the thing you TAP to use the skill, so "tap to reveal" would
+       * cost a tap on every single turn. So:
+       *
+       *  • a USABLE card shows its text while the finger is down and fires on
+       *    release — press-and-read, one gesture, no extra tap;
+       *  • an UNUSABLE card has nothing to fire, so its tap simply toggles
+       *    the reason ("Needs rank 3-4 — Bruno is at rank 1"), which is the
+       *    case where the text actually matters.
+       */
+      if (spec.ok) {
+        slot.on("pointerdown", raise);
+        slot.on("pointerup", drop);
+        slot.on("pointerupoutside", drop);
+      } else {
+        slot.on("pointertap", () => {
+          if (tip) drop();
+          else raise();
+        });
+      }
+    }
   }
   return slot;
 }
@@ -1723,7 +1752,7 @@ const INSPECT = { x: 16, y: 84, w: 372 } as const;
  * second tap that commits the attack always lands (docs/design/mobile.md
  * "tap to inspect, tap again to target").
  */
-export function makeInspectPanel(): InspectPanel {
+export function makeInspectPanel(onClose?: () => void): InspectPanel {
   const view = new Container();
   view.visible = false;
   let openId: string | null = null;
@@ -1854,15 +1883,26 @@ export function makeInspectPanel(): InspectPanel {
       /* -- footer ------------------------------------------------------- */
       const foot = label(
         subject.targetable
-          ? "tap again to attack  ·  Esc closes"
-          : `met ${intel.met}×  ·  felled ${intel.kills}  ·  I / Esc closes`,
+          ? "tap it again to attack"
+          : `met ${intel.met}×  ·  felled ${intel.kills}`,
         subject.targetable
           ? { size: TYPE.tiny, mono: true, fill: PAL.gold }
           : { size: TYPE.tiny, mono: true, dim: true },
       );
-      foot.position.set(pad, y);
+      foot.position.set(pad, y + 12);
       body.addChild(foot);
-      y += 20;
+      // A real Close control, not a hint: [I] and Esc are keys, and the card
+      // is the one battle surface a finger can open without a way back out
+      // (docs/design/mobile.md §1).
+      if (onClose) {
+        const close = button("Close", 96, 32, onClose, {
+          hotkey: "Esc",
+          fontSize: TYPE.tiny,
+        });
+        close.view.position.set(w - pad - 96, y);
+        body.addChild(close.view);
+      }
+      y += 40;
 
       view.addChild(
         panel(w, y + SPACE.xs, { variant: "raised", accent: PAL.danger }),

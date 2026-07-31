@@ -69,6 +69,7 @@ import {
   sceneBackdrop,
   vignette,
 } from "../widgets.js";
+import { isTouch, padHit } from "../touch.js";
 import { makeIntelBlock, makeLevelChip, makeTierPill } from "../draw/intel.js";
 import { drawCat } from "../draw/cats.js";
 import { catTexture } from "../sprites.js";
@@ -134,6 +135,14 @@ const TILE_H = 142;
 const TILE_COLS = 5;
 const TILE_GAP = SPACE.md;
 const TILE_TOP = 82;
+
+/**
+ * The codex reads the bestiary WITHOUT the floor-1 novice grace
+ * (core/meta/bestiary.ts): the grace is an encounter affordance, and a page
+ * that is explicitly a checklist of what you have earned must never show a
+ * tier-1 entry as open because the player happens to be on their first run.
+ */
+const BESTIARY_VIEW = { grace: false } as const;
 
 /** The place panel (a modal over the town) — height follows its rows. */
 const PLACE_W = 720;
@@ -587,7 +596,10 @@ export class CatTownScene implements Scene {
     view.eventMode = "static";
     view.cursor = "pointer";
     view.on("pointertap", () => this.showPlace(place.id));
-    view.on("pointerover", () => tween(view.scale, { x: 1.05, y: 1.05 }, 120));
+    view.on("pointerover", () => {
+      if (isTouch()) return; // no hover lift on a finger
+      tween(view.scale, { x: 1.05, y: 1.05 }, 120);
+    });
     view.on("pointerout", () => tween(view.scale, { x: 1, y: 1 }, 120));
 
     return { place, view, ring, badge, hot: false, plate, plateW };
@@ -610,7 +622,17 @@ export class CatTownScene implements Scene {
     const owned = this.catalog.filter((d) => isUnlocked(meta, d.id)).length;
     this.townBar?.set(owned, Math.max(1, this.catalog.length));
     if (this.townBarText) {
-      this.townBarText.text = `town ${owned}/${this.catalog.length} · ${catalogCost(this.catalog)} ✦ to build it all`;
+      // What is LEFT to build, not what the catalog cost when it was empty:
+      // the old line printed the whole catalog's price forever, so a fully
+      // unlocked town said "town 13/13 · 2650 ✦ to build it all", which is a
+      // sentence arguing with itself. `catalogCost` of the unbought remainder
+      // is the honest number, and at zero the line says so.
+      const remaining = this.catalog.filter((d) => !isUnlocked(meta, d.id));
+      const left = catalogCost(remaining);
+      this.townBarText.text =
+        remaining.length === 0
+          ? `town ${owned}/${this.catalog.length} · every door open`
+          : `town ${owned}/${this.catalog.length} · ${left} ✦ still to build`;
     }
 
     const affordable = new Set(affordableUnlocks(meta, this.catalog));
@@ -934,8 +956,12 @@ export class CatTownScene implements Scene {
     box.addChild(card);
 
     const ids = bestiaryRoster();
-    const done = ids.filter((id) => knownIntel(ctx.meta, id).complete).length;
-    const met = ids.filter((id) => knownIntel(ctx.meta, id).met > 0).length;
+    const done = ids.filter(
+      (id) => knownIntel(ctx.meta, id, 1, BESTIARY_VIEW).complete,
+    ).length;
+    const met = ids.filter(
+      (id) => knownIntel(ctx.meta, id, 1, BESTIARY_VIEW).met > 0,
+    ).length;
 
     const title = heading("THE BESTIARY", 2, { fill: PAL.gold });
     title.position.set(SPACE.lg, SPACE.md);
@@ -977,7 +1003,7 @@ export class CatTownScene implements Scene {
     const gridX =
       (BEST_W - (TILE_COLS * TILE_W + (TILE_COLS - 1) * TILE_GAP)) / 2;
     ids.forEach((id, i) => {
-      const intel = knownIntel(ctx.meta, id);
+      const intel = knownIntel(ctx.meta, id, 1, BESTIARY_VIEW);
       const def = ENEMIES[id];
       const col = i % TILE_COLS;
       const row = Math.floor(i / TILE_COLS);
@@ -1038,12 +1064,10 @@ export class CatTownScene implements Scene {
 
       tile.eventMode = "static";
       tile.cursor = "pointer";
-      tile.hitArea = {
-        contains: (x, y) => x >= 0 && x <= TILE_W && y >= 0 && y <= TILE_H,
-      };
+      padHit(tile, TILE_W, TILE_H);
       tile.on("pointertap", () => this.showBestiary(id));
       tile.on("pointerover", () =>
-        tween(tile.scale, { x: 1.04, y: 1.04 }, 110),
+        isTouch() ? undefined : tween(tile.scale, { x: 1.04, y: 1.04 }, 110),
       );
       tile.on("pointerout", () => tween(tile.scale, { x: 1, y: 1 }, 110));
       tile.pivot.set(TILE_W / 2, TILE_H / 2);
@@ -1056,7 +1080,7 @@ export class CatTownScene implements Scene {
   /** One species, in full — the same block the battle inspect card uses. */
   private buildBestiaryEntry(card: Container, id: EnemyId): void {
     const ctx = this.ctx!;
-    const intel = knownIntel(ctx.meta, id);
+    const intel = knownIntel(ctx.meta, id, 1, BESTIARY_VIEW);
     const def = ENEMIES[id];
     const seen = intel.met > 0;
     const left = SPACE.lg;

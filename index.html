@@ -3,7 +3,29 @@
 <head>
     <meta charset="UTF-8" />
     <link rel="icon" type="image/png" href="/favicon.png" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      docs/design/mobile.md §6 (page-level touch behaviour):
+        viewport-fit=cover  — the canvas reaches under a notch; CSS then pulls
+                              the chrome back inside env(safe-area-inset-*).
+        user-scalable=no    — pinch-zoom fights a letterboxed game canvas, and
+                              maximum-scale keeps iOS from zooming a focused
+                              <input> (the typed-action field).
+        interactive-widget  — the virtual keyboard must NOT resize the layout
+                              viewport; src/ui/domInput.ts reads visualViewport
+                              and floats the field above the keyboard itself.
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=overlays-content"
+    />
+    <meta name="theme-color" content="#0b0a10" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="c(at)rpg" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
     <link rel="stylesheet" href="/style.css">
     <title>c(at)rpg</title>
 </head>
@@ -12,6 +34,39 @@
     <div id="app">
         <div id="pixi-container"></div>
     </div>
+
+    <!--
+      Touch chrome lives in the DOM, not on the pixi stage, for two reasons:
+      it must sit inside the safe-area insets (which pixi knows nothing about),
+      and it must be a guaranteed 44 CSS px whatever the letterbox scale is.
+      Both are hidden outright on a fine pointer (public/style.css keys off
+      <html data-touch>, stamped by src/ui/touch.ts).
+    -->
+    <button id="sys-menu" type="button" aria-label="Menu / back (Esc)">
+        <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+            <path d="M4 7h16M4 12h16M4 17h16" />
+        </svg>
+    </button>
+
+    <!--
+      Landscape-first (mobile.md §"Orientation"): the design is 16:9 and every
+      screen is wide by nature, so portrait gets a clean gate rather than a
+      broken reflow. The full portrait pass is explicitly deferred.
+    -->
+    <div id="rotate" role="alertdialog" aria-live="polite">
+        <div class="rotate-card">
+            <svg class="rotate-phone" viewBox="0 0 64 64" aria-hidden="true" focusable="false">
+                <rect x="20" y="4" width="24" height="42" rx="4" />
+                <line x1="27" y1="9" x2="37" y2="9" />
+                <circle cx="32" cy="40" r="1.6" />
+                <path class="rotate-arrow" d="M14 52a22 22 0 0 0 36 0" />
+                <path class="rotate-arrow-head" d="M50 46v7h-7" />
+            </svg>
+            <h1>Turn your phone sideways</h1>
+            <p>c(at)rpg is played in landscape — the alley is wider than it is tall.</p>
+        </div>
+    </div>
+
     <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

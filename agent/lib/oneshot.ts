@@ -1,5 +1,6 @@
 /**
- * One-shot output schemas — parity with today's `api/gm/*` endpoints.
+ * One-shot output schemas — the capabilities the `api/gm/*` endpoints used to
+ * serve, as schemas a caller passes to a single agent turn.
  *
  * docs/design/run-map-and-dm.md §4: "One-shot still works.
  * `session.send({ message, outputSchema })` returns schema-valid typed data, so
@@ -8,13 +9,13 @@
  *
  * These are the schemas a caller passes as `outputSchema`. They are zod mirrors
  * of the SHIPPED contracts in `src/core/types.ts` and `src/services/gmTypes.ts`
- * (the same types `api/gm/*` produces and `src/services/gm.ts` re-validates),
+ * (the same types `src/services/oneshot.ts` re-validates on receipt),
  * each with a compile-time parity assertion at the bottom of its section: if a
  * core contract changes shape and this file does not, it stops compiling.
  *
  * Nothing here validates BUDGETS. The numeric budgets (role stat totals, skill
  * costs, event effect caps, item hook menu) stay where they already are —
- * `api/_lib/constraints.ts` and `src/core/combat/powers.ts` — and are stated to
+ * `src/services/caps.ts` and `src/core/combat/powers.ts` — and are stated to
  * the model by the matching skill under `agent/skills/`. Schemas constrain
  * shape; lints constrain power.
  */
@@ -136,7 +137,7 @@ const powerPredicateSchema = z.discriminatedUnion("kind", [
 /**
  * `PowerScript` minus `budget`: the service recomputes and stamps it with
  * `powerBudget()` — models never compute their own budgets (the rule
- * `api/_lib/powers.ts#normalizePower` already enforces).
+ * `src/services/powerLint.ts#normalizePower` enforces on receipt).
  */
 export const powerScriptSchema = z.object({
   id: z.string().regex(/^power:[a-z][a-zA-Z0-9]{1,40}$/),

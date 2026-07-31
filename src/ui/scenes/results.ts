@@ -18,7 +18,11 @@
  * shape when restyling the other screens.
  */
 import { Container, Graphics, Text } from "pixi.js";
-import { computeScore, type ScoreSummary } from "../../core/run/score.js";
+import {
+  computeScore,
+  discoveriesOf,
+  type ScoreSummary,
+} from "../../core/run/score.js";
 import { deleteSave, saveMeta } from "../../core/run/save.js";
 import {
   applyUnlocks,
@@ -63,8 +67,13 @@ const SCORE_X = 120;
 const SCORE_W = 580;
 const ROLL_X = 740;
 const ROLL_W = 420;
-const ROW_H = 24; // one score line
+const ROW_H = 24; // one score line, minimum
+const ROW_H_MAX = 32; // …and how far a short table may spread to fill
 const CAT_ROW_H = 72;
+/** Height of the TOTAL block (hairline + row) pinned above the time line. */
+const TOTAL_BAND = 34;
+/** Height of the time line pinned to the panel foot. */
+const FOOT_BAND = 28;
 
 export function createResultsScene(): Scene {
   const view = new Container();
@@ -137,7 +146,12 @@ export function createResultsScene(): Scene {
 
       // -- bookkeeping first: save deleted on entry, meta updated ------
       const livesRemaining = run.cats.reduce((s, c) => s + c.lives, 0);
-      summary = computeScore(run.score, p.victory, livesRemaining);
+      summary = computeScore(
+        run.score,
+        p.victory,
+        livesRemaining,
+        discoveriesOf(run),
+      );
       const prevBest = ctx.meta.records.bestScore;
       isNewBest = summary.total > prevBest;
       victory = p.victory;
@@ -198,8 +212,15 @@ export function createResultsScene(): Scene {
       view.addChild(eyebrow, banner, cause);
 
       /* ---- score panel (count-up) ---------------------------------- */
+      // The two body panels are the same height (they read as one band), and
+      // the score table is ALWAYS the shorter of the two — six lines on a
+      // defeat against four cat rows left ~110px of nothing between TOTAL and
+      // the footer. Rather than pin TOTAL lower and move the void, the lines
+      // SPREAD: `rowH` grows (up to ROW_H_MAX) until the table fills the
+      // space it has been given, and TOTAL + the time line stay pinned to the
+      // foot where they belong.
       const rows = summary.lines.length;
-      const scoreH = 56 + rows * ROW_H + 20 + ROW_H + 26 + SPACE.lg;
+      const scoreH = 56 + rows * ROW_H + TOTAL_BAND + FOOT_BAND + SPACE.lg;
       const rollH = 56 + run.cats.length * CAT_ROW_H + SPACE.md;
       const bodyH = Math.max(scoreH, rollH);
 
@@ -214,8 +235,14 @@ export function createResultsScene(): Scene {
       const colL = SPACE.lg;
       const colR = SCORE_W - SPACE.lg;
       const top = 52;
+      const footY = bodyH - FOOT_BAND;
+      const totalY = footY - TOTAL_BAND + 6;
+      const rowH = Math.max(
+        ROW_H,
+        Math.min(ROW_H_MAX, (totalY - 14 - top) / Math.max(1, rows)),
+      );
       summary.lines.forEach((l, i) => {
-        const y = top + i * ROW_H;
+        const y = top + i * rowH;
         const row = label(
           l.id === "victoryBonus"
             ? l.label
@@ -233,7 +260,6 @@ export function createResultsScene(): Scene {
       });
 
       // hairline above the TOTAL row
-      const totalY = top + rows * ROW_H + 18;
       score.addChild(
         new Graphics()
           .moveTo(colL, totalY - 8)
@@ -257,7 +283,7 @@ export function createResultsScene(): Scene {
         { mono: true, dim: true, size: TYPE.tiny },
       );
       // pinned to the panel foot so short (defeat) tables don't leave a void
-      timeLine.position.set(colL, bodyH - 28);
+      timeLine.position.set(colL, footY);
       score.addChild(timeLine);
 
       /* ---- NEW BEST flair: a gold badge straddling the panel edge --- */
@@ -285,16 +311,51 @@ export function createResultsScene(): Scene {
       rollTitle.position.set(SPACE.lg, SPACE.md + 4);
       roll.addChild(rollTitle);
 
+      // A run FIELDS a subset of the four slots (balance-and-meta.md §2), and
+      // the roll-call used to render all four identically — so a run that
+      // ended "overwhelmed on floor 4" showed two cats at a full nine Lives
+      // beside the cats that fell, reading as a flat contradiction. They were
+      // never down there. Three states, said out loud:
+      //   FELL      0 Lives — grey portrait, "out of lives"
+      //   WALKED    fielded and alive — survivor ring, Lives left
+      //   BENCHED   alive, never in the marching order — dimmed + tagged
+      const fielded = new Set(run.marchingOrder);
+      const descended = run.cats.filter(
+        (c) => c.lives <= 0 || fielded.has(c.classId),
+      ).length;
+      const benchedCount = run.cats.length - descended;
+      const rollSub = label(
+        benchedCount > 0
+          ? `${descended} went down · ${benchedCount} stayed in town`
+          : `${descended} went down`,
+        { dim: true, size: TYPE.tiny, mono: true },
+      );
+      rollSub.position.set(SPACE.lg, SPACE.md + 24);
+      roll.addChild(rollSub);
+
       run.cats.forEach((cat, i) => {
         const dead = cat.lives <= 0;
+        const benched = !dead && !fielded.has(cat.classId);
         const rowY = 52 + i * CAT_ROW_H;
+        const row = new Container();
+        row.alpha = benched ? 0.5 : 1;
+        roll.addChild(row);
+
         const face = avatar(cat.classId, 56, {
           dead,
-          ...(dead ? {} : { ring: PAL.heal }), // survivor ring
+          // the survivor ring means "came back up", so a cat that never went
+          // down does not get one
+          ...(dead || benched ? {} : { ring: PAL.heal }),
         });
         face.position.set(SPACE.lg + 28, rowY + 30);
-        roll.addChild(face);
-        cats.push({ c: face, baseY: face.y, phase: i * 0.9, dead });
+        row.addChild(face);
+        // only the cats that actually walked the floors bob
+        cats.push({
+          c: face,
+          baseY: face.y,
+          phase: i * 0.9,
+          dead: dead || benched,
+        });
 
         const name = label(CLASSES[cat.classId].catName, {
           bold: true,
@@ -302,17 +363,36 @@ export function createResultsScene(): Scene {
           fill: dead ? PAL.textDim : PAL.text,
         });
         name.position.set(SPACE.lg + 68, rowY + 8);
-        const state = label(dead ? "out of lives" : `${cat.lives} lives left`, {
-          dim: true,
-          size: TYPE.tiny,
-          mono: true,
-        });
+        const state = label(
+          dead
+            ? "out of lives"
+            : benched
+              ? "never left the bench"
+              : `${cat.lives} lives left`,
+          { dim: true, size: TYPE.tiny, mono: true },
+        );
         state.position.set(SPACE.lg + 68, rowY + 30);
-        roll.addChild(name, state);
+        row.addChild(name, state);
 
-        const paws = makePawRow(cat.lives);
-        paws.view.position.set(SPACE.lg + 68, rowY + 46);
-        roll.addChild(paws.view);
+        if (benched) {
+          const tag = label("BENCHED", {
+            dim: true,
+            size: TYPE.tiny,
+            bold: true,
+          });
+          tag.anchor.set(1, 0);
+          tag.position.set(ROLL_W - SPACE.lg, rowY + 8);
+          row.addChild(tag);
+        }
+
+        // the paw row is a record of Lives SPENT; a benched cat spent none,
+        // so printing nine full paws next to the fallen is the contradiction
+        // itself — it is simply not drawn for them
+        if (!benched) {
+          const paws = makePawRow(cat.lives);
+          paws.view.position.set(SPACE.lg + 68, rowY + 46);
+          row.addChild(paws.view);
+        }
       });
 
       /* ---- records line -------------------------------------------- */
@@ -334,9 +414,14 @@ export function createResultsScene(): Scene {
         primary?: boolean;
       }[] = [
         {
+          // mirrors onKey's Enter: while the tally is still counting, the
+          // primary action is "show me the total", not "leave"
           label: "Back to Cat Town",
           hotkey: "Enter",
-          onTap: toTown,
+          onTap: () => {
+            if (!countDone) finishCountUp();
+            else toTown();
+          },
           primary: true,
         },
         { label: "Again", hotkey: "A", onTap: () => again(true) },
@@ -359,6 +444,18 @@ export function createResultsScene(): Scene {
         b.view.position.set(x0 + i * (bwid + gap), buttonsY);
         view.addChild(b.view);
       });
+
+      // Tap anywhere to skip the count-up — the tap equivalent of Space
+      // (docs/design/mobile.md §1). Behind every button, so it only ever
+      // catches the empty parts of the screen.
+      const skip = new Graphics()
+        .rect(0, 0, DESIGN_W, DESIGN_H)
+        .fill({ color: PAL.void, alpha: 0.0001 });
+      skip.eventMode = "static";
+      skip.on("pointertap", () => {
+        if (!countDone) finishCountUp();
+      });
+      view.addChildAt(skip, 0);
 
       layer(root, "hud").addChild(view);
     },

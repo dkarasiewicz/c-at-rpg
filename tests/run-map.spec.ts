@@ -690,8 +690,8 @@ describe("save", () => {
     const wire = JSON.parse(JSON.stringify(serializeRun(run)));
     expect(deserializeRun(wire)).toEqual(run);
     const storage = memoryStorage();
-    saveRun(run, storage);
-    expect(loadRun(storage)).toEqual(run);
+    saveRun(run, { storage });
+    expect(loadRun({ storage })).toEqual(run);
   });
 
   it("refuses to serialize a run with no map generated", () => {
@@ -721,7 +721,7 @@ describe("save", () => {
     expect(migrated.run.visitedNodeIds).toEqual([]);
 
     storage.set(SAVE_KEY, JSON.stringify(legacy));
-    const loaded = loadRun(storage)!;
+    const loaded = loadRun({ storage })!;
     expect(loaded).not.toBeNull();
     // same floor, same party, same wallet — a freshly generated map, at entry
     expect(loaded.floorNum).toBe(3);
@@ -743,7 +743,7 @@ describe("save", () => {
     expect(migrated.version).toBe(3);
     const storage = memoryStorage();
     storage.set(SAVE_KEY, JSON.stringify(legacy));
-    expect(loadRun(storage)!.floorNum).toBe(3);
+    expect(loadRun({ storage })!.floorNum).toBe(3);
   });
 
   it("an unknown version is still discarded", () => {
@@ -751,7 +751,7 @@ describe("save", () => {
     const sf = serializeRun(midFloorRun());
     expect(migrateSave({ ...sf, version: 99 } as never)).toBeNull();
     storage.set(SAVE_KEY, JSON.stringify({ ...sf, version: 99 }));
-    expect(loadRun(storage)).toBeNull();
+    expect(loadRun({ storage })).toBeNull();
     expect(storage.get(SAVE_KEY)).toBeNull();
   });
 

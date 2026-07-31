@@ -6,10 +6,9 @@
  *  1. VERDICT VALIDATION — the client-side half of the defence in depth. A
  *     tampered, over-budget, out-of-union or unaffordable verdict must
  *     degrade to pure narration and never reach the engine.
- *  2. EFFECT CLAMPING — the floor ramp and the per-floor cap tables, plus the
- *     PARITY of those tables with the authoring-side ones they mirror
- *     (`agent/lib/effects.ts` and `api/_lib/constraints.ts`), so the two can
- *     never drift apart silently.
+ *  2. EFFECT CLAMPING — the floor ramp and the per-floor cap tables. They
+ *     have exactly one home now (`services/caps.ts`), which both the browser
+ *     and the agent import, so there is nothing left to drift.
  *  3. THE ENGINE PATH — `resolveAction({ type: 'improvise' })` really is an
  *     ordinary turn: turn-start phase, energy spent, effects executed by the
  *     Stand-power interpreter, zero RNG drawn.
@@ -43,7 +42,7 @@ import {
   saveRun,
 } from "../src/core/run/save.js";
 import {
-  EVENT_CAPS_MIRROR,
+  EVENT_CAPS,
   MAX_ENERGY_COST,
   MAX_TRANSCRIPT_ENTRIES,
   canAffordImprovisation,
@@ -57,24 +56,18 @@ import {
   recordAdjudication,
   tabletopLogOf,
   validateCombatVerdict,
+  ENCOUNTER_EFFECT_KINDS,
   validateEncounterVerdict,
   withAdjudication,
   withDmSession,
   type TabletopRun,
 } from "../src/services/tabletop.js";
 import { probeDm, resetDmProbe, setDmBaseUrl } from "../src/services/dm.js";
-// The authoring-side tables these mirror. `src/` may not import either of
-// them at runtime (the browser must not pull in zod or the api package), so
-// the parity is asserted HERE — the same pattern tests/gm.spec.ts uses for
-// `resonancePairKey`.
-import {
-  floorDamageCap as agentDamageCap,
-  floorHealCap as agentHealCap,
-  floorRamp as agentFloorRamp,
-  improvBudgetCap as agentBudgetCap,
-  lintImprovisedEffects,
-} from "../agent/lib/effects.js";
-import { EVENT_CAPS } from "../api/_lib/constraints.js";
+// The agent's lint, to check the DM is briefed against the same budget the
+// client enforces. The per-floor TABLES are no longer asserted for parity:
+// `agent/lib/effects.ts` and `services/tabletop.ts` both re-export them from
+// `services/caps.ts`, so there is nothing left that could drift.
+import { lintImprovisedEffects } from "../agent/lib/effects.js";
 
 /* ------------------------------------------------------------------ */
 /* helpers                                                             */
@@ -149,32 +142,11 @@ const verdict = (over: Partial<Record<string, unknown>> = {}) => ({
 });
 
 /* ================================================================== */
-/* 1. The cap tables are MIRRORS, not copies that drifted              */
+/* 1. One cap table, briefed and enforced from the same numbers        */
 /* ================================================================== */
 
-describe("per-floor caps mirror the authoring-side tables", () => {
-  it("floorRamp matches agent/lib/effects.ts on every floor", () => {
-    for (let f = 0; f <= 8; f++) {
-      expect(floorRamp(f)).toBe(agentFloorRamp(f));
-      expect(improvBudgetCap(f)).toBe(agentBudgetCap(f));
-      expect(floorDamageCap(f)).toBe(agentDamageCap(f));
-      expect(floorHealCap(f)).toBe(agentHealCap(f));
-    }
-  });
-
-  it("EVENT_CAPS_MIRROR matches api/_lib/constraints.ts", () => {
-    for (let f = 1; f <= 6; f++) {
-      expect(EVENT_CAPS_MIRROR.damageMax(f)).toBe(EVENT_CAPS.damageMax(f));
-      expect(EVENT_CAPS_MIRROR.healMax(f)).toBe(EVENT_CAPS.healMax(f));
-      expect(EVENT_CAPS_MIRROR.shiniesMax(f)).toBe(EVENT_CAPS.shiniesMax(f));
-    }
-    expect(EVENT_CAPS_MIRROR.buffMax).toBe(EVENT_CAPS.buffMax);
-    expect(EVENT_CAPS_MIRROR.energyMax).toBe(EVENT_CAPS.energyMax);
-    expect(EVENT_CAPS_MIRROR.restoreLifeMax).toBe(EVENT_CAPS.restoreLifeMax);
-    expect(EVENT_CAPS_MIRROR.itemCountMax).toBe(EVENT_CAPS.itemCountMax);
-  });
-
-  it("the client lint agrees with the DM's server-side lint", () => {
+describe("per-floor caps", () => {
+  it("the client lint agrees with the lint the DM self-corrects against", () => {
     const effects: EffectSpec[] = [
       { kind: "damage", target: "other", pct: 60 },
       { kind: "status", target: "other", status: "offBalance" },
@@ -190,9 +162,12 @@ describe("per-floor caps mirror the authoring-side tables", () => {
   });
 
   it("floor 1 improvisation is 3/8 of a Stand power, floor 6 exactly one", () => {
+    expect(floorRamp(1)).toBeCloseTo(3 / 8, 9);
+    expect(floorRamp(6)).toBe(1);
     expect(improvBudgetCap(1)).toBeCloseTo(BUDGET_CAPS.cat * (3 / 8), 9);
     expect(improvBudgetCap(6)).toBe(BUDGET_CAPS.cat);
     expect(floorDamageCap(6)).toBe(EFFECT_CAPS.damagePct);
+    expect(floorHealCap(6)).toBe(EFFECT_CAPS.healPct);
   });
 });
 
@@ -349,9 +324,7 @@ describe("validateEncounterVerdict — the out-of-combat vocabulary", () => {
       {
         allowed: true,
         narration: "A hoard!",
-        effects: [
-          { kind: "shinies", amount: EVENT_CAPS_MIRROR.shiniesMax(1) + 1 },
-        ],
+        effects: [{ kind: "shinies", amount: EVENT_CAPS.shiniesMax(1) + 1 }],
       },
       1,
     );
@@ -397,6 +370,70 @@ describe("validateEncounterVerdict — the out-of-combat vocabulary", () => {
     expect(check.verdict?.allowed).toBe(false);
     expect(check.applied).toBe(false);
     expect(check.problems).toEqual([]);
+  });
+
+  /* -- the closed union ------------------------------------------------ */
+  //
+  // `validateEvents` only inspects the kinds it recognises: it has no opinion
+  // on one it has never heard of, so a made-up `kind` used to pass the
+  // structural gate untouched and reach `resolveOption` as an unhandled
+  // branch. Defence in depth means unknown is REJECTED, not ignored.
+
+  it("rejects an effect kind outside the engine's union", () => {
+    const check = validateEncounterVerdict(
+      {
+        allowed: true,
+        narration: "The DM invents a new rule.",
+        effects: [{ kind: "grantOmnipotence", target: "party", amount: 1 }],
+      },
+      3,
+    );
+    expect(check.applied).toBe(false);
+    expect(check.verdict?.effects).toEqual([]);
+    expect(check.problems).toContain("effect kind outside the engine's union");
+  });
+
+  it("rejects a batch where only ONE effect is off-union", () => {
+    const check = validateEncounterVerdict(
+      {
+        allowed: true,
+        narration: "Two coins and a miracle.",
+        effects: [
+          { kind: "shinies", amount: 10 },
+          { kind: "ascend", amount: 1 },
+        ],
+      },
+      2,
+    );
+    expect(check.applied).toBe(false);
+    expect(check.verdict?.effects).toEqual([]);
+  });
+
+  it("rejects an effect with no `kind` at all", () => {
+    const check = validateEncounterVerdict(
+      { allowed: true, narration: "Something.", effects: [{ amount: 3 }] },
+      2,
+    );
+    expect(check.applied).toBe(false);
+  });
+
+  it("the declared union is exactly the shipped one", () => {
+    // If core/types.ts gains an Effect kind, this list and the per-kind cap
+    // switch in validateEncounterVerdict both have to learn about it.
+    expect([...ENCOUNTER_EFFECT_KINDS].sort()).toEqual(
+      [
+        "buff",
+        "damage",
+        "energyNextBattle",
+        "fight",
+        "giveItem",
+        "heal",
+        "nothing",
+        "restoreLife",
+        "shinies",
+        "takeItem",
+      ].sort(),
+    );
   });
 });
 
@@ -543,8 +580,8 @@ describe("transcript recording", () => {
     run = withAdjudication(run, draft("pry the grate open"));
     run = withAdjudication(run, draft("bribe the rat king"));
 
-    saveRun(run, storage);
-    const loaded = loadRun(storage) as TabletopRun | null;
+    saveRun(run, { storage });
+    const loaded = loadRun({ storage }) as TabletopRun | null;
     expect(loaded).not.toBeNull();
     expect(tabletopLogOf(loaded).entries.map((e) => e.prompt)).toEqual([
       "pry the grate open",
@@ -561,8 +598,8 @@ describe("transcript recording", () => {
   it("a run saved before the tabletop layer loads with an empty log", () => {
     const storage = memoryStorage();
     const plain: RunState = generateCurrentFloorMap(newRun("seed-legacy"));
-    saveRun(plain, storage);
-    const loaded = loadRun(storage) as TabletopRun | null;
+    saveRun(plain, { storage });
+    const loaded = loadRun({ storage }) as TabletopRun | null;
     expect(loaded?.tabletop).toBeUndefined();
     expect(tabletopLogOf(loaded).entries).toEqual([]);
     expect(loaded?.dm).toBeUndefined();

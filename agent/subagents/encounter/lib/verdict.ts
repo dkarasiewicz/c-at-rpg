@@ -17,7 +17,7 @@ import { effectSpecSchema } from "../../../lib/effects.js";
 /**
  * Energy ceiling for one improvised action: the shipped maximum skill cost
  * (classes.md §14 — costs are 0..6, and `MAX_SKILL_COST` in
- * `api/_lib/constraints.ts` lints generated kits against it). Improvisation
+ * `src/services/contentLint.ts` lints generated kits against it). Improvisation
  * costs a turn; it must never cost less than the skills it competes with.
  */
 export const MAX_ENERGY_COST = 6;

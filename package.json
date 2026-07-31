@@ -10,7 +10,6 @@
     "dev": "vite",
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
-    "typecheck:api": "tsc -p api/tsconfig.json",
     "typecheck:agent": "tsc -p agent/tsconfig.json",
     "dm:dev": "eve dev",
     "dm:build": "eve build",

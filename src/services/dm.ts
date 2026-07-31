@@ -216,6 +216,44 @@ function parseEvent(line: string): EveEvent | null {
   }
 }
 
+/**
+ * The outermost JSON object in a blob of assistant prose, or undefined.
+ *
+ * Only ever used as a FALLBACK when a schema'd turn produced no structured
+ * result (see `sendDmTurn`). It scans for the first `{` and brace-matches to
+ * its partner, ignoring braces inside strings, so a fenced ```json block, a
+ * bare object, or an object with a sentence in front of it all parse.
+ */
+export function parseEmbeddedJson(text: string): unknown {
+  const start = text.indexOf("{");
+  if (start < 0) return undefined;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let i = start; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (c === "\\") escaped = true;
+      else if (c === '"') inString = false;
+      continue;
+    }
+    if (c === '"') inString = true;
+    else if (c === "{") depth++;
+    else if (c === "}") {
+      depth--;
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(start, i + 1)) as unknown;
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 export interface DmTurn {
   /** What the DM is told. The whole snapshot goes here — a declared subagent
    *  inherits nothing, so context cannot be implied. */
@@ -330,6 +368,16 @@ export async function sendDmTurn(
       if (isBoundary(ev.type)) break;
     }
     next.streamIndex += read;
+    // A turn that asked for a schema and got no `result.completed` is not
+    // necessarily a failed turn: the model sometimes answers the schema in the
+    // ASSISTANT TEXT instead of through the structured channel (observed once
+    // in three against the deployed agent on the resonance one-shot). Reading
+    // the object back out of the prose is strictly better than discarding a
+    // correct answer — the caller re-lints it either way, so a wrong guess
+    // costs exactly what a missing result costs.
+    if (data === undefined && turn.outputSchema !== undefined) {
+      data = parseEmbeddedJson(text);
+    }
     return { data, text, session: next };
   } catch {
     return null;

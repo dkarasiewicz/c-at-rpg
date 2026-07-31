@@ -1,7 +1,7 @@
 /**
- * Party creator scene (GM-DEPLOY.md "UI wiring plan" §1, gm-system.md):
+ * Party creator scene (DM-DEPLOY.md "One-shot calls", gm-system.md):
  * title → [C] → describe 1–4 cats in free text (DOM overlay inputs) →
- * `requestGmParty` → preview the four generated kits (name, Stand, role,
+ * `requestDmParty` → preview the four generated kits (name, Stand, role,
  * stats, skills, power flavor) → [Enter] starts the run with those kits.
  *
  * THE GM IS OPTIONAL. Every failure (offline / timeout / invalid body)
@@ -25,15 +25,12 @@
  */
 import { Container, Text } from "pixi.js";
 import type { CatClass, ClassId, Skill, TraitId } from "../../core/types.js";
-import {
-  newRun,
-  PARTY_ORDER,
-  type CustomCatKit,
-} from "../../core/run/runState.js";
+import { PARTY_ORDER, type CustomCatKit } from "../../core/run/runState.js";
+import { applyUnlocks, startRun } from "../../core/meta/index.js";
 import { CLASSES } from "../../content/classes.js";
 import { SKILLS } from "../../content/skills.js";
 import { CAT_POWERS } from "../../content/powers.js";
-import { requestGmParty } from "../../services/gm.js";
+import { requestDmParty } from "../../services/oneshot.js";
 import type { GeneratedCatKit, GmRole } from "../../services/gmTypes.js";
 import { PAL } from "../palette.js";
 import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
@@ -237,23 +234,36 @@ export function createPartyCreatorScene(): Scene {
 
   /* ---- run starts -------------------------------------------------- */
 
-  const startCustomRun = (): void => {
-    if (!ctx || !kits) return;
-    const party = mapKitsToCustomParty(kits);
-    applyPartyContent(party); // BEFORE newRun: starting HP = custom bases
-    ctx.run = newRun(randomSeed8(), party);
+  /**
+   * THE run-start seam — the same one Cat Town and RESULTS use.
+   *
+   * This scene used to call `newRun` directly, which silently dropped Cat
+   * Town's overlay: a custom-party run started with the base wallet, base
+   * party capacity and none of the gear the town had bought, so a player who
+   * had unlocked the fourth bowl lost it the moment they described their own
+   * cats. `startRun(seed, applyUnlocks(meta), party)` folds the overlay in and
+   * the kits ride along, so "my party" and "my town" finally compose.
+   */
+  const beginRun = (party: CustomCatKit[] | null): void => {
+    if (!ctx) return;
+    applyPartyContent(party); // BEFORE startRun: starting HP = custom bases
+    ctx.run = startRun(
+      randomSeed8(),
+      applyUnlocks(ctx.meta),
+      party ?? undefined,
+    );
     ctx.scenes.goto("floorgen");
   };
 
-  const startFallbackRun = (): void => {
-    if (!ctx) return;
-    applyPartyContent(null);
-    ctx.run = newRun(randomSeed8());
-    ctx.scenes.goto("floorgen");
+  const startCustomRun = (): void => {
+    if (!kits) return;
+    beginRun(mapKitsToCustomParty(kits));
   };
+
+  const startFallbackRun = (): void => beginRun(null);
 
   const backToTitle = (): void => {
-    requestToken++; // orphan any in-flight GM response
+    requestToken++; // orphan any in-flight DM response
     ctx?.scenes.goto("title");
   };
 
@@ -271,7 +281,7 @@ export function createPartyCreatorScene(): Scene {
     }
     const token = ++requestToken;
     setMode("loading");
-    void requestGmParty(descriptions).then((result) => {
+    void requestDmParty(descriptions).then((result) => {
       if (!alive || token !== requestToken || mode !== "loading") return;
       if (result === null) {
         // offline / timeout / invalid — toast, then the Strays. Never block.

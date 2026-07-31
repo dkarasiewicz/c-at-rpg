@@ -6,9 +6,9 @@
  *    (any may be absent while a batch is mid-generation — tolerated), and
  *  - src/content/powers.ts stock Power Scripts (module may not exist yet —
  *    tolerated; it is being built in a parallel workstream), plus the
- *    hand-authored STOCK_POWERS shipped with the api package.
+ *    hand-authored STOCK_POWERS in src/services/powerLint.ts.
  *
- * Writes through the PoolStore interface (api/_lib/pool.ts):
+ * Writes through the PoolStore interface (agent/lib/pool.ts):
  *  - keyed `art` rows   { assetId, file, w, h, styleVersion, provenance }
  *  - keyed `powers` rows{ id, version, json, budget, flavor, provenance }
  * Keyed writes are idempotent upserts — safe to re-run after every batch.
@@ -22,13 +22,13 @@
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { getPool } from "../api/_lib/pool.js";
+import { getPool } from "../agent/lib/pool.js";
 import {
   BUDGET_CAPS,
   lintPowerScript,
   normalizePower,
   STOCK_POWERS,
-} from "../api/_lib/powers.js";
+} from "../src/services/powerLint.js";
 import { ART_STYLE } from "../src/content/artStyle.js";
 import type { PowerScript } from "../src/services/gmTypes.js";
 

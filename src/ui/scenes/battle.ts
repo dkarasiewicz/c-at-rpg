@@ -32,7 +32,7 @@ import {
   getCachedResonance,
   prefetchResonance,
   resonancePairKey,
-} from "../../services/gm.js";
+} from "../../services/oneshot.js";
 import {
   ensureDmSession,
   isDmAvailable,
@@ -112,7 +112,7 @@ import { ENEMIES } from "../../content/enemies.js";
 import { CAT_POWERS, ENEMY_POWERS } from "../../content/powers.js";
 import { FLOORS } from "../../content/floors.js";
 import { PAL, mix } from "../palette.js";
-import { DESIGN_H, DESIGN_W, R, SPACE, rw, rx, ry } from "../layout.js";
+import { DESIGN_H, DESIGN_W, R, SPACE, rh, rw, rx, ry } from "../layout.js";
 import { MONO_BITMAP, TYPE, mono } from "../textStyles.js";
 import { killTweens, shake, tween } from "../tween.js";
 import {
@@ -139,6 +139,7 @@ import {
 } from "../draw/spriteFrame.js";
 import { catTexture, enemyTexture } from "../sprites.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
+import { isTouch, padHit, padHitBox } from "../touch.js";
 import type { EventWinContext, LootOverlayParams } from "../overlays/loot.js";
 import { makeIntentBadge, type IntentBadge } from "../draw/intel.js";
 import {
@@ -402,7 +403,7 @@ export function createBattleScene(): Scene {
   let stage: BattleStage | null = null;
   let zones: FieldZones | null = null;
   let threat: ThreatLayer | null = null;
-  const inspect = makeInspectPanel();
+  const inspect = makeInspectPanel(() => closeInspect());
   let roundChip: RoundChip | null = null;
   let logText: BitmapText | null = null;
   let activeSlot: Graphics | null = null;
@@ -435,6 +436,8 @@ export function createBattleScene(): Scene {
     refId: string;
     targetIds: string[];
     idx: number;
+    /** which skill-bar slot opened it — tapping it again backs out. */
+    slot: number;
   } | null = null;
   let targetFx: Container | null = null;
   let flyout: Container | null = null;
@@ -767,12 +770,13 @@ export function createBattleScene(): Scene {
     // (docs/design/mobile.md §3).
     root.eventMode = "static";
     const halfW = Math.max(46, h * 0.34);
-    root.hitArea = {
-      contains: (px: number, py: number) =>
-        px >= -halfW && px <= halfW && py >= -(h + 18) && py <= 20,
-    };
+    // The silhouette IS the target, grown to 44 CSS px under a finger — a
+    // rat is 146px tall at design scale, which is 79 CSS px on a phone, but
+    // only 31 px WIDE (docs/design/mobile.md §3).
+    padHitBox(root, -halfW, -(h + 18), halfW * 2, h + 38);
     root.cursor = "pointer";
     root.on("pointerover", () => {
+      if (isTouch()) return; // the tap path owns inspection on touch
       if (u.dead || !bs) return;
       const cc = bs.combatants.find((x) => x.id === u.id);
       if (!cc || u.nameplate) return;
@@ -806,9 +810,17 @@ export function createBattleScene(): Scene {
     if (!bs || !ctx || c.side !== "enemy" || !c.speciesId) return null;
     const raw = intentFor(bs, c.id);
     if (!raw) return null;
+    // the floor is what the first-run grace keys on (bestiary.hasIntelGrace):
+    // a brand-new player reads tier-1 telegraphs on floor 1 without earning
+    // them first, so their first fight is a lesson rather than a wall of `?`
     return maskIntent(
       raw,
-      intentsVisibleFor(ctx.meta, c.speciesId, actedSpecies.has(c.speciesId)),
+      intentsVisibleFor(
+        ctx.meta,
+        c.speciesId,
+        actedSpecies.has(c.speciesId),
+        ctx.run?.floorNum,
+      ),
     );
   };
 
@@ -1021,6 +1033,8 @@ export function createBattleScene(): Scene {
     strip.position.set(rx(R.combat.logLine), ry(R.combat.logLine));
     strip.eventMode = "static";
     strip.cursor = "pointer";
+    // the 26px-tall log strip is the tap equivalent of [L]
+    padHit(strip, rw(R.combat.logLine), rh(R.combat.logLine));
     strip.on("pointertap", () => toggleScrollback());
     hudC.addChild(strip);
     logText = new BitmapText({
@@ -1348,6 +1362,12 @@ export function createBattleScene(): Scene {
     if (phase !== "input" || improvising || !tabletop) return;
     clearTargeting();
     closeFlyout();
+    // The inspect card lives in the LEFT gutter and the tabletop card is
+    // centred over it, so leaving one open behind the other stacks two
+    // panels with a hard overlap and the enemy's description running under
+    // the DM's. Typing a line is a full-attention beat, like targeting and
+    // the flyout above — clear the board for it.
+    closeInspect();
     tabletop.open();
   };
 
@@ -1457,6 +1477,13 @@ export function createBattleScene(): Scene {
   const onSlotPressed = (i: number): void => {
     if (phase !== "input" && phase !== "targeting") return;
     if (!bs || !legal) return;
+    // Tapping the LIT slot backs out of targeting. Right-click and Esc both
+    // cancel already, and neither exists on a phone; the selected card is the
+    // control the finger is nearest (docs/design/mobile.md §1).
+    if (phase === "targeting" && targeting?.slot === i) {
+      clearTargeting();
+      return;
+    }
     clearTargeting();
     if (i === 4) {
       resolvePlayer({ type: "guard" });
@@ -1523,9 +1550,9 @@ export function createBattleScene(): Scene {
       name.position.set(54, (rowH - 17) / 2);
       row.addChild(name);
       row.position.set(0, i * (rowH + 4));
-      row.hitArea = {
-        contains: (x, y) => x >= 0 && x <= rowW && y >= 0 && y <= rowH,
-      };
+      // 36 design px is 19 CSS px on a phone — the item rows are the smallest
+      // committing control in the fight (docs/design/mobile.md §3).
+      padHit(row, rowW, rowH);
       row.eventMode = "static";
       row.cursor = "pointer";
       row.on("pointertap", () => pickItem(item.defId));
@@ -1571,7 +1598,7 @@ export function createBattleScene(): Scene {
     if (targetIds.length === 0) return;
     phase = "targeting";
     skillBar.setSelected(slotIndex);
-    targeting = { skill, action, refId, targetIds, idx: 0 };
+    targeting = { skill, action, refId, targetIds, idx: 0, slot: slotIndex };
     refreshTargeting();
   };
 
@@ -1758,11 +1785,40 @@ export function createBattleScene(): Scene {
         if (!other) return;
         if (other.rank === actor.rank - 1 && legal.canMoveForward) {
           resolvePlayer({ type: "move", dir: "forward" });
-        } else if (other.rank === actor.rank + 1 && legal.canMoveBack) {
+          return;
+        }
+        if (other.rank === actor.rank + 1 && legal.canMoveBack) {
           resolvePlayer({ type: "move", dir: "back" });
+          return;
         }
       }
     }
+    // A cat's nameplate is hover-only, and a cat has no inspect card, so on
+    // touch a tap that could not move anybody toggles the plate instead —
+    // otherwise the party's own names and levels are unreachable by finger
+    // (docs/design/mobile.md §2).
+    if (isTouch() && u.side === "cat" && !u.dead) toggleNameplate(u);
+  };
+
+  /** Show/hide a unit's hover nameplate. The touch path for §2. */
+  const toggleNameplate = (u: UnitView): void => {
+    if (u.nameplate) {
+      u.nameplate.destroy({ children: true });
+      u.nameplate = null;
+      return;
+    }
+    if (!bs) return;
+    const cc = bs.combatants.find((x) => x.id === u.id);
+    if (!cc) return;
+    for (const other of units.values()) {
+      if (other.nameplate) {
+        other.nameplate.destroy({ children: true });
+        other.nameplate = null;
+      }
+    }
+    u.nameplate = makeNameplate(cc);
+    u.nameplate.position.set(0, u.headY - 46);
+    u.root.addChild(u.nameplate);
   };
 
   const tryFlee = (): void => {
@@ -2634,6 +2690,20 @@ export function createBattleScene(): Scene {
       // pixels. Never shipped — stripped by the import.meta.env.DEV guard.
       if (import.meta.env?.DEV === true) {
         (window as unknown as { __battle?: () => unknown }).__battle = () => bs;
+        // Where each unit actually STANDS, in design px. The formation is
+        // computed per battle from the headcounts (see STAGE COMPOSITION), so
+        // a touch smoke cannot guess an enemy's x from a constant — and
+        // "tap the enemy" is the interaction docs/design/mobile.md §2 exists
+        // to prove. DEV-only, like `__battle` itself.
+        (window as unknown as { __units?: () => unknown }).__units = () =>
+          [...units.values()].map((u) => ({
+            id: u.id,
+            side: u.side,
+            x: u.root.x,
+            y: u.root.y,
+            headY: u.headY,
+            dead: u.dead,
+          }));
       }
       // battleRng stream (§4): re-engaging a fled pack restarts the stream
       rng = mulberry32(
@@ -2678,6 +2748,7 @@ export function createBattleScene(): Scene {
       onDrained = null;
       if (import.meta.env?.DEV === true) {
         delete (window as unknown as { __battle?: () => unknown }).__battle;
+        delete (window as unknown as { __units?: () => unknown }).__units;
       }
       // the tabletop card owns a DOM <input>: it must go before the pixi
       // layers below it are destroyed (and before the element is orphaned)

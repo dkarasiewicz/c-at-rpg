@@ -106,12 +106,39 @@ export function fieldedCats(run: RunState): CatRunState[] {
 }
 
 /**
- * Cats this run could still recruit: alive, not already fielded, in slot
- * order. Empty once the roster is full or everyone has been taken.
+ * Cats this run is ALLOWED to field at all (balance-and-meta.md §4).
+ *
+ * `RunState.cats` always carries all four slots — every classId-keyed system
+ * depends on that — but the town decides which of them actually live there.
+ * `startRun` stamps the overlay's class pool onto the run; a run with no
+ * stamp (a bare `newRun`, an old save) may field anyone, which is the
+ * pre-Cat-Town behaviour.
+ */
+export function rosterClasses(run: RunState): readonly ClassId[] {
+  const allowed = run.eligibleClasses;
+  if (!allowed || allowed.length === 0) return PARTY_ORDER;
+  // whoever is already marching stays legal no matter what: a save written
+  // before a class was un-listed must never lose a cat mid-run.
+  return PARTY_ORDER.filter(
+    (id) => allowed.includes(id) || run.marchingOrder.includes(id),
+  );
+}
+
+/**
+ * Cats this run could still recruit: alive, not already fielded, LIVING IN
+ * TOWN (`rosterClasses`), in slot order. Empty once the roster is full or
+ * everyone has been taken.
+ *
+ * The town gate is the point: without it the mid-run third cat could be a
+ * class Cat Town has not bought, handing out an unlock for free.
  */
 export function benchedCats(run: RunState): CatRunState[] {
+  const allowed = rosterClasses(run);
   return run.cats.filter(
-    (c) => c.lives > 0 && !run.marchingOrder.includes(c.classId),
+    (c) =>
+      c.lives > 0 &&
+      !run.marchingOrder.includes(c.classId) &&
+      allowed.includes(c.classId),
   );
 }
 
@@ -200,6 +227,13 @@ declare module "../types" {
      * Absent ⇒ `DEFAULT_PARTY_CAPACITY` (3). Cat Town raises it to 4.
      */
     partyCapacity?: number;
+    /**
+     * Which classes this run may field or RECRUIT — the town's class pool,
+     * stamped in by `core/meta/startRun`. Absent ⇒ all four (a bare
+     * `newRun`, a save from before Cat Town). Core never imports core/meta;
+     * the overlay writes the answer down here and `benchedCats` reads it.
+     */
+    eligibleClasses?: ClassId[];
   }
 }
 
@@ -250,7 +284,12 @@ function weaponDefFor(classId: ClassId): EquipDef {
 export function newRun(
   runSeed: string,
   customParty?: CustomCatKit[],
-  opts?: { partyCapacity?: number; roster?: readonly ClassId[] },
+  opts?: {
+    partyCapacity?: number;
+    roster?: readonly ClassId[];
+    /** The classes the town has; absent ⇒ all four (see `rosterClasses`). */
+    eligibleClasses?: readonly ClassId[];
+  },
 ): RunState {
   let inventory = emptyInventory();
   inventory = addShinies(inventory, STARTING_KIT.shinies);
@@ -311,6 +350,13 @@ export function newRun(
     ...(customParty && customParty.length > 0 ? { customParty } : {}),
     ...(opts?.partyCapacity !== undefined
       ? { partyCapacity: opts.partyCapacity }
+      : {}),
+    ...(opts?.eligibleClasses
+      ? {
+          eligibleClasses: PARTY_ORDER.filter((id) =>
+            opts.eligibleClasses?.includes(id),
+          ),
+        }
       : {}),
   };
 }

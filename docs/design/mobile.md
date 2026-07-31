@@ -1,5 +1,11 @@
 # Mobile — feasibility and plan
 
+> **STATUS: shipped.** Everything in the Plan below is implemented and
+> verified on emulated devices (Playwright, `hasTouch: true`) — see
+> [What shipped](#what-shipped) at the bottom for the file-by-file map and the
+> measured numbers. The one thing deliberately NOT done is the portrait
+> reflow; portrait is gated behind a rotate prompt, as recommended.
+
 **Verdict: yes, and the run-map pivot is what made it realistic.** Tile-crawling
 with WASD is the most touch-hostile thing a game can do; replacing it with a
 route map of discrete tappable choices plus a text box makes the whole game a
@@ -71,3 +77,59 @@ Backdrops are 1600×900 WebP and sprites are 640² PNGs; after the alpha-bbox
 crop pass they shrink meaningfully. Watch total texture memory on low-end
 devices — prefer WebP everywhere, and consider a reduced-resolution asset tier
 if profiling shows pressure. Pixi v8 WebGL is fine on modern mobile GPUs.
+
+
+---
+
+## What shipped
+
+Verified with Playwright device emulation at **844×390** (iPhone-class
+landscape, `hasTouch: true`, DPR 3) and **1080×810** (tablet), playing a
+route → fight → typed action with `page.touchscreen.tap` only — never a key.
+
+### The one number everything follows from
+
+The game letterboxes 1280×720 into the window, so on an 844×390 viewport the
+scale is **0.542** and a 44 CSS px touch target is **81 design px**. Almost
+every button in the game is visually smaller than that. The answer was to grow
+the *target*, never the art:
+
+`src/ui/touch.ts` installs hit areas whose `contains()` recomputes its padding
+from the LIVE scale on every hit test (`padHit` / `padHitCircle` / `padHitBox`).
+A 34px route chip still paints 34px on a desktop monitor and answers to an
+81px box under a finger; on a fine pointer the padding is exactly zero.
+Measured: a tap **14 design px below the painted bottom edge** of a route chip
+takes the route.
+
+| Deliverable | Where | Notes |
+| --- | --- | --- |
+| Pointer detection | `src/ui/touch.ts` | `(pointer: coarse)` + `maxTouchPoints`, `?touch=1/0` override, stamped on `<html data-touch>` for CSS |
+| Hit-target growth | `src/ui/touch.ts`, applied in `widgets.ts` `button()` + the small tappables | kit buttons, skill cards, map medallions, inventory cells, Den rows, shop rows, belt cells, status chips, battle units |
+| Esc parity | `index.html` `#sys-menu` → `main.ts` → `manager.handleKey("esc")` | ONE control reaches every Esc affordance: pause, close overlay, back out of the Den/sell panel, cancel targeting, shut the inspect card. Lives in the letterbox gutter (measured at x 792 on a 844px viewport, gutter starts at 769) |
+| Hover → tap | `battle.ts`, `runMap.ts`, `battleWidgets.ts`, `inventoryPanel.ts`, `progressPanel.ts`, `touch.ts#tapToReveal` | enemy inspect (tap→read, tap→attack), map node blurbs (tap→read, tap→walk), cat nameplates, skill-card rules text (press-and-hold on a usable card, tap-toggle on a disabled one), equip chips, status chips. Hover is untouched on a mouse |
+| In-flow targeting cancel | `battle.ts` `onSlotPressed` | tapping the LIT skill card backs out — right-click and Esc do not exist on a phone |
+| Inspect card Close | `battleWidgets.ts` `makeInspectPanel(onClose)` | a real kit button, not an "Esc closes" hint |
+| No dead key names | `widgets.ts` `button()` — the chip is not built when `isTouch()` | A hotkey chip names a KEY, and a phone has none: "Esc", "Enter", "E", "T" beside a button a finger is about to press is dead chrome, and worse, it sends the player looking for an Escape key a virtual keyboard does not have. On a coarse pointer the chip is skipped and the label centres in the full width; nothing moves on a mouse. The skill cards' `1-6` are drawn elsewhere and deliberately stay — those read as slot numbers, not as keys |
+| Page setup | `index.html`, `public/style.css` | `viewport-fit=cover`, `user-scalable=no`, `maximum-scale=1`, `interactive-widget=overlays-content`, `touch-action: none`, `overscroll-behavior: none`, `100dvh`, `env(safe-area-inset-*)` on all chrome, no tap highlight / long-press callout |
+| Text input | `src/ui/domInput.ts` | ONE keyboard-aware `<input>` component, used by the tabletop card and the title's seed entry. Positioned through the letterbox transform; when `visualViewport` shrinks it floats the field (on its own plate) above the keyboard. Font floor 16px so iOS cannot zoom. `Say it` / `Never mind` kit buttons because a virtual keyboard has a Go key but no Escape |
+| Landscape gate | `index.html` `#rotate`, `public/style.css` | touch + portrait only; animated handset, safe-area padded. Portrait reflow explicitly deferred, per the ruling above |
+| PWA | `public/manifest.webmanifest`, `public/icons/*`, `public/sw.js`, `main.ts` | fullscreen/landscape manifest, 192/512/maskable icons, worker precaching the shell + both asset manifests, then warmed with the page's real `performance.getEntriesByType('resource')` set (the renderer chunk and the art arrive by dynamic import and no static list can name them). Every cache read passes `ignoreVary` — hosts answer assets with `Vary: Origin` and the page's `<script crossorigin>` sends one, which otherwise misses every time |
+
+### Measured
+
+```
+letterbox scale 0.542  →  44 CSS px = 81.2 design px
+skill card        128x112 design  →  69x61 CSS px
+route chip         168x34 design  →  91x18 CSS px  →  91x44 padded
+map medallion       r 41 design   →  44 CSS px diameter, padded
+menu button                          44x44 CSS px, in the gutter
+typed-action field                   390x40 CSS px, font-size 16px
+offline reload after one online visit: boots to `boot`
+```
+
+### Known gap
+
+`runMap`'s entry-hold state (the "Into the …" gate on a fresh floor) swallows
+every key including Esc, so the menu button is inert until that button is
+taken. It has its own tappable control, so touch is not blocked — but Esc
+should probably fall through it.

@@ -53,8 +53,6 @@ import {
 import { makeEventGlyph, type EventGlyphId } from "../draw/glyphs.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 import type { EventWinContext } from "../overlays/loot.js";
-import { probeGm, requestGmEventResolve } from "../../services/gm.js";
-import type { GmEventResolveOutcome } from "../../services/gmTypes.js";
 import {
   ensureDmSession,
   markDmUnreachable,
@@ -149,6 +147,40 @@ function gateTag(req: Requirement, run: RunState): string {
 
 type State = "prompt" | "freetext" | "waiting" | "result";
 
+/* ---------------------------------------------------------------------- */
+/* Card geometry (the card FITS ITS CONTENT — ui-art §9)                   */
+/* ---------------------------------------------------------------------- */
+//
+// `R.event.panel` is a fixed 800×528 with the option rows nailed to absolute
+// y's inside it. That made two problems that were reported together:
+//
+//   · a two-line prompt left ~165px of nothing between the body and the
+//     first option, because the options started at a constant y no matter
+//     how much prose was above them;
+//   · the generated illustration fills the whole card with its subject in
+//     the right third, and the full-width option rows were painted straight
+//     across it — the art was clipped by its own buttons.
+//
+// So the card is measured, not decreed: the option stack follows the body,
+// the card's HEIGHT is whatever the content needs (clamped), and when an
+// illustration is up the whole text column — prose AND buttons — keeps to
+// the left, leaving the painting's subject visible where it was composed.
+
+const CARD_W = R.event.panel[2];
+const CARD_MIN_H = 288;
+const CARD_MAX_H = R.event.panel[3];
+/** One option row, and the gap under it. */
+const OPT_H = 52;
+const OPT_GAP = SPACE.sm;
+/** The last option ("walk away") rides a shorter row. */
+const LEAVE_H = 36;
+/** Gutter between the body copy and the first option. */
+const OPT_GUTTER = SPACE.xl;
+/** Padding under the last row / the primary button. */
+const CARD_FOOT = SPACE.lg;
+/** Text-column width when a painting is behind the card. */
+const ILLO_COL_W = 430;
+
 export class EventScene implements Scene {
   private view: Container | null = null;
   private panel: Container | null = null;
@@ -165,6 +197,10 @@ export class EventScene implements Scene {
   private bodyTop = 0;
   /** true when a generated scene illustration is up (text hugs the left) */
   private illustrated = false;
+  /** Manifest id of this event's painting, or "" — re-read on every resize. */
+  private sceneId = "";
+  /** The card's background + illustration, rebuilt whenever it resizes. */
+  private cardArt: Container | null = null;
   private t = 0;
 
   private ctx: GameCtx | null = null;
@@ -209,14 +245,16 @@ export class EventScene implements Scene {
       scrim(DESIGN_W, DESIGN_H),
       vignette(DESIGN_W, DESIGN_H, 0.7),
     );
-    const [px, py, pw, ph] = R.event.panel;
     const modal = new Container();
-    modal.position.set(px, py);
-    modal.addChild(panel(pw, ph, { variant: "raised", accent: PAL.gold }));
+    modal.x = (DESIGN_W - CARD_W) / 2;
     view.addChild(modal);
     this.panel = modal;
+    // z-order inside the card: art (bg + illustration + scrim gradient),
+    // then the header, then whatever the current state is drawing
+    this.cardArt = new Container();
     this.dynamic = new Container();
-    modal.addChild(this.dynamic);
+    modal.addChild(this.cardArt, this.dynamic);
+    this.resizeCard(CARD_MAX_H);
 
     // ---- which event fires (eventRng draw #1 / shiny fallback) ---------
     const sel = selectEvent(
@@ -252,28 +290,19 @@ export class EventScene implements Scene {
     );
     this.showPrompt();
 
-    // The typed-action option: probe once per session, fire-and-forget; when
-    // something answers and the prompt is still up, re-render with the extra
-    // "[T] Do something else…" row. Offline both probes fail and the modal
-    // stays byte-identical. The persistent DM wins when both are up — it is
-    // the one that remembers the rest of the run.
-    // The persistent DM is asked FIRST and, when it answers, the legacy
-    // `api/gm/*` deployment is never probed at all: it is the fallback, and
-    // probing it anyway costs a request per session that is guaranteed to be
-    // discarded (and, on a dev server with no /api, a 404 in the console).
+    // The typed-action option: probe the DM once per session,
+    // fire-and-forget; when it answers and the prompt is still up, re-render
+    // with the extra "[T] Do something else…" row. With no DM reachable the
+    // probe fails, the row is never built and the modal is byte-identical to
+    // the offline game.
     void probeDm().then((ok) => {
-      if (ok) {
-        this.dmReady = true;
-        this.enableTabletop();
-        return;
-      }
-      void probeGm().then((gmOk) => {
-        if (gmOk) this.enableTabletop();
-      });
+      if (!ok) return;
+      this.dmReady = true;
+      this.enableTabletop();
     });
   }
 
-  /** Show the typed-action row (idempotent; safe from either probe). */
+  /** Show the typed-action row (idempotent). */
   private enableTabletop(): void {
     if (this.gmAvailable || !this.view || !this.event) return;
     this.gmAvailable = true;
@@ -328,14 +357,71 @@ export class EventScene implements Scene {
     this.view = null;
     this.panel = null;
     this.dynamic = null;
+    this.cardArt = null;
     this.glyph = null;
     this.illustrated = false;
+    this.sceneId = "";
     this.hotkeys = [];
     this.continueFn = null;
     this.gmAvailable = false;
   }
 
   /* ---- static header: title + glyph ---------------------------------- */
+
+  /**
+   * (Re)build the card's background and illustration at height `h`, and
+   * re-centre the card on screen. Everything else in the modal (`dynamic`,
+   * the header, the glyph) is positioned in card-local space and does not
+   * move, so a state that needs a taller or shorter card just calls this.
+   */
+  private resizeCard(h: number): void {
+    const modal = this.panel;
+    const art = this.cardArt;
+    if (!modal || !art) return;
+    modal.y = Math.round((DESIGN_H - h) / 2);
+    for (const c of art.removeChildren()) c.destroy({ children: true });
+    art.addChild(panel(CARD_W, h, { variant: "raised", accent: PAL.gold }));
+
+    // Generated illustration (scene:event:<id>): fills the card, subject in
+    // the right third (the scene set's composition contract), clipped to the
+    // card's rounded corners. A left→right + bottom-up gradient scrim keeps
+    // the text column readable over the art — and the option rows now keep
+    // to that same column, so they no longer crop the subject.
+    const illo = this.sceneId
+      ? makeCoverSprite(this.sceneId, CARD_W, h, {
+          align: "right",
+          radius: RADIUS.panel,
+        })
+      : null;
+    if (!illo) return;
+    const gradient = new Graphics();
+    const deep = (a: number): string => `rgba(26, 22, 38, ${a})`; // PAL.bgDeep
+    gradient
+      .rect(0, 0, CARD_W, h)
+      .fill(
+        new FillGradient({
+          end: { x: 1, y: 0 },
+          colorStops: [
+            { offset: 0, color: deep(0.95) },
+            { offset: 0.45, color: deep(0.78) },
+            { offset: 0.72, color: deep(0.3) },
+            { offset: 1, color: deep(0.05) },
+          ],
+        }),
+      )
+      .rect(0, Math.max(0, h - 250), CARD_W, Math.min(250, h))
+      .fill(
+        new FillGradient({
+          end: { x: 0, y: 1 },
+          colorStops: [
+            { offset: 0, color: deep(0) },
+            { offset: 1, color: deep(0.88) },
+          ],
+        }),
+      );
+    illo.addChild(gradient); // clipped by the cover mask with the art
+    art.addChild(illo);
+  }
 
   private setHeader(
     title: string,
@@ -344,13 +430,14 @@ export class EventScene implements Scene {
     sceneId?: string,
   ): void {
     const modal = this.panel!;
-    const [px, py, pw, ph] = R.event.panel;
+    const [px, py] = R.event.panel;
+    this.sceneId = sceneId ?? "";
 
     // Surround: the same painting, blown up, blurred and pushed way down so
     // it reads as the room the card is sitting in. Falls back to the palette
     // wash on its own when there is no art (sceneBackdrop is fail-soft).
     this.backdrop?.addChild(
-      sceneBackdrop(sceneId ?? "", DESIGN_W, DESIGN_H, {
+      sceneBackdrop(this.sceneId, DESIGN_W, DESIGN_H, {
         // the §9 scrim (0.6) and vignette (0.7) both land on top of this, so
         // the dim here stays light or the surround goes black again
         dim: 0.3,
@@ -358,50 +445,16 @@ export class EventScene implements Scene {
       }),
     );
 
-    // Generated illustration (scene:event:<id>): fills the panel, subject
-    // in the right third (the scene set's composition contract), clipped
-    // to the panel's rounded corners. A left→right + bottom-up gradient
-    // scrim keeps the title/body/options text readable over the art.
-    const illo = sceneId
-      ? makeCoverSprite(sceneId, pw, ph, {
-          align: "right",
-          radius: RADIUS.panel,
-        })
-      : null;
-    if (illo) {
-      const gradient = new Graphics();
-      const deep = (a: number) => `rgba(26, 22, 38, ${a})`; // PAL.bgDeep
-      gradient
-        .rect(0, 0, pw, ph)
-        .fill(
-          new FillGradient({
-            end: { x: 1, y: 0 },
-            colorStops: [
-              { offset: 0, color: deep(0.95) },
-              { offset: 0.45, color: deep(0.78) },
-              { offset: 0.72, color: deep(0.3) },
-              { offset: 1, color: deep(0.05) },
-            ],
-          }),
-        )
-        .rect(0, ph - 250, pw, 250)
-        .fill(
-          new FillGradient({
-            end: { x: 0, y: 1 },
-            colorStops: [
-              { offset: 0, color: deep(0) },
-              { offset: 1, color: deep(0.88) },
-            ],
-          }),
-        );
-      illo.addChild(gradient); // clipped by the cover mask with the art
-      modal.addChildAt(illo, 1); // above the panel bg, below `dynamic`
-      this.illustrated = true;
-    }
+    // Is there art? Ask once, at full height, and keep the answer: it decides
+    // the whole card's column geometry (`textX` / `wrapW` / the option width).
+    this.illustrated =
+      this.sceneId !== "" &&
+      makeCoverSprite(this.sceneId, CARD_W, CARD_MAX_H) !== null;
+    this.resizeCard(CARD_MAX_H);
 
     // procedural glyph is the assetless stand-in for the illustration; it
     // also decides where the title column starts
-    if (!illo) {
+    if (!this.illustrated) {
       const themeIndex = Math.min(2, Math.floor((floorNum - 1) / 2));
       const glyph = makeEventGlyph(glyphId, themeIndex);
       const [gx, gy, gw, gh] = R.event.glyph;
@@ -415,7 +468,7 @@ export class EventScene implements Scene {
     eyebrow.position.set(this.textX(), SPACE.lg);
     const titleText = heading(title, 2, { fill: PAL.gold });
     titleText.style.wordWrap = true;
-    titleText.style.wordWrapWidth = pw - this.textX() - SPACE.lg;
+    titleText.style.wordWrapWidth = this.wrapW();
     titleText.position.set(this.textX(), SPACE.lg + SPACE.lg);
     modal.addChild(eyebrow, titleText);
     // body copy starts one gutter under the title, however tall it wrapped
@@ -429,10 +482,21 @@ export class EventScene implements Scene {
     return this.illustrated ? SPACE.xl : gx - px + gw + SPACE.lg;
   }
 
-  /** Wrap width for body copy (illustrated layouts hug the dark left). */
+  /**
+   * Width of the whole text column — prose, title AND option rows.
+   *
+   * With a painting behind the card the column stops well short of the right
+   * edge: the scene set composes its subject into the right third, and a
+   * full-width button row painted over that is what "the illustration is
+   * clipped by the options" meant. Without art the column is the card.
+   */
+  private colW(): number {
+    return this.illustrated ? ILLO_COL_W : CARD_W - this.textX() - SPACE.lg;
+  }
+
+  /** Wrap width for body copy — the same column the buttons live in. */
   private wrapW(): number {
-    const [, , pw] = R.event.panel;
-    return this.illustrated ? 420 : pw - this.textX() - SPACE.lg;
+    return this.colW();
   }
 
   /* ---- PROMPT --------------------------------------------------------- */
@@ -452,21 +516,29 @@ export class EventScene implements Scene {
     body.position.set(this.textX(), this.bodyTop);
     dyn.addChild(body);
 
-    // Last option sits in the Leave row; the rest fill the option rects.
-    // The Leave band follows the last option row (instead of sitting at a
-    // fixed y) so a 2-option event has no orphan gap above it. With the GM
-    // up the band is split so a "[T] Do something else…" row fits beside it.
+    // The option stack FOLLOWS the body. The rows used to sit at absolute y's
+    // inside a fixed card, so a short prompt left a ~165px hole above the
+    // first button; now the first row starts one gutter under whatever the
+    // prose actually measured, and the card is cut to fit the result.
     const n = event.options.length;
-    const [lx, , lw, lh] = R.event.leave;
-    const [, opt0Y] = R.event.options[0];
-    const optRowH = R.event.options[1][1] - opt0Y; // 60: 52 row + 8 gap
-    const ly = opt0Y + Math.max(1, n - 1) * optRowH + SPACE.sm;
-    const leaveRect: Rect = this.gmAvailable
-      ? [lx, ly, 486, lh]
-      : [lx, ly, lw, lh];
+    const x = this.textX();
+    const w = this.colW();
+    const stackTop = this.bodyTop + Math.ceil(body.height) + OPT_GUTTER;
+    const stackH = Math.max(0, n - 1) * (OPT_H + OPT_GAP) + LEAVE_H;
+    this.resizeCard(
+      Math.max(CARD_MIN_H, Math.min(CARD_MAX_H, stackTop + stackH + CARD_FOOT)),
+    );
+
+    // Last option rides the shorter Leave row. With the GM up that row is
+    // split so a "[T] Do something else…" row fits beside it.
+    const ly = stackTop + Math.max(0, n - 1) * (OPT_H + OPT_GAP);
+    const splitGap = SPACE.md;
+    const leaveW = this.gmAvailable ? Math.round((w - splitGap) * 0.6) : w;
     event.options.forEach((option, i) => {
       const isLeave = i === n - 1;
-      const rect = isLeave ? leaveRect : R.event.options[i];
+      const rect: Rect = isLeave
+        ? [x, ly, leaveW, LEAVE_H]
+        : [x, stackTop + i * (OPT_H + OPT_GAP), w, OPT_H];
       const available = isOptionAvailable(run, option);
       const row = this.makeOptionRow(
         rect,
@@ -482,7 +554,7 @@ export class EventScene implements Scene {
     });
     if (this.gmAvailable) {
       const row = this.makeOptionRow(
-        [lx + 496, ly, lw - 496, lh],
+        [x + leaveW + splitGap, ly, w - leaveW - splitGap, LEAVE_H],
         "T",
         { label: "Do something else…", outcomes: [] },
         true,
@@ -508,6 +580,9 @@ export class EventScene implements Scene {
    * carries its requirement in the label ("… · [SPD 8+]") and, when unmet,
    * renders disabled: dimmed but still VISIBLE, because showing locked
    * doors sells build value (events.md §3).
+   *
+   * `rect` is CARD-LOCAL (the card moves and resizes now, so screen-space
+   * rects with the old panel origin subtracted back out would drift).
    */
   private makeOptionRow(
     rect: Rect,
@@ -518,7 +593,6 @@ export class EventScene implements Scene {
     run: RunState,
     onPick: () => void,
   ): Container {
-    const [px, py] = R.event.panel;
     const [x, y, w, h] = rect;
     const text = option.requires
       ? `${option.label}   ·   ${gateTag(option.requires, run)}`
@@ -528,7 +602,7 @@ export class EventScene implements Scene {
       disabled: !available,
       fontSize: small ? TYPE.small : TYPE.body,
     });
-    b.view.position.set(x - px, y - py);
+    b.view.position.set(x, y);
     return b.view;
   }
 
@@ -614,49 +688,35 @@ export class EventScene implements Scene {
   }
 
   /**
-   * Ask the persistent DM when one is up, else the stateless `/api/gm`
-   * endpoint (the seam gm.ts has always owned). Both return the same
-   * `{ allowed?, narration|text, effects }` shape to the lint above.
+   * Ask the persistent DM. Returns the RAW structured payload — the lint
+   * above is what decides whether the engine ever sees it — or null when
+   * there is no DM, the turn failed, or it timed out.
    */
   private async askDm(
     text: string,
     run: RunState,
     ev: GameEvent,
   ): Promise<unknown> {
+    if (!this.dmReady || !this.ctx) return null;
     const partyHp = run.cats.filter((c) => c.lives > 0).map((c) => c.hp);
-    if (this.dmReady && this.ctx) {
-      const ensured = await ensureDmSession(run as TabletopRun);
-      if (!ensured) return null;
-      this.ctx.run = ensured.run;
-      const res = await requestEncounterVerdict(ensured.session, {
-        floor: run.floorNum,
-        prompt: text,
-        situation:
-          `The party is at "${ev.title}". ${ev.prompt} ` +
-          `Their options were: ${ev.options.map((o) => o.label).join("; ")}.`,
-        shinies: run.inventory.shinies,
-        partyHp,
-        onDelta: (_delta, soFar) => this.tabletop?.stream(soFar),
-      });
-      if (!res) return null;
-      if (this.ctx.run) {
-        this.ctx.run = withDmSession(this.ctx.run as TabletopRun, res.session);
-      }
-      return res.data;
-    }
-    const outcome = await requestGmEventResolve({
+    const ensured = await ensureDmSession(run as TabletopRun);
+    if (!ensured) return null;
+    this.ctx.run = ensured.run;
+    const res = await requestEncounterVerdict(ensured.session, {
       floor: run.floorNum,
-      text,
-      eventId: ev.id,
-      eventPrompt: ev.prompt,
-      optionLabels: ev.options.map((o) => o.label),
-      partyHp,
+      prompt: text,
+      situation:
+        `The party is at "${ev.title}". ${ev.prompt} ` +
+        `Their options were: ${ev.options.map((o) => o.label).join("; ")}.`,
       shinies: run.inventory.shinies,
+      partyHp,
+      onDelta: (_delta, soFar) => this.tabletop?.stream(soFar),
     });
-    // the /api/gm seam has no refusal channel: a verdict is always an "allowed"
-    return outcome === null
-      ? null
-      : { allowed: true, narration: outcome.text, effects: outcome.effects };
+    if (!res) return null;
+    if (this.ctx.run) {
+      this.ctx.run = withDmSession(this.ctx.run as TabletopRun, res.session);
+    }
+    return res.data;
   }
 
   /** Record one adjudication into the run log, then autosave it. */
@@ -683,11 +743,15 @@ export class EventScene implements Scene {
   }
 
   /**
-   * Apply the GM's Outcome-shaped verdict through the SAME resolveOption
-   * path as a fixed option (per-floor caps were linted server-side; clamps,
-   * fired-id bookkeeping and the fight handoff all stay intact).
+   * Apply the DM's Outcome-shaped verdict through the SAME resolveOption
+   * path as a fixed option (per-floor caps were re-linted client-side by
+   * `validateEncounterVerdict`; clamps, fired-id bookkeeping and the fight
+   * handoff all stay intact).
    */
-  private applyFreeText(label: string, verdict: GmEventResolveOutcome): void {
+  private applyFreeText(
+    label: string,
+    verdict: { text: string; effects: Effect[] },
+  ): void {
     if (!this.ctx || !this.event || !this.rng) return;
     const run = this.ctx.run!;
     // restoreLife is runtime-gated (events.md invariant 7): when no living
@@ -735,7 +799,6 @@ export class EventScene implements Scene {
     this.hotkeys = [];
     for (const c of dyn.removeChildren()) c.destroy({ children: true });
 
-    const [, , pw] = R.event.panel;
     const body = label(text, { size: TYPE.body, wrap: this.wrapW() });
     body.position.set(this.textX(), this.bodyTop);
     dyn.addChild(body);
@@ -749,10 +812,15 @@ export class EventScene implements Scene {
       ly += 22;
     }
 
-    // one primary action, parked in the panel's action band
+    // one primary action, one gutter under the last delta line — and the card
+    // cut to fit, exactly like the prompt state
     const isFight = this.fight !== null;
     const bw = 260;
     const bh = 52;
+    const btnY = ly + OPT_GUTTER - 22;
+    this.resizeCard(
+      Math.max(CARD_MIN_H, Math.min(CARD_MAX_H, btnY + bh + CARD_FOOT)),
+    );
     const b = button(
       isFight ? "Fight!" : "Continue",
       bw,
@@ -760,8 +828,12 @@ export class EventScene implements Scene {
       () => this.leave(),
       { primary: true, hotkey: "E" },
     );
-    const [, , , ph] = R.event.panel;
-    b.view.position.set((pw - bw) / 2, ph - bh - SPACE.lg);
+    // centred on the TEXT COLUMN, not the card: with a painting up the right
+    // third belongs to the art
+    b.view.position.set(
+      this.textX() + Math.round((this.colW() - bw) / 2),
+      btnY,
+    );
     dyn.addChild(b.view);
     this.continueFn = () => this.leave();
   }

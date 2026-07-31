@@ -1,32 +1,24 @@
 /**
- * GM service protocol — request/response shapes shared between the browser
- * client (src/services/gm.ts) and the Vercel functions under api/gm/*.
+ * Generated-content contracts — the shapes the DM authors and the game
+ * consumes.
  *
- * Pure types only (no runtime code): the api handlers import these with
- * `import type`, so nothing from src is ever bundled into the functions and
- * nothing from api is ever bundled into the game.
- *
- * All payload shapes are composed from the frozen core contracts in
- * src/core/types.ts — the GM authors content in the exact shapes the engines
- * already consume (docs/design/gm-system.md).
+ * Pure types only (no runtime code), which is why all three packages can
+ * share them: the browser (`services/oneshot.ts` re-lints them), the eve
+ * agent (`agent/lib/oneshot.ts` asserts its zod schemas against them at
+ * compile time) and `scripts/`. They used to be the wire protocol between the
+ * browser and the `api/gm/*` functions; those functions are gone and the
+ * transport envelopes went with them, but the CONTENT shapes are the same
+ * ones the engines already consume (docs/design/gm-system.md).
  */
-import type {
-  Effect,
-  EquipDef,
-  GameEvent,
-  Rarity,
-  Skill,
-  Stats,
-} from "../core/types.js";
+import type { EquipDef, Skill, Stats } from "../core/types.js";
 
 /* ------------------------------------------------------------------------ */
 /* Stand powers (stand-powers.md — canonical DSL from core/combat)           */
 /* ------------------------------------------------------------------------ */
 //
 // The Power Script DSL is owned by src/core/combat/powerTypes.ts (types-only,
-// zero runtime code — safe for the api package to import). The GM protocol
-// re-exports it so both sides of the wire speak the interpreter's exact
-// shapes; the service layer adds only the transport envelopes below.
+// zero runtime code). This module re-exports it so the browser, the agent and
+// the seeding scripts all speak the interpreter's exact shapes.
 
 export type {
   EffectSpec,
@@ -36,48 +28,7 @@ export type {
   PowerTargetSel,
   PowerTrigger,
 } from "../core/combat/powerTypes.js";
-import type {
-  InteractionRule,
-  PowerScript,
-} from "../core/combat/powerTypes.js";
-
-/* ------------------------------------------------------------------------ */
-/* Resonance (stand-powers.md Layer 3 — memoized interaction compilation)    */
-/* ------------------------------------------------------------------------ */
-
-export interface GmResonanceRequest {
-  /** sortedPair(A.id, B.id) + framework version — see resonancePairKey(). */
-  pairKey: string;
-  powers: [PowerScript, PowerScript];
-  /** credited as "first discovered by <session>" on a fresh compile */
-  sessionId?: string;
-}
-
-/**
- * The memoized `interactions` row (stand-powers.md §DB additions). `json` is
- * the FULL core InteractionRule (which itself carries pairKey/version/flavor/
- * announce/budget) or null; flavor/announce are duplicated at row level so
- * null rows still carry their one-liner.
- */
-export interface StoredInteraction {
-  pairKey: string;
-  version: number;
-  /** null = compiled, no resonance (a valid, memoized outcome) */
-  json: InteractionRule | null;
-  flavor: string;
-  announce: string;
-  first_discovered_by?: string;
-}
-
-export interface GmResonanceResponse {
-  pairKey: string;
-  /** null = no resonance for this pair (still a definitive answer) */
-  rule: InteractionRule | null;
-  flavor: string;
-  announce: string;
-  firstDiscoveredBy?: string;
-  source: "generated" | "pool";
-}
+import type { PowerScript } from "../core/combat/powerTypes.js";
 
 /* ------------------------------------------------------------------------ */
 /* Party generation                                                          */
@@ -104,7 +55,7 @@ export interface GeneratedCatKit {
   catName: string;
   className: string;
   epithet: string;
-  /** L1 stats; hard budget per role, see api/_lib/constraints.ts. */
+  /** L1 stats; hard budget per role, see services/caps.ts. */
   base: Stats;
   /** 7 rows, applied at L2..L8. */
   growth: Partial<Stats>[];
@@ -117,128 +68,11 @@ export interface GeneratedCatKit {
   flavor: { bio: string; barks: { crit: string; ko: string; catPile: string } };
 }
 
-export interface GmPartyRequest {
-  /** 1–4 free-text cat descriptions, each <= 500 chars. */
-  descriptions: string[];
-}
-
-export interface GmPartyResponse {
-  /** Always exactly 4 kits covering all four roles. */
-  kits: GeneratedCatKit[];
-  source: "generated" | "pool";
-}
-
-/* ------------------------------------------------------------------------ */
-/* Narrative events                                                          */
-/* ------------------------------------------------------------------------ */
-
-export interface GmEventRequest {
-  /** 1..6 */
-  floor: number;
-  /** Current HP per living cat, front-to-back. */
-  partyHp?: number[];
-  partyLives?: number[];
-  shinies?: number;
-  /** Event ids already fired this run (avoid repeats). */
-  recentEventIds?: string[];
-  /** Free theme tags, e.g. ["laundromat", "ominous"]. */
-  themeTags?: string[];
-}
-
-export interface GmEventResponse {
-  /** Passes core/events/validate + the per-floor effect caps. */
-  event: GameEvent;
-  source: "generated" | "pool";
-}
-
-/* ------------------------------------------------------------------------ */
-/* Event free-text resolution (gm-system.md /api/gm/event "free-text option") */
-/* ------------------------------------------------------------------------ */
-
-/**
- * The player typed what they do at an event; the GM maps the free text onto
- * the BOUNDED event effect menu (core `Effect` union, per-floor caps — never
- * arbitrary mechanics). Served by api/gm/eventResolve.ts; nothing is
- * memoized (free text is personal and one-shot).
- */
-export interface GmEventResolveRequest {
-  /** 1..6 */
-  floor: number;
-  /** The player's free-text action, 1..280 chars. */
-  text: string;
-  /** Context: the event being resolved (id + prompt + fixed option labels). */
-  eventId?: string;
-  eventPrompt?: string;
-  optionLabels?: string[];
-  /** Current HP per living cat, front-to-back. */
-  partyHp?: number[];
-  shinies?: number;
-}
-
-/**
- * Outcome-shaped verdict (events.md `Outcome` minus `weight`, stamped 1 by
- * the client) — applied through the exact same resolveOption effect path as
- * a fixed option, so every clamp/cap stays intact.
- */
-export interface GmEventResolveOutcome {
-  text: string;
-  effects: Effect[];
-}
-
-export interface GmEventResolveResponse {
-  outcome: GmEventResolveOutcome;
-  source: "generated";
-}
-
 /* ------------------------------------------------------------------------ */
 /* Items                                                                     */
 /* ------------------------------------------------------------------------ */
 
-export interface GmItemRequest {
-  /** 1..6 */
-  floor: number;
-  rarity: Rarity;
-  /** Class ids / names of the current party, for themed drops. */
-  partyClasses?: string[];
-}
-
 /** loot.md EquipDef plus an icon prompt for the Masonry job. */
 export interface GeneratedEquip extends EquipDef {
   iconPrompt: string;
-}
-
-export interface GmItemResponse {
-  equip: GeneratedEquip;
-  source: "generated" | "pool";
-}
-
-/* ------------------------------------------------------------------------ */
-/* Director steering                                                         */
-/* ------------------------------------------------------------------------ */
-
-export interface GmSteerRequest {
-  /** Floor being entered, 1..6. */
-  floor: number;
-  summary: {
-    /** 0..1 mean party HP fraction. */
-    hpPct: number;
-    livesLost: number;
-    shinies: number;
-    enemiesDefeated: number;
-    catPiles: number;
-  };
-}
-
-/** Bounded nudge set — the director never invents mechanics. */
-export interface GmSteerNudges {
-  encounterBudgetDelta: -1 | 0 | 1;
-  shopBias: "consumables" | "equipment" | "none";
-  /** <= 60 chars; fed to the next /api/gm/event call as a theme tag. */
-  nextEventTheme: string;
-  /** <= 200 chars; one-line floor intro shown on floor transition. */
-  floorIntro: string;
-}
-
-export interface GmSteerResponse {
-  nudges: GmSteerNudges;
 }

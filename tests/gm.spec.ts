@@ -1,11 +1,22 @@
 /**
- * GM service scaffold tests (docs/design/gm-system.md):
- *  - pure constraint lints (party budgets, event caps, item hooks, steer
- *    bounds) from api/_lib/constraints;
- *  - pool-first probability + MemoryPool behavior;
- *  - generateValidated's one regenerate-on-invalid retry;
- *  - a local smoke of the /api/gm/party endpoint logic with a MOCKED
- *    Anthropic client (no real API call).
+ * Generated-content rules (docs/design/gm-system.md, stand-powers.md).
+ *
+ * These lints used to run inside the `api/gm/*` Vercel functions, on the
+ * server, where the model call was. The endpoints are gone; the DM owns the
+ * prompts and the model credential, and the lints run where the payload is
+ * consumed. So this file tests:
+ *
+ *  - the pure constraint lints (party budgets, event caps, item hooks) from
+ *    `src/services/contentLint.ts` — the SAME module the browser runs on a
+ *    generated party and the agent runs before publishing to the pool;
+ *  - Power Script pricing and stamping from `src/services/powerLint.ts`;
+ *  - the two client-side one-shot pipelines in `src/services/oneshot.ts`
+ *    (`lintPartyPayload` → retry → `salvagePartyPowers`, `readResonanceVerdict`)
+ *    — the half of the retired
+ *    endpoints that was never the model's job: re-lint, salvage, stamp;
+ *  - pool-first probability + MemoryPool behaviour (`agent/lib/pool.ts`,
+ *    which outlived `api/` because the DM's `contribute_content` writes to it);
+ *  - the engine wiring a compiled resonance rule ends up in.
  */
 import { describe, expect, it } from "vitest";
 import type { GameEvent, Skill } from "../src/core/types.js";
@@ -13,26 +24,17 @@ import type {
   GeneratedCatKit,
   GeneratedEquip,
   GmRole,
-  GmSteerNudges,
   InteractionRule,
   PowerScript,
-  StoredInteraction,
 } from "../src/services/gmTypes.js";
+import { EVENT_CAPS, ROLE_STAT_TOTALS } from "../src/services/caps.js";
 import {
-  EVENT_CAPS,
   lintEvent,
   lintEventCaps,
   lintItem,
   lintParty,
-  lintSteer,
-  ROLE_STAT_TOTALS,
-} from "../api/_lib/constraints.js";
-import { MemoryPool, poolPickProbability } from "../api/_lib/pool.js";
-import {
-  GmGenerationError,
-  generateValidated,
-  type StructuredGenClient,
-} from "../api/_lib/generate.js";
+} from "../src/services/contentLint.js";
+import { MemoryPool, poolPickProbability } from "../agent/lib/pool.js";
 import {
   BUDGET_CAPS,
   lintInteractionRule,
@@ -42,16 +44,15 @@ import {
   powerBudget,
   resonancePairKey,
   STOCK_POWERS,
-} from "../api/_lib/powers.js";
-import { ART_STYLE } from "../src/content/artStyle.js";
-import { resonancePairKey as clientPairKey } from "../src/services/gm.js";
-import { createPartyHandler } from "../api/gm/party.js";
-import { createResonanceHandler } from "../api/gm/resonance.js";
+} from "../src/services/powerLint.js";
 import {
-  createEventResolveHandler,
-  lintResolvePayload,
-} from "../api/gm/eventResolve.js";
-import type { BattleSetup, ClassId, Effect } from "../src/core/types.js";
+  lintPartyPayload,
+  readResonanceVerdict,
+  salvagePartyPowers,
+} from "../src/services/oneshot.js";
+import { parseEmbeddedJson } from "../src/services/dm.js";
+import { ART_STYLE } from "../src/content/artStyle.js";
+import type { BattleSetup, ClassId } from "../src/core/types.js";
 import type {
   PoweredBattleSetup,
   PoweredBattleState,
@@ -338,36 +339,6 @@ describe("lintItem (loot.md shapes, existing hook menu)", () => {
 });
 
 /* ------------------------------------------------------------------------ */
-/* steer constraints                                                         */
-/* ------------------------------------------------------------------------ */
-
-describe("lintSteer (bounded nudge menu)", () => {
-  const ok: GmSteerNudges = {
-    encounterBudgetDelta: 1,
-    shopBias: "consumables",
-    nextEventTheme: "laundromat dread",
-    floorIntro: "THE BASEMENT BREATHES. Somewhere, a dryer starts by itself.",
-  };
-
-  it("accepts valid nudges", () => {
-    expect(lintSteer(ok)).toEqual([]);
-  });
-
-  it("rejects out-of-menu values", () => {
-    const bad = {
-      ...ok,
-      encounterBudgetDelta: 2,
-      shopBias: "weapons",
-      nextEventTheme: "x".repeat(61),
-    } as unknown as GmSteerNudges;
-    const errors = lintSteer(bad).join("\n");
-    expect(errors).toMatch("encounterBudgetDelta");
-    expect(errors).toMatch("shopBias");
-    expect(errors).toMatch("nextEventTheme");
-  });
-});
-
-/* ------------------------------------------------------------------------ */
 /* pool                                                                      */
 /* ------------------------------------------------------------------------ */
 
@@ -393,145 +364,89 @@ describe("shared content pool", () => {
 });
 
 /* ------------------------------------------------------------------------ */
-/* generation pipeline + party endpoint smoke (mocked Anthropic client)      */
+/* the one-shot party pipeline (was the server half of POST /api/gm/party)  */
 /* ------------------------------------------------------------------------ */
 
-class FakeGen implements StructuredGenClient {
-  calls: { model: string; messages: { role: string; content: string }[] }[] =
-    [];
-
-  constructor(private readonly outputs: string[]) {}
-
-  generate(opts: {
-    model: string;
-    system: string;
-    messages: { role: "user" | "assistant"; content: string }[];
-    schema: Record<string, unknown>;
-  }): Promise<string> {
-    this.calls.push({ model: opts.model, messages: opts.messages });
-    const i = Math.min(this.calls.length - 1, this.outputs.length - 1);
-    return Promise.resolve(this.outputs[i]);
-  }
-}
-
-function partyRequest(body: unknown): Request {
-  return new Request("http://localhost/api/gm/party", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    // node's undici requires duplex when a body is present
-    ...({ duplex: "half" } as object),
-  });
-}
-
-describe("POST /api/gm/party (mocked client)", () => {
-  const validJson = JSON.stringify({ kits: makeParty() });
-
-  it("returns 4 linted kits and writes them to the stands pool", async () => {
-    const gen = new FakeGen([validJson]);
-    const pool = new MemoryPool();
-    const handler = createPartyHandler({ gen, pool });
-
-    const res = await handler(
-      partyRequest({ descriptions: ["a paranoid sphynx with static powers"] }),
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      kits: GeneratedCatKit[];
-      source: string;
-    };
-    expect(body.source).toBe("generated");
-    expect(body.kits).toHaveLength(4);
-    expect(new Set(body.kits.map((k) => k.role)).size).toBe(4);
-    expect(gen.calls).toHaveLength(1);
-    expect(await pool.size("stands")).toBe(1);
-    // visualPrompts are composed from the style contract, never ad-hoc:
-    for (const kit of body.kits) {
+describe("lintPartyPayload (client-side re-lint and stamp)", () => {
+  it("accepts a legal party, stamps budgets and composes the art style", () => {
+    const { value: kits, errors } = lintPartyPayload({ kits: makeParty() });
+    expect(errors).toEqual([]);
+    expect(kits).toHaveLength(4);
+    expect(new Set(kits?.map((k) => k.role)).size).toBe(4);
+    for (const kit of kits ?? []) {
+      // budgets are stamped here, never trusted from the model
+      expect(kit.power.budget).toBeCloseTo(powerBudget(kit.power), 9);
+      // visualPrompts are composed from the versioned style contract
       expect(kit.stand.visualPrompt).toContain(ART_STYLE.basePrompt);
       expect(kit.stand.visualPrompt).toContain(ART_STYLE.framing.battleSprite);
-      // budgets are server-stamped
-      expect(kit.power.budget).toBe(powerBudget(kit.power));
     }
   });
 
-  it("falls back to a stock power when a power fails the lint twice", async () => {
-    const broken = makeParty();
-    broken[1].power = {
+  it("recomputes a lying budget rather than believing it", () => {
+    const party = makeParty();
+    party[0].power = { ...party[0].power, budget: 0.01 };
+    const kits = lintPartyPayload({ kits: party }).value;
+    expect(kits?.[0].power.budget).toBeCloseTo(powerBudget(kits![0].power), 9);
+    expect(kits?.[0].power.budget).toBeGreaterThan(0.01);
+  });
+
+  it("REPORTS the violations rather than swallowing them — they are the retry", () => {
+    const party = makeParty();
+    party[0].base.atk += 3; // tank stat total no longer 62
+    party[1].power = {
       ...makePower("striker"),
       effects: [{ kind: "damage", target: "enemies", pct: 999 }],
     };
-    const bad = JSON.stringify({ kits: broken });
-    const gen = new FakeGen([bad, bad]);
-    const handler = createPartyHandler({ gen, pool: new MemoryPool() });
-
-    const res = await handler(partyRequest({ descriptions: ["a cat"] }));
-    expect(res.status).toBe(200);
-    expect(gen.calls).toHaveLength(2); // one regenerate happened first
-    const body = (await res.json()) as { kits: GeneratedCatKit[] };
-    expect(body.kits[1].power.id).toBe(STOCK_POWERS.striker.id);
-    // the valid powers of the other kits are kept, not replaced
-    expect(body.kits[0].power.id).toBe("power:tankTestPower");
+    const { value, errors } = lintPartyPayload({ kits: party });
+    expect(value).toBeUndefined();
+    const joined = errors.join("\n");
+    expect(joined).toMatch("stat total");
+    expect(joined).toMatch("damage pct");
+    // the failing power is named, so the DM knows which kit to fix
+    expect(joined).toMatch("power:strikerTestPower");
   });
 
-  it("regenerates ONCE when the first output fails the lint", async () => {
-    const broken = makeParty();
-    broken[0].base.atk += 3; // busts the tank stat total
-    const gen = new FakeGen([JSON.stringify({ kits: broken }), validJson]);
-    const handler = createPartyHandler({ gen, pool: new MemoryPool() });
-
-    const res = await handler(partyRequest({ descriptions: ["a cat"] }));
-    expect(res.status).toBe(200);
-    expect(gen.calls).toHaveLength(2);
-    // the retry turn carries the violation list back to the model
-    const retryMessages = gen.calls[1].messages;
-    expect(retryMessages).toHaveLength(3);
-    expect(retryMessages[2].content).toMatch("stat total");
-  });
-
-  it("gives up with 502 after the second invalid output", async () => {
-    const broken = makeParty();
-    broken.pop(); // only 3 kits
-    const bad = JSON.stringify({ kits: broken });
-    const gen = new FakeGen([bad, bad]);
-    const handler = createPartyHandler({ gen, pool: new MemoryPool() });
-
-    const res = await handler(partyRequest({ descriptions: ["a cat"] }));
-    expect(res.status).toBe(502);
-    expect(gen.calls).toHaveLength(2);
-  });
-
-  it("rejects malformed requests without calling the model", async () => {
-    const gen = new FakeGen([validJson]);
-    const handler = createPartyHandler({ gen, pool: new MemoryPool() });
-    expect((await handler(partyRequest({ descriptions: [] }))).status).toBe(
-      400,
-    );
-    expect((await handler(partyRequest({}))).status).toBe(400);
-    expect(gen.calls).toHaveLength(0);
+  it("rejects a payload that is not a party at all", () => {
+    for (const bad of [null, undefined, {}, { kits: "four" }]) {
+      expect(lintPartyPayload(bad).value).toBeUndefined();
+      expect(lintPartyPayload(bad).errors.length).toBeGreaterThan(0);
+    }
   });
 });
 
-describe("generateValidated", () => {
-  it("throws GmGenerationError with the lint errors after two failures", async () => {
-    const gen = new FakeGen(["not json at all"]);
-    await expect(
-      generateValidated(gen, {
-        model: "m",
-        system: "s",
-        user: "u",
-        schema: {},
-        lint: () => ({ errors: ["boom"] }),
-      }),
-    ).rejects.toThrowError(GmGenerationError);
-    expect(gen.calls).toHaveLength(2);
+describe("salvagePartyPowers (the last resort after the retry)", () => {
+  it("swaps a cap-busting power for the role's stock power, keeping the kit", () => {
+    const party = makeParty();
+    party[1].power = {
+      ...makePower("striker"),
+      effects: [{ kind: "damage", target: "enemies", pct: 999 }],
+    };
+    const kits = salvagePartyPowers({ kits: party });
+    expect(kits?.[1].power.id).toBe(STOCK_POWERS.striker.id);
+    // every other kit keeps the power it was given
+    expect(kits?.[0].power.id).toBe("power:tankTestPower");
+    // and the salvaged party is still stamped and styled
+    expect(kits?.[1].power.budget).toBeCloseTo(powerBudget(kits![1].power), 9);
+    expect(kits?.[0].stand.visualPrompt).toContain(ART_STYLE.basePrompt);
+  });
+
+  it("gives up on a KIT-level violation (a stock power cannot fix stats)", () => {
+    const busted = makeParty();
+    busted[0].base.atk += 3;
+    expect(salvagePartyPowers({ kits: busted })).toBeUndefined();
+
+    const short = makeParty();
+    short.pop();
+    expect(salvagePartyPowers({ kits: short })).toBeUndefined();
+    expect(salvagePartyPowers(null)).toBeUndefined();
   });
 });
 
 /* ------------------------------------------------------------------------ */
-/* power budget lint (stand-powers.md §Balance — vendored server copy)       */
+/* power budget lint (stand-powers.md §Balance)                              */
 /* ------------------------------------------------------------------------ */
 
-describe("powerBudget + lintPowerScript (service wrapper over core)", () => {
+describe("powerBudget + lintPowerScript", () => {
   it("all stock fallback powers pass the cat cap with true budgets", () => {
     for (const power of Object.values(STOCK_POWERS)) {
       expect(lintPowerScript(power, BUDGET_CAPS.cat)).toEqual([]);
@@ -596,29 +511,65 @@ describe("powerBudget + lintPowerScript (service wrapper over core)", () => {
     );
   });
 
-  it("server and client pair keys agree (sortedPair + framework version)", () => {
+  it("the pair key is sortedPair + framework version, from one function", () => {
+    // There is exactly one `resonancePairKey` now. It used to exist twice —
+    // once in api/_lib/powers.ts and once in src/services/gm.ts — with a test
+    // right here asserting the copies agreed.
     const key = resonancePairKey("power:b", "power:a");
     expect(key).toBe(`power:a+power:b@v${POWER_FRAMEWORK_VERSION}`);
-    expect(key).toBe(
-      clientPairKey("power:b", "power:a", POWER_FRAMEWORK_VERSION),
-    );
+    expect(resonancePairKey("power:a", "power:b")).toBe(key);
   });
 });
 
 /* ------------------------------------------------------------------------ */
-/* POST /api/gm/resonance (mocked client)                                    */
+/* schema recovery: the structured answer that arrived as prose             */
 /* ------------------------------------------------------------------------ */
 
-function resonanceRequest(body: unknown): Request {
-  return new Request("http://localhost/api/gm/resonance", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    ...({ duplex: "half" } as object),
+describe("parseEmbeddedJson (fallback when a schema'd turn emits no result)", () => {
+  it("reads the object out of a fenced block, prose, or a bare answer", () => {
+    const want = { hasResonance: false, rule: null };
+    expect(
+      parseEmbeddedJson('```json\n{"hasResonance":false,"rule":null}\n```'),
+    ).toEqual(want);
+    expect(
+      parseEmbeddedJson('Here you go: {"hasResonance":false,"rule":null}'),
+    ).toEqual(want);
+    expect(parseEmbeddedJson('{"hasResonance":false,"rule":null}')).toEqual(
+      want,
+    );
   });
-}
 
-describe("POST /api/gm/resonance (mocked client)", () => {
+  it("brace-matches instead of greedily eating the rest of the message", () => {
+    const got = parseEmbeddedJson('{"a":{"b":1}} and then some chatter { oops');
+    expect(got).toEqual({ a: { b: 1 } });
+  });
+
+  it("is not fooled by braces inside strings", () => {
+    expect(parseEmbeddedJson('{"flavor":"a } brace","n":1}')).toEqual({
+      flavor: "a } brace",
+      n: 1,
+    });
+    expect(
+      parseEmbeddedJson('{"flavor":"an escaped \\" quote }","n":2}'),
+    ).toEqual({
+      flavor: 'an escaped " quote }',
+      n: 2,
+    });
+  });
+
+  it("returns undefined rather than guessing", () => {
+    expect(parseEmbeddedJson("no object here at all")).toBeUndefined();
+    expect(parseEmbeddedJson('{"unterminated": ')).toBeUndefined();
+    expect(parseEmbeddedJson("{not json}")).toBeUndefined();
+    expect(parseEmbeddedJson("")).toBeUndefined();
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* the one-shot resonance pipeline (was POST /api/gm/resonance)             */
+/* ------------------------------------------------------------------------ */
+
+describe("readResonanceVerdict (client-side lint + envelope stamp)", () => {
   const powerA = STOCK_POWERS.striker;
   const powerB = STOCK_POWERS.control;
   const pairKey = resonancePairKey(powerA.id, powerB.id);
@@ -630,114 +581,44 @@ describe("POST /api/gm/resonance (mocked client)", () => {
   const flavorLine = "Static arcs along the invisible threads.";
   const announceLine =
     "STAND RESONANCE DISCOVERED: STRING THEORY conducts BOX AMBUSH.";
-  /** What the handler stamps + stores from ruleBody. */
-  const validRule: InteractionRule = {
-    pairKey,
-    version: POWER_FRAMEWORK_VERSION,
-    trigger: ruleBody.trigger,
-    conditions: [],
-    effects: [{ kind: "energy", target: "other", amount: -1 }],
-    flavor: flavorLine,
-    announce: announceLine,
-    budget: 3, // onCrit 1.5 x energy 2·|−1|
-  };
-  const resonantJson = JSON.stringify({
+  const resonant = {
     hasResonance: true,
     rule: ruleBody,
     flavor: flavorLine,
     announce: announceLine,
-  });
-  const nullJson = JSON.stringify({
-    hasResonance: false,
-    rule: null,
-    flavor: "These two powers politely ignore each other.",
-    announce: "",
-  });
-  const body = (sessionId?: string): unknown => ({
-    pairKey,
-    powers: [powerA, powerB],
-    sessionId,
+  };
+
+  it("stamps pairKey, framework version and a RECOMPUTED budget", () => {
+    const verdict = readResonanceVerdict(resonant, pairKey);
+    expect(verdict).not.toBeNull();
+    const rule = verdict?.rule as InteractionRule;
+    expect(rule.pairKey).toBe(pairKey);
+    expect(rule.version).toBe(POWER_FRAMEWORK_VERSION);
+    expect(rule.trigger).toBe("onCrit");
+    expect(rule.flavor).toBe(flavorLine);
+    expect(rule.announce).toBe(announceLine);
+    // onCrit 1.5 x energy 2·|-1| = 3 — computed here, never sent
+    expect(rule.budget).toBe(3);
+    expect(rule.budget).toBeLessThanOrEqual(BUDGET_CAPS.resonance);
   });
 
-  it("pool hit short-circuits without a model call", async () => {
-    const pool = new MemoryPool();
-    const row: StoredInteraction = {
+  it("treats 'no resonance' as a first-class, cacheable answer", () => {
+    const verdict = readResonanceVerdict(
+      {
+        hasResonance: false,
+        rule: null,
+        flavor: "These two powers politely ignore each other.",
+        announce: "",
+      },
       pairKey,
-      version: POWER_FRAMEWORK_VERSION,
-      json: validRule,
-      flavor: "f",
-      announce: "STAND RESONANCE DISCOVERED: x",
-      first_discovered_by: "session-0",
-    };
-    await pool.setEntry("interactions", pairKey, JSON.stringify(row));
-    const gen = new FakeGen([resonantJson]);
-    const handler = createResonanceHandler({ gen, pool });
-
-    const res = await handler(resonanceRequest(body()));
-    expect(res.status).toBe(200);
-    const out = (await res.json()) as {
-      source: string;
-      rule: unknown;
-      firstDiscoveredBy?: string;
-    };
-    expect(out.source).toBe("pool");
-    expect(out.rule).toEqual(validRule);
-    expect(out.firstDiscoveredBy).toBe("session-0");
-    expect(gen.calls).toHaveLength(0);
+    );
+    expect(verdict).not.toBeNull();
+    expect(verdict?.rule).toBeNull();
+    expect(verdict?.announce).toBe("");
   });
 
-  it("miss → compile → store; the next call is served from the memo", async () => {
-    const pool = new MemoryPool();
-    const gen = new FakeGen([resonantJson]);
-    const handler = createResonanceHandler({ gen, pool });
-
-    const first = await handler(resonanceRequest(body("sess-42")));
-    expect(first.status).toBe(200);
-    const out = (await first.json()) as {
-      source: string;
-      rule: InteractionRule;
-      announce: string;
-    };
-    expect(out.source).toBe("generated");
-    expect(out.rule).toEqual(validRule);
-    expect(out.announce).toMatch(/^STAND RESONANCE DISCOVERED:/);
-    expect(gen.calls).toHaveLength(1);
-
-    const stored = await pool.getEntry("interactions", pairKey);
-    expect(stored).not.toBeNull();
-    const row = JSON.parse(stored ?? "") as StoredInteraction;
-    expect(row.version).toBe(POWER_FRAMEWORK_VERSION);
-    expect(row.first_discovered_by).toBe("sess-42");
-
-    const second = await handler(resonanceRequest(body()));
-    const out2 = (await second.json()) as {
-      source: string;
-      firstDiscoveredBy?: string;
-    };
-    expect(out2.source).toBe("pool");
-    expect(out2.firstDiscoveredBy).toBe("sess-42");
-    expect(gen.calls).toHaveLength(1); // no second model call
-  });
-
-  it("memoizes a null verdict (no resonance is a stored answer)", async () => {
-    const pool = new MemoryPool();
-    const gen = new FakeGen([nullJson]);
-    const handler = createResonanceHandler({ gen, pool });
-
-    const first = await handler(resonanceRequest(body()));
-    expect(first.status).toBe(200);
-    expect(((await first.json()) as { rule: unknown }).rule).toBeNull();
-    expect(gen.calls).toHaveLength(1);
-
-    const second = await handler(resonanceRequest(body()));
-    const out = (await second.json()) as { rule: unknown; source: string };
-    expect(out.rule).toBeNull();
-    expect(out.source).toBe("pool");
-    expect(gen.calls).toHaveLength(1); // memoized null → no recompile
-  });
-
-  it("gives up with 502 after two cap-busting outputs", async () => {
-    const overBudget = JSON.stringify({
+  it("rejects a cap-busting rule (the battle then runs on base rules)", () => {
+    const overBudget = {
       hasResonance: true,
       rule: {
         trigger: "onTurnStart",
@@ -746,188 +627,29 @@ describe("POST /api/gm/resonance (mocked client)", () => {
       },
       flavor: "WAY too strong.",
       announce: "STAND RESONANCE DISCOVERED: OVERKILL.",
-    });
-    const pool = new MemoryPool();
-    const gen = new FakeGen([overBudget, overBudget]);
-    const handler = createResonanceHandler({ gen, pool });
-
-    const res = await handler(resonanceRequest(body()));
-    expect(res.status).toBe(502);
-    expect(gen.calls).toHaveLength(2);
-    // a failed compile is NOT memoized — the next battle retries
-    expect(await pool.getEntry("interactions", pairKey)).toBeNull();
+    };
+    expect(readResonanceVerdict(overBudget, pairKey)).toBeNull();
   });
 
-  it("rejects tampered powers and mismatched pair keys without a model call", async () => {
-    const gen = new FakeGen([resonantJson]);
-    const handler = createResonanceHandler({ gen, pool: new MemoryPool() });
-
-    const tampered = {
-      pairKey,
-      powers: [
-        {
-          ...powerA,
-          effects: [{ kind: "damage", target: "enemies", pct: 400 }],
-        },
-        powerB,
-      ],
-    };
-    expect((await handler(resonanceRequest(tampered))).status).toBe(400);
-
-    const wrongKey = { pairKey: "nonsense@v1", powers: [powerA, powerB] };
-    expect((await handler(resonanceRequest(wrongKey))).status).toBe(400);
-    expect(gen.calls).toHaveLength(0);
+  it("rejects a malformed or unannounced verdict", () => {
+    expect(readResonanceVerdict(null, pairKey)).toBeNull();
+    expect(
+      readResonanceVerdict({ ...resonant, announce: "it happened" }, pairKey),
+    ).toBeNull();
+    expect(
+      readResonanceVerdict({ ...resonant, flavor: "x".repeat(201) }, pairKey),
+    ).toBeNull();
   });
 
   it("lintInteractionRule enforces the tighter resonance cap", () => {
     expect(BUDGET_CAPS.resonance).toBeLessThan(BUDGET_CAPS.cat);
-    expect(lintInteractionRule(validRule)).toEqual([]);
+    expect(lintInteractionRule(ruleBody)).toEqual([]);
     const tooStrong = {
       trigger: "onTurnStart",
       conditions: [],
       effects: [{ kind: "damage", target: "enemies", pct: 100 }],
     } as const;
     expect(lintInteractionRule(tooStrong).join("\n")).toMatch("exceeds cap");
-  });
-});
-
-/* ------------------------------------------------------------------------ */
-/* POST /api/gm/eventResolve (mocked client)                                 */
-/* ------------------------------------------------------------------------ */
-
-function resolveRequest(body: unknown): Request {
-  return new Request("http://localhost/api/gm/eventResolve", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify(body),
-    ...({ duplex: "half" } as object),
-  });
-}
-
-describe("POST /api/gm/eventResolve (mocked client)", () => {
-  const goodEffects: Effect[] = [
-    { kind: "shinies", amount: 8 },
-    { kind: "damage", target: "random", amount: 3 },
-  ];
-  const goodJson = JSON.stringify({
-    outcome: { text: "The sock yields, grudgingly.", effects: goodEffects },
-  });
-  const body = (over: Record<string, unknown> = {}): unknown => ({
-    floor: 1,
-    text: "I bat the sock off the ledge with great ceremony",
-    eventId: "gmTestOmen",
-    eventPrompt: "The sock stares back.",
-    optionLabels: ["Poke it", "Walk away"],
-    partyHp: [30, 28, 24, 26],
-    shinies: 12,
-    ...over,
-  });
-
-  it("returns a bounded Outcome-shaped verdict (memoizing nothing)", async () => {
-    const gen = new FakeGen([goodJson]);
-    const handler = createEventResolveHandler({ gen });
-
-    const res = await handler(resolveRequest(body()));
-    expect(res.status).toBe(200);
-    const out = (await res.json()) as {
-      outcome: { text: string; effects: Effect[] };
-      source: string;
-    };
-    expect(out.source).toBe("generated");
-    expect(out.outcome.effects).toEqual(goodEffects);
-    expect(gen.calls).toHaveLength(1);
-    // the request context reaches the model verbatim
-    expect(gen.calls[0].messages[0].content).toMatch("The sock stares back.");
-    expect(gen.calls[0].messages[0].content).toMatch("bat the sock");
-  });
-
-  it("allows a trailing fight effect (same rules as fixed options)", async () => {
-    const withFight = JSON.stringify({
-      outcome: {
-        text: "The sock was three rats. It is ALWAYS three rats.",
-        effects: [
-          { kind: "shinies", amount: 5 },
-          { kind: "fight", encounter: ["ratThug", "ratThug"], loot: "normal" },
-        ],
-      },
-    });
-    const gen = new FakeGen([withFight]);
-    const res = await createEventResolveHandler({ gen })(
-      resolveRequest(body()),
-    );
-    expect(res.status).toBe(200);
-    const out = (await res.json()) as { outcome: { effects: Effect[] } };
-    expect(out.outcome.effects[1].kind).toBe("fight");
-  });
-
-  it("regenerates ONCE on a cap-busting verdict, echoing the violation", async () => {
-    const overCap = JSON.stringify({
-      outcome: {
-        text: "Everything explodes.",
-        effects: [{ kind: "damage", target: "party", amount: 50 }],
-      },
-    });
-    const gen = new FakeGen([overCap, goodJson]);
-    const res = await createEventResolveHandler({ gen })(
-      resolveRequest(body()),
-    );
-    expect(res.status).toBe(200);
-    expect(gen.calls).toHaveLength(2);
-    // the retry turn carries the exact cap violation back to the model
-    expect(gen.calls[1].messages[2].content).toMatch(
-      `above cap ${EVENT_CAPS.damageMax(1)} on floor 1`,
-    );
-  });
-
-  it("gives up with 502 after two invalid outputs", async () => {
-    const overCap = JSON.stringify({
-      outcome: {
-        text: "No.",
-        effects: [{ kind: "shinies", amount: 999 }],
-      },
-    });
-    const gen = new FakeGen([overCap, overCap]);
-    const res = await createEventResolveHandler({ gen })(
-      resolveRequest(body()),
-    );
-    expect(res.status).toBe(502);
-    expect(gen.calls).toHaveLength(2);
-  });
-
-  it("rejects malformed requests without calling the model", async () => {
-    const gen = new FakeGen([goodJson]);
-    const handler = createEventResolveHandler({ gen });
-    expect((await handler(resolveRequest({ text: "hi" }))).status).toBe(400);
-    expect((await handler(resolveRequest({ floor: 2 }))).status).toBe(400);
-    expect(
-      (await handler(resolveRequest(body({ text: "x".repeat(281) })))).status,
-    ).toBe(400);
-    expect(gen.calls).toHaveLength(0);
-  });
-
-  it("lintResolvePayload rejects gateCat targets and oversized bundles", () => {
-    const gate = lintResolvePayload(
-      {
-        outcome: {
-          text: "t",
-          effects: [{ kind: "damage", target: "gateCat", amount: 2 }],
-        },
-      },
-      1,
-    );
-    expect(gate.errors.join("\n")).toMatch("gateCat");
-    const four = lintResolvePayload(
-      {
-        outcome: {
-          text: "t",
-          effects: Array.from({ length: 4 }, () => ({ kind: "nothing" })),
-        },
-      },
-      1,
-    );
-    expect(four.errors.join("\n")).toMatch("0..3");
-    const empty = lintResolvePayload({ outcome: { text: "", effects: [] } }, 1);
-    expect(empty.errors.join("\n")).toMatch("1..400");
   });
 });
 

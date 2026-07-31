@@ -5,8 +5,9 @@
  * system of record").
  *
  * The one-shot generators (`agent/skills/item.ts`, `agent/skills/event.ts`)
- * already publish through `api/gm/*` because the CALLER is the game asking for
- * a schema. This tool is the other half: when the DM invents something in the
+ * answer a schema because the CALLER is the game asking for one, and the game
+ * keeps what it asked for. This tool is the other half: when the DM invents
+ * something in the
  * middle of a beat — an item it just handed over, an event card it just
  * sketched, a line of flavour for an enemy — that content is worth keeping,
  * and §4b requires it to be kept for *later runs and other players*, not just
@@ -16,9 +17,9 @@
  *
  *  1. **Validated with the SHIPPED validators.** Events go through
  *     `lintEvent` (= `core/events/validate` + the per-floor `EVENT_CAPS`);
- *     items go through `lintItem`, the same function `/api/gm/item` runs.
- *     Nothing bespoke is invented here — a contribution that would not have
- *     passed the endpoint does not pass this tool either.
+ *     items go through `lintItem`. Both live in `src/services/contentLint.ts`,
+ *     the same module the browser re-lints generated content with — nothing
+ *     bespoke is invented here.
  *  2. **Budget-linted.** Anything carrying mechanical effects is priced by the
  *     same per-floor lint an `apply_effect` request is (`lintImprovisedEffects`),
  *     so the pool can never accumulate content that is stronger than the game
@@ -33,8 +34,8 @@
  */
 import { defineTool } from "eve/tools";
 import { z } from "zod";
-import { lintEvent, lintItem } from "../../api/_lib/constraints.js";
-import { getPool } from "../../api/_lib/pool.js";
+import { lintEvent, lintItem } from "../../src/services/contentLint.js";
+import { getPool } from "../lib/pool.js";
 import { ART_STYLE } from "../../src/content/artStyle.js";
 import type { GameEvent, Rarity } from "../../src/core/types.js";
 import type { GeneratedEquip } from "../../src/services/gmTypes.js";

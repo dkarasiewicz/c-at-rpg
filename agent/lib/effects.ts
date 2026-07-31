@@ -10,13 +10,14 @@
  *  1. the zod schema the model sees (a 1:1 mirror of `EffectSpec` in
  *     `src/core/combat/powerTypes.ts` — the parity assertion below is a
  *     compile error the day the union grows a seventh kind);
- *  2. the per-floor ramp on top of the shipped caps.
+ *  2. the zod `floorSchema` every tool takes its floor through. The per-floor
+ *     ramp itself is re-exported from `src/services/caps.ts`, never restated.
  *
  * The PRICING is not reimplemented here: `powerBudget()` and
  * `validatePowerScript()` are imported from `src/core/combat/powers.ts`, the
- * same pure functions the battle engine runs at setup and `api/_lib/powers.ts`
- * runs server-side. An improvised action is priced exactly like a Stand power,
- * because to the interpreter that is precisely what it is.
+ * same pure functions the battle engine runs at setup and the browser runs
+ * again on every verdict. An improvised action is priced exactly like a Stand
+ * power, because to the interpreter that is precisely what it is.
  */
 import { z } from "zod";
 import type { StatusId } from "../../src/core/types.js";
@@ -26,13 +27,20 @@ import type {
   PowerTargetSel,
 } from "../../src/core/combat/powerTypes.js";
 import {
-  BUDGET_CAPS,
   EFFECT_CAPS,
   POWER_FRAMEWORK_VERSION,
   STATUS_COST,
   powerBudget,
   validatePowerScript,
 } from "../../src/core/combat/powers.js";
+import {
+  MAX_FLOOR,
+  MIN_FLOOR,
+  floorDamageCap,
+  floorHealCap,
+  floorRamp,
+  improvBudgetCap,
+} from "../../src/services/caps.js";
 
 /* ------------------------------------------------------------------------ */
 /* Closed vocabularies, derived from core wherever core exposes them         */
@@ -148,40 +156,28 @@ export const EFFECT_SPEC_PARITY: MirrorsEffectSpec = true;
 /* Per-floor caps                                                            */
 /* ------------------------------------------------------------------------ */
 
-export const MIN_FLOOR = 1;
-export const MAX_FLOOR = 6;
+/**
+ * The floor ramp and the per-floor ceilings are NOT declared here. They live
+ * in `src/services/caps.ts`, the single home the browser's re-lint
+ * (`services/tabletop.ts`) reads them from as well — so the numbers the DM is
+ * briefed with are, by construction, the numbers the client will accept. They
+ * were duplicated here and in the client until `api/gm/*` was retired, pinned
+ * by parity tests; the tests went with the duplication.
+ */
+export {
+  MAX_FLOOR,
+  MIN_FLOOR,
+  floorDamageCap,
+  floorHealCap,
+  floorRamp,
+  improvBudgetCap,
+};
 
 export const floorSchema = z
   .int()
   .min(MIN_FLOOR)
   .max(MAX_FLOOR)
   .describe("the floor the party is on, 1..6");
-
-/**
- * The floor ramp: floor 1 improvisation is worth 3/8 of a full Stand power,
- * floor 6 is worth all of it. Anchored to the shipped caps rather than to new
- * magic numbers — floor 6 improvisation is exactly as strong as the strongest
- * legal cat power and never stronger.
- */
-export function floorRamp(floor: number): number {
-  const f = Math.min(MAX_FLOOR, Math.max(MIN_FLOOR, Math.floor(floor)));
-  return (2 + f) / 8;
-}
-
-/** Budget ceiling for one improvised action on this floor (<= BUDGET_CAPS.cat). */
-export function improvBudgetCap(floor: number): number {
-  return BUDGET_CAPS.cat * floorRamp(floor);
-}
-
-/** Per-floor ceiling on a single damage effect (<= EFFECT_CAPS.damagePct). */
-export function floorDamageCap(floor: number): number {
-  return Math.round(EFFECT_CAPS.damagePct * floorRamp(floor));
-}
-
-/** Per-floor ceiling on a single heal effect (<= EFFECT_CAPS.healPct). */
-export function floorHealCap(floor: number): number {
-  return Math.round(EFFECT_CAPS.healPct * floorRamp(floor));
-}
 
 /* ------------------------------------------------------------------------ */
 /* The lint                                                                  */
@@ -201,8 +197,9 @@ export interface EffectLint {
  * Price and validate an improvised action with the ENGINE'S lint.
  *
  * The effects are wrapped in a synthetic, conditionless `activated`
- * `PowerScript` (the same shape `api/gm/eventResolve` wraps a free-text verdict
- * in a synthetic `GameEvent`) and run through `validatePowerScript`, so an
+ * `PowerScript` (the same trick `validateEncounterVerdict` uses out of combat,
+ * wrapping a verdict in a synthetic `GameEvent`) and run through
+ * `validatePowerScript`, so an
  * improvised action can never exceed what a shipped Stand power could do — and
  * on floors 1-5, not even that.
  */
@@ -226,8 +223,8 @@ export function lintImprovisedEffects(
   const { problems } = validatePowerScript(script, cap);
 
   // The floor ramp, layered on top of the absolute EFFECT_CAPS the core lint
-  // already enforced (exactly how api/gm/eventResolve layers EVENT_CAPS on top
-  // of core/events/validate).
+  // already enforced (exactly how the out-of-combat path layers EVENT_CAPS on
+  // top of core/events/validate).
   const dmgCap = floorDamageCap(floor);
   const healCap = floorHealCap(floor);
   for (const e of effects) {

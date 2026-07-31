@@ -6,7 +6,7 @@
  * on-the-fly art is indistinguishable from shipped art.
  *
  * Content-layer purity: plain data only — no imports, no functions, no I/O.
- * Server-side prompt composition lives in api/_lib/artPrompt.ts.
+ * Prompt composition lives in src/services/artPrompt.ts.
  *
  * Every generated asset (build-time or runtime) records `styleVersion` in its
  * manifest/pool row; bumping the style bible bumps `version` here so the pool

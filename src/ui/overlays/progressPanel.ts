@@ -81,6 +81,7 @@ import {
   makeTooltip,
   panel,
 } from "../widgets.js";
+import { isTouch, padHit } from "../touch.js";
 import {
   RARITY_COLOR,
   catNameColor,
@@ -1068,9 +1069,20 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     );
     row.eventMode = "static";
     row.cursor = "pointer";
-    row.on("pointertap", onTap);
-    row.on("pointerover", () => onHover?.());
+    // Den rows are 26-34 design px — 14-18 CSS px on a phone. `padHit` grows
+    // the target to a fingertip without moving the row (mobile.md §3).
+    padHit(row, w, h);
+    row.on("pointerover", () => {
+      if (!isTouch()) onHover?.();
+    });
     row.on("pointerout", clearTips);
+    row.on("pointertap", () => {
+      // A Den row's hover tip is its rules text; on touch the tap both
+      // focuses the row (which is what activates it) and shows that text, so
+      // nothing here needs a second tap to be readable (mobile.md §2).
+      if (isTouch()) onHover?.();
+      onTap();
+    });
     return row;
   }
 
@@ -1229,20 +1241,26 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
       if (!locked && editable) {
         chip.eventMode = "static";
         chip.cursor = "pointer";
+        padHit(chip, sw, 60);
         chip.on("pointertap", () => {
           if (pickedSkill) doAssign(i, pickedSkill);
         });
       } else if (locked) {
         chip.eventMode = "static";
         chip.cursor = "help";
-        chip.on("pointerover", () =>
+        padHit(chip, sw, 60);
+        const explain = (): void =>
           showTip(
             "Claw Swipe is bolted to slot 1 — it is the party's energy battery.",
             RIGHT_X + SPACE.md,
             BODY_Y + 120,
-          ),
-        );
+          );
+        chip.on("pointerover", () => {
+          if (!isTouch()) explain();
+        });
         chip.on("pointerout", clearTips);
+        // purely informational: one tap says it, the next dismisses it
+        chip.on("pointertap", explain);
       }
       host.addChild(chip);
     });

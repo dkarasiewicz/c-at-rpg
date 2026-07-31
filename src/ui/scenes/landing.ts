@@ -55,6 +55,7 @@ import {
   vignette,
   type ValueBar,
 } from "../widgets.js";
+import { padHit } from "../touch.js";
 import { drawCat } from "../draw/cats.js";
 import {
   catNameColor,
@@ -851,6 +852,8 @@ export class LandingScene implements Scene {
 
       chip.eventMode = "static";
       chip.cursor = "pointer";
+      // marching order is 1-4 on a keyboard; the chips are the tap path
+      padHit(chip, chipW, chipH);
       chip.on("pointertap", () => this.marchTap(i));
       host.addChild(chip);
     });

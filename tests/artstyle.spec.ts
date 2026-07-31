@@ -1,14 +1,14 @@
 /**
  * Style contract invariants (docs/design/visual-v2.md §Style contract):
- * one versioned source of truth for BOTH batch pipelines and the runtime GM,
- * plus the server-side prompt composition that consumes it.
+ * one versioned source of truth for BOTH batch pipelines and the runtime DM,
+ * plus the prompt composition that consumes it.
  */
 import { existsSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { ART_STYLE, type ArtCategory } from "../src/content/artStyle.js";
-import { composeArtPrompt } from "../api/_lib/artPrompt.js";
+import { composeArtPrompt } from "../src/services/artPrompt.js";
 
 const CATEGORIES: ArtCategory[] = ["battleSprite", "icon", "tile", "scene"];
 

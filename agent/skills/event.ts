@@ -1,5 +1,5 @@
 /**
- * One-shot parity with POST /api/gm/event.
+ * The one-shot event generator (was POST /api/gm/event).
  *
  * The per-floor cap table is interpolated from `EVENT_CAPS`, the same table
  * `lintEventCaps()` enforces, so the prompt and the lint cannot disagree.

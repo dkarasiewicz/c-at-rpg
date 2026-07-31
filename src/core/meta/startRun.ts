@@ -21,11 +21,11 @@
 import type { ClassId, EquipInstance, RunState } from "../types.js";
 import type { CustomCatKit } from "../run/runState.js";
 import type { RunOverlay } from "./types.js";
-import { newRun } from "../run/runState.js";
+import { newRun, PARTY_ORDER } from "../run/runState.js";
 import { applyGrant } from "../loot/inventory.js";
 import { makeEquipInstance } from "../loot/roll.js";
 import { EQUIP_DEFS } from "../../content/equipment.js";
-import { startingRoster } from "./overlay.js";
+import { eligibleClasses, startingRoster } from "./overlay.js";
 
 /**
  * Fold the parts of an overlay that are pure RunState edits (wallet, starting
@@ -68,10 +68,24 @@ export function startRun(
   overlay: RunOverlay,
   customParty?: CustomCatKit[],
 ): RunState {
-  const roster = startingRoster(seed, overlay) as ClassId[];
+  // ROSTER GATE: the town's class pool is stamped onto the run so the mid-run
+  // recruit (`recruitCat`, floor 3) can only ever hand over a cat Cat Town
+  // actually houses — otherwise the stoop's `class:*` unlocks buy nothing.
+  //
+  // A custom (party-creator) run is exempt on both counts: the kits ARE the
+  // party, so the formation is the engine's own draw and every slot stays
+  // recruitable rather than being benched against a catalog the player never
+  // described their cats into.
+  const custom = (customParty?.length ?? 0) > 0;
+  const allowed = custom
+    ? PARTY_ORDER
+    : (eligibleClasses(overlay).filter((c): c is ClassId =>
+        (PARTY_ORDER as readonly string[]).includes(c),
+      ) as ClassId[]);
   const run = newRun(seed, customParty, {
     partyCapacity: overlay.partyCapacity,
-    roster,
+    ...(custom ? {} : { roster: startingRoster(seed, overlay) as ClassId[] }),
+    eligibleClasses: allowed,
   });
   return applyOverlayToRun(run, overlay);
 }

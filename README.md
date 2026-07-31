@@ -3,8 +3,10 @@
 *A cRPG of considerable fluffiness.* A clowder of stray cats descends through six
 seeded dungeon floors, fights turn-based JRPG battles, hoards shinies, and makes
 questionable dialog choices. A run **starts with two cats** and earns the rest: a
-third joins mid-run, a fourth only once **Cat Town** — the hub you come home to
-between runs — has bought the bowl. Each floor is a **run map** — a painted node
+third can join mid-run, but only once **Cat Town** — the hub you come home to
+between runs — houses somebody for it to be (Mora's Corner or Baguette's Basket),
+and a fourth only once the town has bought the bowl as well. A brand-new town
+therefore fields two. Each floor is a **run map** — a painted node
 graph where picking the route *is* the gameplay — and at any encounter you can stop
 pressing buttons and just **type what the party does**. Every cat — and every enemy —
 is bound to a **Stand**: a spectral patron looming behind them that embodies their
@@ -166,10 +168,11 @@ and zod are deliberately never shipped to the browser.
 - **Party creator** — `[C] Create your party` on the title screen: describe one to
   four cats in free text and get back a full legal kit (classes, stats, skills,
   PowerScripts, Stand art prompts) that overlays the run's content tables.
-- **Stand resonance discoveries** — cat-power × enemy-power pairings are checked
-  against authored interaction rules (session-cached, prefetched in the background);
-  a discovered resonance attaches an extra bounded power script and announces itself
-  once with a gold banner.
+- **Stand resonance discoveries** — every cat-power × enemy-power pairing is sent to
+  the DM to compile into one extra bounded rule, or a definitive "these two ignore
+  each other" (fire-and-forget, session-cached, so battle start never waits and a
+  rule applies from the next fight featuring the pair); a discovered resonance
+  attaches as an extra power script and announces itself once with a gold banner.
 
 **The DM authors content; it never computes outcomes.** Everything it emits is
 recombination of shipped mechanics, and it is priced three separate times: by the
@@ -189,22 +192,22 @@ nice-to-have.** With `VITE_DM_URL` unset (the default) the probe short-circuits
 byte-identical to its no-DM behaviour. The party creator falls back to a "using the
 Strays" toast, event modals render without the extra row, and battles run with stock
 powers. This is verified in the release gate by playing a run with the DM pointed at
-a dead host. The older stateless endpoints under `api/gm/*` remain as a fallback
-until the agent reaches full parity.
+a dead host. There is no fallback service behind it: the six stateless
+`api/gm/*` functions the DM replaced are deleted, and the game's Vercel project
+ships no serverless functions at all.
 
 Design: `docs/design/run-map-and-dm.md` §§3–4 · deploy & operations:
-`docs/DM-DEPLOY.md` (agent) and `docs/GM-DEPLOY.md` (legacy endpoints).
+`docs/DM-DEPLOY.md`.
 
 ## Development
 
 ```bash
-npm test            # vitest — engine + content + integration + GM suites
+npm test            # vitest — engine + content + integration + DM suites
 npm run typecheck   # tsc --noEmit (strict; src only)
 npm run lint        # eslint, incl. layering rule: src/core imports no pixi
 npm run build       # production build
 npm run sim         # headless balance harness (see --floors/--trials/--party/--roster)
-npx tsc -p api/tsconfig.json   # typecheck the GM serverless functions
-npm run typecheck:agent        # typecheck the DM agent
+npm run typecheck:agent        # typecheck the DM agent (src/ is pulled in transitively)
 npx eve info                   # compile-check the agent (tools, skills, subagents)
 ```
 
@@ -215,9 +218,8 @@ The codebase is strictly layered (see `docs/ARCHITECTURE.md`):
 | `src/core` | Pure deterministic engines: combat, run-map generation and traversal, loot, events, run state, and the Cat Town meta layer (`core/meta`: payout, profile, unlock catalog, run overlay). No pixi, no `Math.random`. |
 | `src/content` | Data-only tables: classes, skills, enemies, bosses, items, events, floors. |
 | `src/ui` | PixiJS scenes and widgets. Renders engine event logs; computes no outcomes. |
-| `src/services` | Network clients (GM, DM) and the pure verdict-lint half. No pixi. |
+| `src/services` | The DM client, the one-shot pipelines, and the pure rules the browser and the agent share: the cap tables, the content lints and the Power Script budget lint. No pixi, no `Math.random`. |
 | `agent` | The persistent DM (Vercel eve): tools, skills, the encounter subagent. Never bundled into the browser. |
-| `api` | Legacy GM serverless functions (types-and-validators-only imports from `src`). |
 
 Design docs: `docs/GDD.md` (canonical rulings), `docs/design/*.md` (per-system specs
 with worked examples that double as test fixtures). `docs/design/dungeon.md` is

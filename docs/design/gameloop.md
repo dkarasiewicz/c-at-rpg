@@ -265,16 +265,27 @@ Shown on both victory and defeat. Contents, top to bottom:
 3. Score table, tallied line by line with a count-up:
 
 ```
-floors fully cleared         × 100     // every encounter entity on the floor dead
-floors reached               × 50      // deepest floor entered
-enemies defeated             × 10
-bosses defeated              × 300
-shinies collected            × 5       // score-only currency from chests/loot/events
-Cat Piles triggered          × 20      // celebrates the signature system
+floors fully cleared         × 250     // every encounter entity on the floor dead
+floors reached               × 100     // deepest floor entered
+enemies defeated             × 15
+bosses defeated              × 500
+Cat Piles triggered          × 75      // celebrates the signature system
+events survived              × 80      // run.firedEventIds — the map's other half
+Mewthical relics found       × 250     // run.uniquesDropped
+shinies collected            × 1       // score-only currency from chests/loot/events
 lives remaining (sum, all cats) × 25   // victory only; max 36 → up to 900
-VICTORY BONUS                  1000    // victory only
+VICTORY BONUS                  2000    // victory only
 TOTAL
 ```
+
+**Why these weights (2nd pass).** The first table paid shinies ×5, and a measured
+six-floor descent collects ~950-1000 of them: that one line was **56-71% of every
+total**, so the count-up tallied nine rows of which one mattered and the optimal
+play was to hoover coins rather than go deep. The table now pays DEPTH (floors),
+DEEDS (kills, bosses, Cat Piles) and DISCOVERY (events, relics), with shinies at
+×1. On the measured victory no line exceeds ~23% and shinies are ~11%. The two
+discovery lines are read straight off the RunState, so nothing new is counted
+anywhere for them to exist.
 
 4. Records line from `MetaFile`: `best score`, `fastest victory`, `victories`,
    `runs played` — with "NEW BEST!" flair when beaten.

@@ -1,10 +1,11 @@
 /**
- * One-shot parity with POST /api/gm/party.
+ * The one-shot party generator (was POST /api/gm/party).
  *
  * Authored as `defineSkill` rather than flat markdown so the budgets are
  * INTERPOLATED from the shipped lint tables instead of retyped: if
- * `ROLE_STAT_TOTALS` or `EFFECT_CAPS` moves, the instructions move with it.
- * That is exactly what `api/gm/party.ts` does with its system prompt today.
+ * `ROLE_STAT_TOTALS` or `EFFECT_CAPS` moves, the instructions move with it —
+ * and `src/services/oneshot.ts` re-lints the answer against those very
+ * tables, so the brief and the lint cannot disagree.
  */
 import { defineSkill } from "eve/skills";
 import {
@@ -12,7 +13,7 @@ import {
   EFFECT_CAPS,
   POWER_FRAMEWORK_VERSION,
 } from "../../src/core/combat/powers.js";
-import { ROLE_STAT_TOTALS } from "../../api/_lib/constraints.js";
+import { ROLE_STAT_TOTALS } from "../../src/services/caps.js";
 
 export default defineSkill({
   description:

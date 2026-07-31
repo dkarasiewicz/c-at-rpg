@@ -14,6 +14,7 @@ import { drawPaw } from "../draw/cats.js";
 import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
 import { TYPE } from "../textStyles.js";
 import { heading, label, sceneBackdrop, vignette } from "../widgets.js";
+import { isTouch } from "../touch.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 
 /** Vertical rhythm (design px) — the paw mark is the optical center. */
@@ -69,7 +70,7 @@ export function createBootScene(): Scene {
       });
       eyebrow.position.set(DESIGN_W / 2, WORDMARK_Y + SPACE.xl);
 
-      prompt = label("click to start", {
+      prompt = label(isTouch() ? "tap to start" : "click to start", {
         center: true,
         size: TYPE.body,
       });

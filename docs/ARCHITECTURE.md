@@ -140,11 +140,15 @@ src/
       progressPanel.ts        # [900] THE DEN: whisker points / skills / gear, per-cat, "where the numbers come from"
       tabletopBar.ts          # [330] the "what do you do?" card: DOM <input> positioned through the letterbox transform, echoed prompt, streamed DM reply, phase-fitted height. Built ONLY when a DM answered the probe
 
-  services/                   # ui-side clients — no pixi, no engine rules
-    gm.ts                     # [400] typed client for the legacy api/gm/* endpoints (party, event free-text, resonances), fail-soft to null
-    gmTypes.ts                # [200] the GM wire types shared with api/
-    dm.ts                     # [680] the persistent DM: eve's four HTTP routes by hand, one durable session per run, NDJSON stream read to the turn boundary, verdict returned UNVALIDATED
-    tabletop.ts               # [560] the pure half: verdict contracts, the CLIENT-SIDE re-lint (powerBudget/validatePowerScript/validateEvents), per-floor cap mirrors, the run transcript
+  services/                   # ui-side clients AND the rules the browser shares with agent/ — no pixi, no Math.random
+    dm.ts                     # [1370] the persistent DM: eve's four HTTP routes by hand, one durable session per run, NDJSON stream read to the turn boundary, verdict returned UNVALIDATED; plus the §4b presence layer (budget, cooldown, beat table, run ledger)
+    oneshot.ts                # [480] the one-shot capabilities that were api/gm/party and api/gm/resonance: raw JSON Schemas, ONE shared eve session with a serialised queue, lint → regenerate-once → salvage, budget stamping, art-style composition, the session resonance cache
+    tabletop.ts               # [530] the pure half: verdict contracts, the CLIENT-SIDE re-lint (powerBudget/validatePowerScript/validateEvents), the run transcript
+    caps.ts                   # [140] THE cap tables — EVENT_CAPS, the (2+floor)/8 improvisation ramp, role stat totals, the Mewthical hook menu. ONE home; agent/ imports this file, so a prompt and a lint cannot disagree
+    contentLint.ts            # [400] lintParty / lintEvent / lintItem — the shipped validators plus the numeric caps. Run by the browser on a generated party AND by the DM's contribute_content before anything reaches the pool
+    powerLint.ts              # [460] the wrapper over core/combat/powers.ts: error-string lints, normalizePower (a model never computes its own budget), resonancePairKey, STOCK_POWERS, the DSL JSON Schemas
+    artPrompt.ts              # [25] composeArtPrompt(category, subject) — the versioned house style appended to a subject-only model prompt
+    gmTypes.ts                # [90] generated-content contracts (GeneratedCatKit, GeneratedEquip, the Power Script DSL re-export), shared by src/, agent/ and scripts/
 
 tests/
   rng.spec.ts                 # known-answer hash/mulberry32 vectors, int bounds
@@ -155,7 +159,7 @@ tests/
   events.spec.ts              # draw order, clamp-at-1, fired bookkeeping
   run.spec.ts                 # level-up deltas, save round-trip, score math
   integration.spec.ts         # scripted mini-run: gen → battle → loot → event → descend, headless, deterministic; asserts the FSM incl. title → catTown → … → results → catTown
-  tabletop.spec.ts            # verdict lint (closed union, budget, floor caps, affordability), transcript, cap-table parity with agent/ and api/
+  tabletop.spec.ts            # verdict lint (closed union, budget, floor caps, affordability), the floor ramp, transcript round-trip
   meta.spec.ts                # Cat Town: payout win/lose, history cap, spending + prereqs, idempotent double-buy, the open registry and unknown-namespace fold, v1→v2 migration + hand-edit repair + round-trip, "an unlock bought later never mutates a run in progress"
   balance.spec.ts             # the Off-Balance rework: ×1.3, the two gates and their roll ORDER, braced durations, tier resistance
   (+ content-classes / content-enemies / content-loot / progression / progress-ui / artstyle / powers / gm)
@@ -169,11 +173,15 @@ agent/                        # the persistent DM (Vercel eve) — NEVER in the 
   agent.ts                    # defineAgent({ model: 'anthropic/claude-haiku-4.5', sessionTimeoutMs: 7d })
   instructions.md             # the DM's voice, the hard bounds, the refusal policy
   channels/eve.ts             # HTTP channel: CORS to the game origin, auth policy
-  lib/{effects,memory,catalog,oneshot}.ts   # EffectSpec mirror w/ compile-time parity assertion, run memory, one-shot schemas
+  lib/{effects,memory,catalog,oneshot,pool}.ts # EffectSpec mirror w/ compile-time parity assertion, run memory, one-shot zod schemas, the shared content pool (server-side only — reads process.env, so src/ never imports it)
   tools/                      # narrate · apply_effect · grant_item · adjust_shinies · remember · offer_encounter · contribute_content (validates with the SHIPPED lintEvent/lintItem, stamps styleVersion + provenance, writes to the shared pool)
   subagents/encounter/        # one fight's adjudicator: battle snapshot in, typed verdict out
-api/                          # the legacy stateless GM (kept until the agent reaches parity)
 ```
+
+There is no `api/` directory. The six stateless `api/gm/*` functions the DM
+replaced are deleted; the game's Vercel project ships a static bundle and
+nothing else. Where each endpoint went — and the one capability that did not
+survive — is recorded in `docs/DM-DEPLOY.md`.
 
 Total ≈ 6.3k LoC — on budget with GDD §11's sanity check.
 
@@ -1121,10 +1129,13 @@ of the tile crawl, all deleted — run-map-and-dm.md §2.)*
 - **A refused / dropped / unaffordable verdict does not consume the turn.**
 - **Zero RNG.** An improvisation is a conditionless `activated` `PowerScript`;
   the transcript records `rngDraws: 0` and a replay reproduces the run.
-- **The browser bundle contains no zod and no `agent/`/`api/` code** (asserted by
-  inspecting the `vite build` output).
-- Cap tables mirrored in `src/` are pinned to their authoring-side originals by
-  parity tests over every floor — the same pattern `resonancePairKey` uses.
+- **The browser bundle contains no zod and no `agent/` code** (asserted by
+  inspecting the `vite build` output). The dependency runs one way:
+  `agent/` → `src/services` → `src/core`, never back.
+- **The cap tables have one home**, `src/services/caps.ts`, which the agent
+  imports directly. They used to be mirrored into `src/` and into
+  `agent/lib/effects.ts` and pinned together by parity tests over every floor;
+  the mirrors and the tests are gone, because a single constant cannot drift.
 
 ### Integration gate (owned by WP-09's implementer, after all packages merge)
 **Files:** `tests/integration.spec.ts`.

@@ -42,6 +42,7 @@ import {
   makePointBadgeAt,
   totalUnspentPoints,
 } from "./progressPanel.js";
+import { isTouch } from "../touch.js";
 import { layer, type GameCtx, type Overlay } from "../sceneManager.js";
 import type { ResultsParams } from "../scenes/results.js";
 
@@ -228,6 +229,12 @@ export function createPauseOverlay(): Overlay {
       card.addChild(header);
 
       const hasRun = !!ctx.run;
+      // The number chips are the MENU's own 1..5, in row order. Row 2 used to
+      // print `DEN_HOTKEY` ("P") instead, so the column read 1 · P · 3 · 4 · 5
+      // and looked like the menu had simply lost its number 2. P still opens
+      // the Den (it does from the Landing too, and `onKey` below keeps it) —
+      // it is a global shortcut, not this row's index, so it goes in the
+      // label where a second key belongs.
       const rows: {
         label: string;
         hotkey: string;
@@ -237,8 +244,12 @@ export function createPauseOverlay(): Overlay {
       }[] = [
         { label: "Resume", hotkey: "1", onTap: resume, primary: true },
         {
-          label: DEN_LABEL,
-          hotkey: DEN_HOTKEY,
+          // The "(P)" is a KEY name baked into the label, so unlike the row
+          // chips it survives `button()`'s touch rule — and on a phone it is
+          // a shortcut nobody can press. Drop it there; the row still opens
+          // the Den by tap, which is the only way in on touch anyway.
+          label: isTouch() ? DEN_LABEL : `${DEN_LABEL}  (${DEN_HOTKEY})`,
+          hotkey: "2",
           onTap: openDen,
           enabled: hasRun,
         },
