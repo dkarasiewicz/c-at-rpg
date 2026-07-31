@@ -358,9 +358,7 @@ export function createEventResolveHandler(deps: EventResolveDeps) {
   };
 }
 
-let deps: EventResolveDeps | null = null;
-
 export default vercelHandler(async (req) => {
-  deps ??= { gen: getAnthropicGen() };
+  const deps: EventResolveDeps = { gen: getAnthropicGen(req) };
   return createEventResolveHandler(deps)(req);
 });

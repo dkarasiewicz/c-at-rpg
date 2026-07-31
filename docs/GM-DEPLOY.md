@@ -7,25 +7,36 @@ content on any failure.
 
 ## Deployment status
 
-Live at **https://c-at-rpg.vercel.app** — Vercel project
-`dkarasiewiczs-projects/c-at-rpg` (Vite preset auto-detected, `dist/` output,
-`api/**` as Node functions with `maxDuration: 60` from `vercel.json`).
-`GM_MODEL` and `GM_PARTY_MODEL` are set for all three environments.
+**Live and generating** at https://c-at-rpg-three.vercel.app — Vercel project
+`dk-lab/c-at-rpg` (Vite preset auto-detected, `dist/` output, `api/**` as Node
+functions with `maxDuration: 60` from `vercel.json`).
 
-`ANTHROPIC_API_KEY` is NOT set yet, so every generating endpoint answers a
-clean error and the game runs in its offline-first fallback. To enable the GM:
+**There is no secret to configure.** Model calls go through Vercel AI Gateway
+and authenticate with the deployment's own OIDC token, so no
+`ANTHROPIC_API_KEY` and no `AI_GATEWAY_API_KEY` is needed on Vercel. Only
+`GM_MODEL` / `GM_PARTY_MODEL` are set (gateway slugs, all three environments).
+For local development, `vercel env pull` writes a 12-hour `VERCEL_OIDC_TOKEN`
+into `.env.local`; refresh it by pulling again.
+
+Check the deployment at any time:
 
 ```bash
-vercel env add ANTHROPIC_API_KEY production   # paste the key at the prompt
-vercel deploy --prod                          # env vars are read at build/boot
+curl 'https://c-at-rpg-three.vercel.app/api/gm/health?probe=1'
+# {"ok":true,"credentialSource":"oidc-header","probe":{"ok":true}, ...}
 ```
 
-Verify with `curl -X POST https://c-at-rpg.vercel.app/api/gm/event \
-  -H 'content-type: application/json' -d '{"floor":1,...}'`.
+`credentialSource` tells you which credential was resolved (`oidc-header` is
+the healthy deployed case) and `?probe=1` makes one real round-trip so a
+misconfiguration reports itself instead of hiding behind the offline fallback.
 
-### Two runtime gotchas this deploy had to solve
+> The short `c-at-rpg.vercel.app` domain is still held by an earlier project in
+> the personal scope. Free it with
+> `vercel project remove c-at-rpg --scope dkarasiewiczs-projects`, then
+> `vercel alias set <deployment> c-at-rpg.vercel.app`.
 
-Both are properties of Vercel's Node runtime and will bite again if reverted:
+### Three runtime gotchas this deploy had to solve
+
+All are properties of Vercel's Node runtime and will bite again if reverted:
 
 1. **Explicit `.js` import specifiers are mandatory.** `package.json` is
    `"type": "module"` and Vercel *transpiles* `api/**/*.ts` without bundling,
@@ -43,6 +54,17 @@ Both are properties of Vercel's Node runtime and will bite again if reverted:
    clean JSON error, so a missing API key degrades to the offline fallback
    instead of `FUNCTION_INVOCATION_FAILED`. The `createXHandler(deps)` factories
    stay web-standard, which is what the unit tests drive.
+3. **The OIDC token is a REQUEST HEADER at runtime, not an env var.** This is
+   the one that looks most like a platform bug and isn't. Per
+   [vercel.com/docs/oidc](https://vercel.com/docs/oidc), `VERCEL_OIDC_TOKEN` is
+   set in the environment **during builds** and locally via `vercel env pull` —
+   but in a deployed function Vercel puts the token on the
+   `x-vercel-oidc-token` header of each incoming `Request`. Resolving the
+   credential from `process.env` alone therefore yields nothing in production
+   while working perfectly in local dev. `gmApiKey(req)` reads the header, and
+   because the token rotates (~45 min), the Anthropic client is cached **per
+   credential** and route deps are built **per request** rather than once per
+   process. Do not "optimise" those back into a module-level singleton.
 
 ## Layout
 

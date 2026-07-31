@@ -291,9 +291,7 @@ export function createResonanceHandler(deps: ResonanceDeps) {
   };
 }
 
-let deps: ResonanceDeps | null = null;
-
 export default vercelHandler(async (req) => {
-  deps ??= { gen: getAnthropicGen(), pool: getPool() };
+  const deps: ResonanceDeps = { gen: getAnthropicGen(req), pool: getPool() };
   return createResonanceHandler(deps)(req);
 });

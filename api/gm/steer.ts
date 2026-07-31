@@ -158,9 +158,7 @@ export function createSteerHandler(deps: SteerDeps) {
   };
 }
 
-let deps: SteerDeps | null = null;
-
 export default vercelHandler(async (req) => {
-  deps ??= { gen: getAnthropicGen() };
+  const deps: SteerDeps = { gen: getAnthropicGen(req) };
   return createSteerHandler(deps)(req);
 });

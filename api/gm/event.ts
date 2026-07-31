@@ -390,9 +390,7 @@ export function createEventHandler(deps: EventDeps) {
   };
 }
 
-let deps: EventDeps | null = null;
-
 export default vercelHandler(async (req) => {
-  deps ??= { gen: getAnthropicGen(), pool: getPool() };
+  const deps: EventDeps = { gen: getAnthropicGen(req), pool: getPool() };
   return createEventHandler(deps)(req);
 });

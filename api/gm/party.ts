@@ -371,9 +371,7 @@ export function createPartyHandler(deps: PartyDeps) {
   };
 }
 
-let deps: PartyDeps | null = null;
-
 export default vercelHandler(async (req) => {
-  deps ??= { gen: getAnthropicGen(), pool: getPool() };
+  const deps: PartyDeps = { gen: getAnthropicGen(req), pool: getPool() };
   return createPartyHandler(deps)(req);
 });

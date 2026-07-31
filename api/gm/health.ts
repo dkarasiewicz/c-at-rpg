@@ -29,8 +29,11 @@ export interface GmHealth {
   probe?: { ok: boolean; error?: string };
 }
 
-export async function buildHealth(probe: boolean): Promise<GmHealth> {
-  const source = credentialSource();
+export async function buildHealth(
+  probe: boolean,
+  req?: Request,
+): Promise<GmHealth> {
+  const source = credentialSource(req);
   const health: GmHealth = {
     ok: source !== "none",
     credentialSource: source,
@@ -40,7 +43,7 @@ export async function buildHealth(probe: boolean): Promise<GmHealth> {
     poolBacked: Boolean(process.env.UPSTASH_REDIS_REST_URL),
   };
   if (probe) {
-    health.probe = await probeGeneration();
+    health.probe = await probeGeneration(req);
     health.ok = health.ok && health.probe.ok;
   }
   return health;
@@ -50,5 +53,5 @@ export default vercelHandler(async (req) => {
   const limited = rateLimit(req);
   if (limited) return limited;
   const probe = new URL(req.url).searchParams.get("probe") === "1";
-  return json(await buildHealth(probe));
+  return json(await buildHealth(probe, req));
 });

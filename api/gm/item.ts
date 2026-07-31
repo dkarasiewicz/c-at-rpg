@@ -224,9 +224,7 @@ export function createItemHandler(deps: ItemDeps) {
   };
 }
 
-let deps: ItemDeps | null = null;
-
 export default vercelHandler(async (req) => {
-  deps ??= { gen: getAnthropicGen(), pool: getPool() };
+  const deps: ItemDeps = { gen: getAnthropicGen(req), pool: getPool() };
   return createItemHandler(deps)(req);
 });
