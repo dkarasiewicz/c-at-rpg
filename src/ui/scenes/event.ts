@@ -538,7 +538,11 @@ export class EventScene implements Scene {
   private ensureTabletop(): TabletopBar {
     this.tabletop ??= createTabletopBar({
       rect: [280, 300, 720, 200],
-      placeholder: "Bruno pries the grate open with the crowbar…",
+      // The context, not the copy: the eyebrow, placeholder and guidance all
+      // come from the shared component's `encounter` mode, so this host and
+      // the fight/run-map ones cannot drift into three different DMs
+      // (run-map-and-dm.md §4b).
+      mode: "encounter",
       onSubmit: (text) => this.submitFreeText(text),
       onCancel: () => this.cancelFreeText(),
       onDismiss: () => this.cancelFreeText(),

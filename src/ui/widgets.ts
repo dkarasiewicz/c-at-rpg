@@ -61,6 +61,42 @@ export const STATUS_STYLE: Record<StatusId, { glyph: string; color: number }> =
     braced: { glyph: "=", color: PAL.stGuarded },
   };
 
+/**
+ * What each status MEANS, in one line (enemy-intel.md §5: "never a bare icon
+ * whose meaning must be memorised"). Every chip the kit renders can explain
+ * itself on hover/tap from this table, so the glyph is a shortcut for players
+ * who have learned it and never a wall for players who have not.
+ */
+export const STATUS_INFO: Record<StatusId, { name: string; blurb: string }> = {
+  scratched: {
+    name: "Scratched",
+    blurb: "Bleeds for its stacked value at the end of each of its turns.",
+  },
+  frazzled: {
+    name: "Frazzled",
+    blurb: "Loses its next turn entirely. Wears off after it is skipped.",
+  },
+  offBalance: {
+    name: "Off-Balance",
+    blurb:
+      "Takes +30% damage until it steadies. Every enemy Off-Balance at once ⇒ CAT PILE.",
+  },
+  guarded: { name: "Guarded", blurb: "Takes −50% damage until its next turn." },
+  provoked: {
+    name: "Provoked",
+    blurb: "Must aim at whoever provoked it while any legal target remains.",
+  },
+  mending: {
+    name: "Mending",
+    blurb: "Heals its value at the start of each of its turns.",
+  },
+  braced: {
+    name: "Braced",
+    blurb:
+      "Immune to Off-Balance for a beat — the window after being steadied.",
+  },
+};
+
 /* ---------------------------------------------------------------------- */
 /* Bar                                                                     */
 /* ---------------------------------------------------------------------- */
@@ -177,29 +213,84 @@ export function makeEnergyPips(count = 10, pw = 6, ph = 8, gap = 2): PipRow {
 /* Chips                                                                   */
 /* ---------------------------------------------------------------------- */
 
+export interface StatusChipOpts {
+  /** Stacked magnitude (scratched / mending) — printed bottom-right. */
+  value?: number;
+  /** Rounds left — printed as a `2r` tail to the right of the chip. */
+  duration?: number;
+  /** Chip edge length (default 16). */
+  size?: number;
+  /**
+   * Explain itself on hover/tap from `STATUS_INFO` (enemy-intel.md §5). The
+   * tooltip is added to the chip, so the caller only has to keep the chip in
+   * a container that is allowed to overflow.
+   */
+  explain?: boolean;
+}
+
 /**
- * Status chip (ui-art §6): 16×16 rounded-rect r 4, status-colored fill, 1px
- * darkened outline, MONO-12 glyph. Scratched/Mending show their stacked
- * value as a 9px numeral bottom-right.
+ * Status chip (ui-art §6): rounded-rect, status-colored fill, 1px darkened
+ * outline, MONO glyph. Scratched/Mending show their stacked value as a small
+ * numeral bottom-right; `duration` adds an `Nr` tail; `explain` makes the chip
+ * tell you what it does instead of assuming you memorised the glyph.
  */
-export function makeStatusChip(id: StatusId, value?: number): Container {
+export function makeStatusChip(
+  id: StatusId,
+  value?: number,
+  opts: StatusChipOpts = {},
+): Container {
   const { glyph, color } = STATUS_STYLE[id];
+  const s = opts.size ?? 16;
   const chip = new Container();
   chip.addChild(
     new Graphics()
-      .roundRect(0, 0, 16, 16, RADIUS.chip)
+      .roundRect(0, 0, s, s, RADIUS.chip)
       .fill(color)
       .stroke({ width: 1, color: darken(color) }),
   );
-  const g = new Text({ text: glyph, style: mono(12) });
+  const g = new Text({ text: glyph, style: mono(Math.round(s * 0.75)) });
   g.anchor.set(0.5);
-  g.position.set(8, 8);
+  g.position.set(s / 2, s / 2);
   chip.addChild(g);
-  if (value !== undefined && (id === "scratched" || id === "mending")) {
-    const v = new Text({ text: String(value), style: mono(9) });
+  const stacked = value ?? opts.value;
+  if (stacked !== undefined && (id === "scratched" || id === "mending")) {
+    const v = new Text({ text: String(stacked), style: mono(9) });
     v.anchor.set(1, 1);
-    v.position.set(16, 17);
+    v.position.set(s, s + 1);
     chip.addChild(v);
+  }
+  if (opts.duration !== undefined && opts.duration > 0) {
+    const d = new Text({
+      text: `${opts.duration}r`,
+      style: mono(9, { fill: PAL.textDim }),
+    });
+    d.position.set(s + 2, s / 2 - 5);
+    chip.addChild(d);
+  }
+  if (opts.explain === true) {
+    const info = STATUS_INFO[id];
+    let tip: Container | null = null;
+    const drop = (): void => {
+      tip?.destroy({ children: true });
+      tip = null;
+    };
+    // ABOVE the chip: these rows sit at the bottom of the battle HUD, where a
+    // tooltip hanging below would fall off the screen.
+    const raise = (): void => {
+      if (tip) return;
+      const built = makeTooltip(`${info.name.toUpperCase()} — ${info.blurb}`);
+      built.position.set(-8, -Math.ceil(built.height) - 6);
+      chip.addChild(built);
+      tip = built;
+    };
+    chip.eventMode = "static";
+    chip.cursor = "help";
+    chip.on("pointerover", raise);
+    chip.on("pointerout", drop);
+    chip.on("pointertap", () => {
+      if (tip) drop();
+      else raise();
+    });
   }
   return chip;
 }

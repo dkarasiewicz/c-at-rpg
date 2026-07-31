@@ -8,14 +8,25 @@
  * tie (different skills, same score, same target rank) draws one
  * `rng.int(0, n-1)` so fights stay lively but replays stay identical.
  *
+ * ── WHEN the scoring happens (enemy-intel.md §2) ───────────────────────────
+ * `startRound` now runs `chooseEnemyAction` ONCE per living enemy, in queue
+ * order, and publishes the result as a declared intent (combat.md §3.2 row
+ * 1b). `takeEnemyTurn` therefore usually draws NOTHING: it reads the
+ * declaration and revalidates it (`boundAction`). The only mid-round
+ * selection left is a double-turn boss's SECOND slot, whose intent is
+ * deliberately `'unknown'`.
+ *
  * Cooldown note: resolveAction ticks the actor's cooldowns down at its turn
  * start, AFTER the driver has already asked the AI for an action — so the AI
- * checks readiness against the post-tick value (`cooldown <= 1`).
+ * checks readiness against the post-tick value (`cooldown <= 1`). Round-start
+ * declaration sees the same pre-tick numbers (nothing ticks an enemy's
+ * cooldowns between the round start and its own slot), so the two agree.
  */
 import type {
   BattleAction,
   BattleState,
   Combatant,
+  DeclaredIntent,
   Rng,
   Skill,
 } from "../types.js";
@@ -30,7 +41,106 @@ import {
 } from "./state.js";
 import { bossDataOf, canSummon } from "./boss.js";
 
+/**
+ * The action an enemy takes on its slot. With a declared intent (the normal
+ * case) this is a pure revalidation and draws NOTHING; without one — a
+ * double-turn boss's second slot, or a state built before intents existed —
+ * it falls back to scoring live, exactly as it always did.
+ */
 export function takeEnemyTurn(
+  self: Combatant,
+  state: BattleState,
+  rng: Rng,
+): BattleAction {
+  const intent = state.intents?.[self.id];
+  if (intent && intent.round === state.round && intent.kind !== "unknown") {
+    const bound = bindIntent(state, self, intent);
+    if (bound) return bound.action;
+    // The declaration is unhonourable (the skill went offline) — the AI picks
+    // again, right here, exactly where it always used to pick.
+  }
+  return chooseEnemyAction(self, state, rng);
+}
+
+/** A declaration honoured as-is, or honoured with a deterministic retarget. */
+export interface BoundIntent {
+  action: BattleAction;
+  /** null = executed verbatim */
+  reason: "retargeted" | null;
+}
+
+/**
+ * Honour a declared intent (enemy-intel.md §2). Draws NOTHING, ever — the
+ * choice was already paid for at round start.
+ *
+ * Returns null when the declaration cannot be honoured at all: the skill went
+ * offline (shoved out of `usableFrom`, cooldown, summon cap) or every
+ * candidate target is gone. That is the ONE case where the AI selects again,
+ * and it does so in `takeEnemyTurn` — the same point in the seeded stream the
+ * pre-intent engine picked at, so a broken telegraph never costs a double
+ * draw. `resolveAction` therefore re-binds for free and simply reports
+ * `intentBroken`.
+ */
+export function bindIntent(
+  state: BattleState,
+  self: Combatant,
+  intent: DeclaredIntent,
+): BoundIntent | null {
+  // a finished windup releases unconditionally (combat.md §11.4)
+  if (self.charging) {
+    return {
+      action: { type: "skill", skillId: self.charging.skillId },
+      reason: null,
+    };
+  }
+  if (!intent.skillId) {
+    return intent.kind === "advance"
+      ? { action: { type: "advance" }, reason: null }
+      : null;
+  }
+  const skill = SKILLS[intent.skillId];
+  if (!skill) return null;
+  if ((self.cooldowns[skill.id] ?? 0) > 1) return null;
+  if (!canUseFrom(state, self, skill)) return null;
+  const bdata = bossDataOf(self);
+  if (bdata?.summon && skill.id === bdata.summon.skillId) {
+    return canSummon(state, self)
+      ? { action: { type: "skill", skillId: skill.id }, reason: null }
+      : null;
+  }
+  if (!intent.targetId) {
+    return { action: { type: "skill", skillId: skill.id }, reason: null };
+  }
+  const cands = candidateTargets(self, skill, state);
+  if (cands.some((c) => c.id === intent.targetId)) {
+    return {
+      action: { type: "skill", skillId: skill.id, targetId: intent.targetId },
+      reason: null,
+    };
+  }
+  if (cands.length === 0) return null;
+  // The declared target left. The SAME skill follows the line, picking by the
+  // §10 preference the scorer would have used — most wounded, ties to the
+  // lower rank — so killing the telegraphed victim redirects the blow rather
+  // than defusing it. Pure comparison: no draw, no re-scoring.
+  const retarget = cands.reduce((a, b) => {
+    const ha = a.hp / a.stats.hp;
+    const hb = b.hp / b.stats.hp;
+    if (hb !== ha) return hb < ha ? b : a;
+    return b.rank < a.rank ? b : a;
+  });
+  return {
+    action: { type: "skill", skillId: skill.id, targetId: retarget.id },
+    reason: "retargeted",
+  };
+}
+
+/**
+ * The §10 scorer — THE only place the enemy AI spends entropy, and it only
+ * spends it on a genuine tie. Called once per enemy per round by
+ * `declareIntents` (and live for a double-turn boss's second slot).
+ */
+export function chooseEnemyAction(
   self: Combatant,
   state: BattleState,
   rng: Rng,

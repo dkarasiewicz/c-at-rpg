@@ -116,7 +116,9 @@ three-way design contest in its §15 ledger).** Side-view single-axis formation 
 cats ranks 1–4, enemies ranks 1–5, dead combatants slide everyone behind them
 forward. Round-based initiative (`spd + rngInt(0,2)`, queue frozen per round, shown
 as a timeline ribbon). No accuracy rolls; damage = `max(1, round(power/100·atk ×
-variance × crit1.5 × offBal1.5 × guard0.5) − def)`. Cats run on Energy (start 4,
+variance × crit1.5 × offBal1.3 × guard0.5 × intel) − def)`, where `intel` is the
+§4b shove weakness/resistance (×1.25 / ×0.80 / ×1.0) and `offBal` is ×1.3 — it was
+×1.5 through v1 until `balance-and-meta.md` §1 cut it. Cats run on Energy (start 4,
 +2/turn, skills cost 2–6, Claw Swipe banks +1); enemies run on per-skill cooldowns.
 Seven statuses, exact tick/stack rules per combat.md §6. Per turn a cat picks one of:
 Skill, Claw Swipe, Move (swap), Guard (+2 energy), Item, Scatter! (flee).
@@ -139,6 +141,53 @@ Feather Wand) avoids the loss; 0 Lives = gone for the run. Engine is **headless 
 pure**: `resolveAction(state, action, rng) → { newState, events[] }`; the renderer
 only animates the event log. Enemy AI is the ~100-line score-and-pick of combat.md
 §10. The worked example in combat.md §13 is a mandatory unit test.
+
+### 4b. Enemy intel — intents, inspection, the Bestiary
+
+**Canonical doc: `design/enemy-intel.md`.** Two complaints, one system: combat did
+not say what was about to happen, and enemies were anonymous stat blocks. Slay the
+Spire supplies the first half, Darkest Dungeon's partial information the second.
+
+**Intents are an ENGINE feature.** `startRound` runs the §10 scorer once per living
+enemy, in queue order, and publishes a `DeclaredIntent`; `resolveAction` is *bound*
+to it, so the telegraph is the truth by construction rather than by promise. The
+selection did not become more random, only **earlier** — the tie-break draw moved
+from the enemy's own slot to the round start (`combat.md` §3.2 row 1b), and most
+rounds declare every intent for zero draws. A declaration bends in exactly two
+documented ways, both the player's own doing and both announced with an
+`intentBroken` event: the declared target died or left the skill's ranks (the same
+skill **retargets**, no roll), or the skill went offline (the AI **re-picks**, at
+exactly the point the pre-intent engine picked). A double-turn boss declares only
+its FIRST slot — the second is authored `unknown`, because its state cannot be
+known at round start and inventing a number would be a lie.
+
+**The badge reads in greyscale.** Each `IntentKind` gets its own plate silhouette —
+blade (strike), wedge (shove), chip (status / reposition), upward point (buff,
+heal), circle (summon, unknown), diamond (boss windup) — with the expected damage
+printed on it. Colour is the second cue, never the only one. Threat lines connect an
+intending enemy to the cat it named, and that cat carries the **aggregate** incoming
+total, so "if I do nothing, Pixel takes 12" is one glance.
+
+**Weaknesses are mechanical.** A closed five-tag vocabulary (`shove`, `offBalance`,
+`scratched`, `frazzled`, `provoked`), each a modifier on a step the resolver already
+had, and **never costing a draw**: `shove` is ×1.25 / ×0.80 on a force-move hit; a
+status you are weak to always lands and one you resist never does, and neither rolls
+because neither was in doubt. `resistances: ['offBalance']` **IS** the tier Off-Paw
+gate — one system declared per def, not a second layered on the tier.
+
+**Knowledge is earned and persists.** Meeting a species opens its name, level, tier,
+description and `tell`, and its telegraphs from the next battle on; a first-timer
+reads `?` until it acts once. Being hit by a skill reveals that skill; a modifier
+*firing* reveals that tag (the engine emits an `intel` event — nothing is learned by
+reading the content table). Five kills complete the entry forever. Unknown facts
+render `???` rather than being hidden, so the inspect card doubles as a checklist,
+and Cat Town hosts the **Bestiary** as a collection. Entries live in the meta
+profile (schema v3; a v1/v2 profile migrates with an empty Bestiary), so a later run
+starts already knowing the early roster — a real, non-numeric power increase.
+
+**Enemy level is derived, never hand-typed**: `LEVEL_BY_TIER` (1/4/7, +5 for a boss)
+plus `ENEMY_CURVE` rungs, so the number on the inspect panel and the number in the
+damage formula cannot drift (`balance-and-meta.md` §3.2).
 
 **Decisions & contradictions resolved**
 
@@ -252,16 +301,18 @@ not saved — it regenerates from `(runSeed, floorNum)`, and the save carries on
 **Canonical 6-floor table.** Columns/rows are the authored map budget. Threat
 budgets were **retuned around the two-cat opening** and enemy stats now come off an
 explicit per-floor curve (`ENEMY_CURVE`, content/floors.ts) instead of being
-hand-typed — one table retunes the whole run (balance-and-meta.md §3):
+hand-typed — one table retunes the whole run (balance-and-meta.md §3). The rows
+below were **retuned for enemy intel** (§3.3): declared intents and weaknesses
+both quietly favour the party, and the curve buys that back.
 
 | Floor | Name | Columns | Rows/col | Pool | Threat budget | Enemy curve (hp × / atk × / def+ / spd+ / crt+) | Boss |
 |---|---|---|---|---|---|---|---|
 | 1 | The Cellar | 4–5 | 2–3 | T1 | 2–4 | 1.00 / 1.00 / 0 / 0 / 0 | — |
-| 2 | The Drains | 5–6 | 2–3 | T1 | 4–5 | 1.06 / 1.06 / 0 / 0 / 0 | — |
-| 3 | The Appliance Graveyard | 4–5 | 2–3 | T1 ∪ T2 | 5–7 | 1.14 / 1.16 / 0 / 0 / 3 | **Vacuum King** |
-| 4 | The Undergarden | 6–7 | 2–4 | T2 | 6–7 | 1.20 / 1.20 / 1 / 0 / 3 | — |
-| 5 | The Cold Pantry | 6–7 | 2–4 | T2 ∪ T3 | 6–8 | 1.24 / 1.24 / 1 / 1 / 5 | — |
-| 6 | The Hollow Throne | 5–6 | 2–3 | T3 | 7–9 | 1.28 / 1.26 / 1 / 1 / 5 | **The Dogfather** |
+| 2 | The Drains | 5–6 | 2–3 | T1 | 4–5 | 1.08 / 1.08 / 0 / 0 / 0 | — |
+| 3 | The Appliance Graveyard | 4–5 | 2–3 | T1 ∪ T2 | 5–7 | 1.23 / 1.27 / 0 / 0 / 3 | **Vacuum King** |
+| 4 | The Undergarden | 6–7 | 2–4 | T2 | 6–7 | 1.27 / 1.28 / 1 / 0 / 3 | — |
+| 5 | The Cold Pantry | 6–7 | 2–4 | T2 ∪ T3 | 6–8 | 1.29 / 1.30 / 1 / 1 / 5 | — |
+| 6 | The Hollow Throne | 5–6 | 2–3 | T3 | 7–9 | 1.32 / 1.30 / 1 / 1 / 5 | **The Dogfather** |
 
 **Bosses are never curved** — their blocks are authored against the §11 flag set.
 Mechanics arrive on a curve too: floor 1 teaches basic attacks, ranks and one shove;

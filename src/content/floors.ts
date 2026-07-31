@@ -74,14 +74,22 @@ export interface FloorCurveRow {
  * party is only two cats there (§2); the ramp steepens from floor 3, where
  * the third cat and the first boss arrive together; floor 6 is the only row
  * that adds crit on top, so the Hollow Throne's trash can actually spike.
+ *
+ * RETUNED for enemy intel (balance-and-meta.md §3.3). Declared intents cost
+ * the enemy AI real decision quality — it commits at round start and cannot
+ * react to a kill or a shove inside the round — and weaknesses handed the
+ * party a damage bonus with no symmetric enemy gain. Together those two
+ * features moved clear rate up by 2-14pp per floor. The rows below buy that
+ * back so the shipped difficulty matches the §1.1 curve the balance pass
+ * validated; DEF stays capped at +1 for the reason §3.1 records.
  */
 export const ENEMY_CURVE: readonly FloorCurveRow[] = [
   { hpMult: 1.0, atkMult: 1.0, defAdd: 0, spdAdd: 0, crtAdd: 0 }, // 1
-  { hpMult: 1.06, atkMult: 1.06, defAdd: 0, spdAdd: 0, crtAdd: 0 }, // 2
-  { hpMult: 1.14, atkMult: 1.16, defAdd: 0, spdAdd: 0, crtAdd: 3 }, // 3
-  { hpMult: 1.2, atkMult: 1.2, defAdd: 1, spdAdd: 0, crtAdd: 3 }, // 4
-  { hpMult: 1.24, atkMult: 1.24, defAdd: 1, spdAdd: 1, crtAdd: 5 }, // 5
-  { hpMult: 1.28, atkMult: 1.26, defAdd: 1, spdAdd: 1, crtAdd: 5 }, // 6
+  { hpMult: 1.08, atkMult: 1.08, defAdd: 0, spdAdd: 0, crtAdd: 0 }, // 2
+  { hpMult: 1.23, atkMult: 1.27, defAdd: 0, spdAdd: 0, crtAdd: 3 }, // 3
+  { hpMult: 1.27, atkMult: 1.28, defAdd: 1, spdAdd: 0, crtAdd: 3 }, // 4
+  { hpMult: 1.29, atkMult: 1.3, defAdd: 1, spdAdd: 1, crtAdd: 5 }, // 5
+  { hpMult: 1.32, atkMult: 1.3, defAdd: 1, spdAdd: 1, crtAdd: 5 }, // 6
 ];
 
 /** The curve row for a 1-based floor number; out-of-range clamps to the ends. */

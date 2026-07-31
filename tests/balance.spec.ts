@@ -547,13 +547,13 @@ describe("§3 enemy stat curve", () => {
     expect(floorCurve(99)).toBe(ENEMY_CURVE[ENEMY_CURVE.length - 1]);
   });
 
-  it("scales a Rat Thug by hand: floor 6 is hp 18×1.28→23, atk 7×1.26→9", () => {
+  it("scales a Rat Thug by hand: floor 6 is hp 18×1.32→24, atk 7×1.30→9", () => {
     const base = ENEMIES.ratThug.stats;
     expect(base.hp).toBe(18);
     expect(base.atk).toBe(7);
     const f6 = curvedEnemyStats(base, 6);
-    expect(f6.hp).toBe(23); // 18 × 1.28 = 23.04 → 23
-    expect(f6.atk).toBe(9); // 7 × 1.26 = 8.82 → 9
+    expect(f6.hp).toBe(24); // 18 × 1.32 = 23.76 → 24
+    expect(f6.atk).toBe(9); // 7 × 1.30 = 9.10 → 9
     expect(f6.def).toBe(base.def + 1);
     expect(f6.spd).toBe(base.spd + 1);
     expect(f6.crt).toBe(base.crt + 5);
@@ -566,8 +566,8 @@ describe("§3 enemy stat curve", () => {
     const f6 = battle(ALL4, ["ratThug"], 6);
     const none = battle(ALL4, ["ratThug"]);
     expect(byId(f1, "e0:ratThug").stats.hp).toBe(18);
-    expect(byId(f6, "e0:ratThug").stats.hp).toBe(23);
-    expect(byId(f6, "e0:ratThug").hp).toBe(23); // current HP follows max
+    expect(byId(f6, "e0:ratThug").stats.hp).toBe(24);
+    expect(byId(f6, "e0:ratThug").hp).toBe(24); // current HP follows max
     expect(byId(none, "e0:ratThug").stats).toEqual(
       byId(f1, "e0:ratThug").stats,
     );

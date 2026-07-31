@@ -230,14 +230,9 @@ stat is noise. **Bosses are excluded**: their blocks are authored against the
 §11 flag set, and scaling them would silently move Poise-break pacing and the
 50% phase threshold.
 
-| Floor | hp × | atk × | def + | spd + | crt + | threat budget (was) |
-|---|---|---|---|---|---|---|
-| 1 | 1.00 | 1.00 | 0 | 0 | 0 | 2–4 (3–4) |
-| 2 | 1.06 | 1.06 | 0 | 0 | 0 | 4–5 (4–5) |
-| 3 | 1.14 | 1.16 | 0 | 0 | 3 | 5–7 (5–6) |
-| 4 | 1.20 | 1.20 | 1 | 0 | 3 | 6–7 (6–8) |
-| 5 | 1.24 | 1.24 | 1 | 1 | 5 | 6–8 (8–10) |
-| 6 | 1.28 | 1.26 | 1 | 1 | 5 | 7–9 (10–12) |
+The shipped rows are in §3.3 — the enemy-intel pass moved them. The original
+(pre-intel) curve was 1.00/1.06/1.14/1.20/1.24/1.28 hp × with atk × tracking
+it, and it produced the §1.1 AFTER table.
 
 Two things the simulation taught that guessing did not:
 
@@ -248,6 +243,91 @@ Two things the simulation taught that guessing did not:
   gains roughly a level per floor, which swamps a 6-8%/floor enemy ramp — the
   first curve I tried left floors 1-4 at a 100% win rate. Enemy ATK had to
   climb almost as fast as HP for the back half to have any teeth.
+
+### 3.2 Enemy level is DERIVED from this table
+
+`curveLevelSteps` (`content/enemies.ts`) reads the row's two multipliers as
+rungs, so the table that makes a floor-6 Rat Thug frightening is the table
+that prints its level. Floors 1..6 → **0, 2, 5, 6, 6, 6** rungs on top of
+`LEVEL_BY_TIER` (1 / 4 / 7); bosses are off the curve and so are level-flat.
+
+It is computed in integer **basis points**, not on the raw floats. Floor 4 is
+`1.27 + 1.28 - 2`, which in IEEE754 is `0.5499999999999998` — the naive
+`Math.round(x * 10)` silently printed level 5 instead of 6 on a last-bit
+artefact. A player-facing number must be a pure function of the printed table,
+so each multiplier is snapped to bp, summed as integers, and rounded half-up.
+
+### 3.3 SHIPPED — the enemy-intel retune
+
+`enemy-intel.md` shipped two features that both quietly favour the party, and
+together they moved clear rate **+2 to +14pp per floor** off the §1.1 curve.
+Measured by disabling each in turn (seed `BASE-1`, 600 trials, clear%):
+
+| floor | §1.1 target | with intel+intents | weaknesses OFF | intent BINDING off |
+|---|---|---|---|---|
+| 1 | 94.3 | 96.8 | 97.2 | 94.7 |
+| 2 | 91.2 | 98.2 | 98.3 | 91.8 |
+| 3 | 82.2 | 95.2 | 95.2 | 82.0 |
+| 4 | 73.2 | 86.8 | 84.5 | 76.2 |
+| 5 | 71.8 | 82.0 | 78.3 | 77.7 |
+| 6 | 56.8 | 64.2 | 56.2 | 61.3 |
+
+Two distinct causes, and they land on opposite ends of the run:
+
+- **Declared intents cost the enemy AI real decision quality**, and that is
+  the dominant effect on floors 2-4 (~13pp). It is not a bug and cannot be
+  tuned away: §2 of `enemy-intel.md` *requires* the AI to commit at round
+  start, so an enemy can no longer react to a kill, a shove or a Guard that
+  happened inside the round. Telegraphing is the feature; playing on stale
+  information is its price. Slay the Spire pays the same price.
+- **Weaknesses handed the party a damage bonus with no symmetric enemy gain**,
+  and that dominates floor 6 (~8pp), where the shove-weak roster and the
+  Off-Balance traffic are both densest.
+
+The fix is the curve, not the features. Retuned rows (DEF still capped at +1
+for the §3.1 reason; floor 1 stays the identity row **by definition** — it is
+the strength the stat blocks are authored at):
+
+| Floor | hp × | atk × | def + | spd + | crt + | threat budget (was) |
+|---|---|---|---|---|---|---|
+| 1 | 1.00 | 1.00 | 0 | 0 | 0 | 2–4 (3–4) |
+| 2 | 1.08 | 1.08 | 0 | 0 | 0 | 4–5 (4–5) |
+| 3 | 1.23 | 1.27 | 0 | 0 | 3 | 5–7 (5–6) |
+| 4 | 1.27 | 1.28 | 1 | 0 | 3 | 6–7 (6–8) |
+| 5 | 1.29 | 1.30 | 1 | 1 | 5 | 6–8 (8–10) |
+| 6 | 1.32 | 1.30 | 1 | 1 | 5 | 7–9 (10–12) |
+
+**Re-measured, seed `BASE-1`, 600 trials** — the §1.1 curve is restored:
+
+| floor | win% | clear% | rounds | OB% | pile/bt | lives lost | (§1.1 clear%) |
+|---|---|---|---|---|---|---|---|
+| 1 | 98.9 | 96.8 | 2.6 | 5.4 | 0.00 | 0.08 | 94.3 |
+| 2 | 97.1 | 91.2 | 3.4 | 3.7 | 0.00 | 0.16 | 91.2 |
+| 3 | 95.1 | 85.3 | 3.8 | 8.6 | 0.02 | 0.86 | 82.2 |
+| 4 | 91.6 | 75.0 | 3.9 | 13.5 | 0.04 | 0.98 | 73.2 |
+| 5 | 89.9 | 70.0 | 3.5 | 19.4 | 0.07 | 1.09 | 71.8 |
+| 6 | 85.1 | 56.5 | 3.3 | 25.1 | 0.10 | 1.14 | 56.8 |
+
+Clear rate is monotone falling (96.8 → 56.5) and every floor is within 3.1pp
+of its §1.1 target — inside the ±3.5pp 2σ band of a 600-trial measurement.
+Floors 2 and 6, the two the curve is anchored on, match to a tenth. Validated
+on three seeds (`BASE-1` / `SIM-1` / `GATE-7`, 1000-1500 trials): floor 6
+lands 54.6 / 53.0 / 52.5, so the tune is not overfit to one stream.
+`--party=4` still clears floors 1-5 at 100%, preserving the §2 claim that the
+fourth slot is a genuine Cat Town power spike.
+
+Two residuals that are NOT tuned out, and should be read as known:
+
+- **Lives lost sits ~25-30% below the §1.1 curve at matched clear rate**
+  (floor 3: 0.86 vs 1.23). Same cause as above — a bound enemy cannot
+  focus-fire the cat another enemy just left at 2 HP, so damage spreads and
+  fewer cats actually go down. The run is as hard to *clear* as it was, but
+  less likely to cost you a Life on the way. That is a real softening of the
+  failure texture, and closing it means making enemies pick targets better
+  *within* a declaration, not making them hit harder.
+- **Off-Balance runs hotter late** (floor 6: 25.1% vs 20.9%), because the
+  `offBalance` weakness skips the tier gate. It stays on the right side of
+  §1's "starts near-absent and grows" shape, so it is left alone.
 ## 4. Cat Town — the meta layer
 
 A persistent hub between runs (the existing `MetaFile` / `META_KEY` save slot is

@@ -60,8 +60,9 @@ src/
       turns.ts                # [180] initiative rolls + tie-breaks, frozen round queue, round-end phase, victory/defeat/flee, Nine Lives bookkeeping, Ninth Bell hook
       resolve.ts              # [300] resolveAction pipeline (damage→moveTarget→applies→moveSelf→CatPile check→death check), item-as-skill, Cat Pile, trait + mewthical hooks
       status.ts               # [110] 6 status defs: apply/stack/tick/expiry rules per combat.md §6, tick timing
-      ai.ts                   # [100] takeEnemyTurn score-and-pick (combat.md §10), Provoked targeting, advance fallback
+      ai.ts                   # [100] takeEnemyTurn score-and-pick (combat.md §10), Provoked targeting, advance fallback, bindIntent (honour a declaration, retarget without a draw)
       boss.ts                 # [110] Poise chip/break, doubleTurn queue entries, phase switch, charge/windup + cancel, summons
+      intent.ts               # [190] DECLARED INTENTS (enemy-intel.md §2): declareIntents at round start in queue order, intentFor/consumeIntent, intentFromAction (the kind ladder — shove outranks damage), declaredIntents for the UI
 
     map/                      # the run map — replaced core/dungeon/* (run-map-and-dm.md §2)
       types.ts                # [60] re-exports the §2.7 wire contract + engine constants (NODE_TYPES, MIN/MAX_COLUMNS, MAX_OUT_EDGES, ELITE_MIN_FLOOR), MapOption, IllegalMoveError, nodeAt
@@ -87,6 +88,7 @@ src/
       profile.ts              # [200] emptyProfile/migrateMeta(v1→v2)/bankRun/earnShinies/purchase/unlockState/prereqsMet/affordableUnlocks/newlyAffordable — all pure, all returning new objects
       overlay.ts              # [110] applyUnlocks(meta) → RunOverlay; eligibleClasses / startingRoster. Unknown namespaces fold into overlay.pool[ns]
       startRun.ts             # [70] startRun(seed, overlay) = newRun(seed, …, {partyCapacity, roster}) + wallet/gear fold-in. THE one call Cat Town makes
+      bestiary.ts             # [230] THE BESTIARY (enemy-intel.md §4): observeBattle folds a finished battle's LOG into knowledge, readBestiary repairs a stored payload (the v2→v3 migration), knownIntel reports every fact as known-or-`???`, intentsVisibleFor / maskIntent gate what the UI may show. Pure — no storage, no rng, no pixi
       index.ts                # [10] barrel
 
     run/
@@ -98,7 +100,7 @@ src/
   content/
     classes.ts                # [120] CLASSES: 4 CatClass defs verbatim from classes.md (bases, growth rows, unlocks, traits, barks, palettes)
     skills.ts                 # [140] SKILLS: Claw Swipe + 12 class skills + enemy skills + boss skills, all in the one Skill shape
-    enemies.ts                # [120] ENEMIES: 10 species + sockWraith + elderStray, stat blocks per dungeon.md §7.1 (canonical), looks (ui-art §5 data)
+    enemies.ts                # [220] ENEMIES: 15 species, stat blocks per dungeon.md §7.1 (canonical), looks (ui-art §5 data), plus the enemy-intel.md §1 payload — description/tell/weaknesses/resistances — and the DERIVED level (baseLevel + curveLevelSteps, computed in integer basis points so a float artefact cannot move a printed level)
     bosses.ts                 # [80] BOSSES: vacuumKing, dogfather (+ ratPrince SHOULD): BossData + encounter arrays per GDD §6
     equipment.ts              # [90] EQUIP_DEFS (10), 8 Mewthical uniques (MewHookId + names), rarity table
     consumables.ts            # [90] CONSUMABLES: 10 defs with battle Skill payloads (cost 0, chance 1.0) + explore fields + prices
@@ -118,6 +120,7 @@ src/
       cats.ts                 # [180] drawCat recipe (96×96), 4 class variants, mini-portrait, KO greyscale (ui-art §4)
       enemies.ts              # [200] 4 family recipes, size grades, props, tier chevrons, boss extras (ui-art §5)
       glyphs.ts               # [60] event glyphs (yarnBall/fishBones/pawShrine/strangeBox), stairs swirl, chest, misc pictograms
+      intel.ts                # [340] the enemy-intel VIEW kit (enemy-intel.md §§2-3, 5): the intent badge (icon + number per kind), the `?` mask for an unmet species, the threat line + incoming-damage marker that connects an intending enemy to the cat it named, the inspect card (facts or `???`), and the Bestiary grid Cat Town hosts. Draws only — every decision is core/meta/bestiary.ts's
       spriteFrame.ts          # [90] the sprite-framing contract: SUBJECT_TOP/FOOT/SPAN, subjectScale/subjectFeetOffset (scale on the CHARACTER, not the texture frame), UNIT_HEIGHT by grade, makeBustSprite. No per-sprite metadata at runtime — the constants are baked into the art by scripts/trim-sprites.mjs
     scenes/
       boot.ts                 # [40] black screen, paw logo, click-to-start (the pointer-unlock gate: any click or key)
@@ -167,7 +170,7 @@ agent/                        # the persistent DM (Vercel eve) — NEVER in the 
   instructions.md             # the DM's voice, the hard bounds, the refusal policy
   channels/eve.ts             # HTTP channel: CORS to the game origin, auth policy
   lib/{effects,memory,catalog,oneshot}.ts   # EffectSpec mirror w/ compile-time parity assertion, run memory, one-shot schemas
-  tools/                      # narrate · apply_effect · grant_item · adjust_shinies · remember · offer_encounter
+  tools/                      # narrate · apply_effect · grant_item · adjust_shinies · remember · offer_encounter · contribute_content (validates with the SHIPPED lintEvent/lintItem, stamps styleVersion + provenance, writes to the shared pool)
   subagents/encounter/        # one fight's adjudicator: battle snapshot in, typed verdict out
 api/                          # the legacy stateless GM (kept until the agent reaches parity)
 ```
@@ -301,6 +304,20 @@ export interface BattleState {
   canFlee: boolean;
   encounterIndex: number;
   outcome: 'ongoing' | 'victory' | 'defeat' | 'fled';
+  intents?: Record<string, DeclaredIntent>;  // per living enemy, this round
+}
+
+/** What an enemy has committed to do NEXT (enemy-intel.md §2). */
+export interface DeclaredIntent {
+  id: string;                      // the enemy's combatant id
+  kind: 'strike' | 'status' | 'shove' | 'heal' | 'buff'
+      | 'summon' | 'windup' | 'advance' | 'unknown';
+  value: number;                   // expected damage / heal; 0 when meaningless
+  round: number;                   // the round it was declared for
+  skillId?: SkillId;
+  targetId?: string;
+  ranks?: number[];                // row skills: the ranks it will hit
+  status?: StatusId;               // kind === 'status'
 }
 
 export interface BattleSetup {
@@ -312,6 +329,8 @@ export interface BattleSetup {
   enemies: EnemyId[];              // front-to-back, 1..5
   encounterIndex: number;          // 0 = boss
   canFlee: boolean;
+  floor?: number;                  // drives ENEMY_CURVE; omitted ⇒ floor 1
+  isBoss?: boolean;
 }
 
 export type BattleAction =
@@ -409,6 +428,11 @@ export interface EnemyLook {
 export interface EnemyDef {
   id: EnemyId; name: string;
   tier: 1 | 2 | 3;
+  level: number;                   // DERIVED (see below), never hand-typed
+  description: string;             // 1-2 lines of flavour; the Stand hinted
+  tell: string;                    // how it telegraphs — flavour for the icon
+  weaknesses: IntelTag[];          // takes EXTRA from these (mechanical)
+  resistances: IntelTag[];         // shrugs these off
   threat: number;                  // pack-budget cost; bosses/summons: 0
   row: 'front' | 'back';           // formation ordering in pack build
   stats: Stats;                    // enMax unused for enemies (0)
@@ -418,7 +442,32 @@ export interface EnemyDef {
   look: EnemyLook;
   boss?: BossData;                 // present on vacuumKing/dogfather/(ratPrince)
 }
+
+/** The CLOSED intel vocabulary. Widening it is a design decision, not a typo. */
+export type IntelTag =
+  'shove' | 'offBalance' | 'scratched' | 'frazzled' | 'provoked';
 ```
+
+**Enemy intel** (`docs/design/enemy-intel.md` §1, `combat.md` §8.1). Three rules
+make this a mechanic rather than a stat sheet:
+
+- **Every tag is a modifier on a step the resolver already had**, and it never
+  costs a draw. `shove` is ×1.25 / ×0.80 on a `moveTarget` hit; the four status
+  tags decide the application outright (weak ⇒ always lands, resist ⇒ never
+  lands) and the chance roll is *not drawn* in either direction, because the
+  outcome was never in doubt.
+- **`resistances: ['offBalance']` IS the tier Off-Paw resistance.** It is not a
+  second system layered on the tier — the tier supplies the magnitude
+  (0.25 / 0.40), the def supplies whether the gate applies at all, so
+  `offBalanceResistOf` has one source of truth.
+- **`level` is derived from `ENEMY_CURVE`**, not authored: `baseLevel(tier,
+  isBoss)` plus `curveLevelSteps(floor)`. The table that scales the stat block
+  moves the printed level, so the inspect panel can never drift from the damage
+  formula (`balance-and-meta.md` §3.2).
+
+Whenever a modifier actually fires the engine emits an `intel` event. That is
+the *only* way the Bestiary learns a tag — knowledge comes from watching it
+happen, never from reading the content table.
 
 ### 2.6 Items, equipment, inventory (loot.md §10)
 

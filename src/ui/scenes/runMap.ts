@@ -28,16 +28,32 @@
  *   treasure             → the LOOT overlay on a `rollChest` of the node seed
  * Every one of them comes back here; the terminal node, once cleared, opens
  * the way down (LANDING on floors 1-5, RESULTS after the floor-6 boss).
+ *
+ * ── THE TABLETOP LAYER (run-map-and-dm.md §4b) ──────────────────────────
+ * This scene is the THIRD host of `overlays/tabletopBar.ts`, in `exploration`
+ * mode: on the map the party can scout ahead, talk among themselves, poke at a
+ * route before committing, or just ask about the floor. Nothing here is under
+ * time pressure, so it reads as the table between fights rather than a command
+ * prompt — the only difference from the fight and event hosts is the MODE the
+ * shared card is built with.
+ *
+ * It is also where the DM's UNPROMPTED beats land: arriving somewhere, coming
+ * down a floor, standing at a boss lair, or a run state that is dramatic on
+ * its own — plus anything the battle scene queued while the screen was busy.
+ * All of it is asynchronous and rate-limited by `services/dm.ts`; offline it
+ * does not exist at all.
  */
 import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type {
   ClassId,
+  Effect,
+  GameEvent,
   ItemId,
   MapNode,
   NodeType,
   RunState,
 } from "../../core/types.js";
-import { mulberry32 } from "../../core/rng.js";
+import { hash, mulberry32 } from "../../core/rng.js";
 import { CLASSES } from "../../content/classes.js";
 import { CONSUMABLES } from "../../content/consumables.js";
 import { ENEMIES } from "../../content/enemies.js";
@@ -56,7 +72,40 @@ import {
 } from "../../core/run/runState.js";
 import { maxHp } from "../../core/run/party.js";
 import { isStack, removeConsumable } from "../../core/loot/inventory.js";
+import { resolveOption } from "../../core/events/resolve.js";
 import { rollChest, type LootCtx } from "../../core/loot/roll.js";
+import {
+  didDescend,
+  dramaticStateBeats,
+  ensureDmSession,
+  isDmAvailable,
+  mapSituation,
+  markDmUnreachable,
+  planInterjection,
+  presenceOf,
+  probeDm,
+  requestExplorationVerdict,
+  requestInterjection,
+  takeQueuedInterjection,
+  withBeatSpent,
+  withInterjectionRecorded,
+  withPresenceFloor,
+  withQueuedInterjection,
+  type DmBeat,
+  type Interjection,
+  type PresenceRun,
+} from "../../services/dm.js";
+import {
+  validateEncounterVerdict,
+  withAdjudication,
+  withDmSession,
+  type TabletopRun,
+} from "../../services/tabletop.js";
+import {
+  createTabletopBar,
+  createTabletopChip,
+  type TabletopBar,
+} from "../overlays/tabletopBar.js";
 import { CHEST_WOOD, PAL, THEMES, mix } from "../palette.js";
 import {
   DESIGN_H,
@@ -145,6 +194,10 @@ const RM = {
   prompt: [340, 556, 600, 56] as Rect,
   /** Toast, centred over the board. */
   toast: [390, 500, 500, 40] as Rect,
+  /** "[T] say what you do" chip — the free band under the header rail. */
+  tabletopChip: [16, 52, 220, 30] as Rect,
+  /** The tabletop card. Sits over the board; nothing here is timed. */
+  tabletopCard: [(DESIGN_W - 760) / 2, 150, 760, 212] as Rect,
 } as const;
 
 /** Medallion radii. */
@@ -304,6 +357,19 @@ export class RunMapScene implements Scene {
   private busy = false;
   private restBox: Container | null = null;
 
+  /**
+   * The tabletop layer (run-map-and-dm.md §4b). Built ONLY when the DM probe
+   * answers; offline every one of these stays null/idle and the run map is
+   * byte-identical to a DM-less build.
+   */
+  private tabletop: TabletopBar | null = null;
+  private tabletopChip: Container | null = null;
+  private talk: "idle" | "typing" | "waiting" | "reply" = "idle";
+  /** Set while an interjection is on the card, so [T] answers THAT. */
+  private answering: Interjection | null = null;
+  /** Bumps per adjudication so each one gets its own deterministic stream. */
+  private talkSeq = 0;
+
   /* ------------------------------ lifecycle ---------------------------- */
 
   mount(root: Container, ctx: GameCtx): void {
@@ -351,10 +417,27 @@ export class RunMapScene implements Scene {
     // ---- arrive: resolve the node the party is standing on --------------
     this.refresh();
     this.resolveArrival();
+
+    // ---- the tabletop layer: probe once per session, fire-and-forget -----
+    // `resolveArrival` may already have handed the floor to another scene, so
+    // everything below re-checks `mounted`. Offline this callback never fires
+    // and not one pixel of DM chrome is built.
+    void probeDm().then((ok) => {
+      if (!ok || !this.mounted) return;
+      this.enableTabletop();
+      this.openingBeats();
+    });
   }
 
   unmount(): void {
     this.mounted = false;
+    // the card owns a DOM <input>: it must go before its pixi parent, or the
+    // element is orphaned over the next scene
+    this.tabletop?.destroy();
+    this.tabletop = null;
+    this.tabletopChip = null;
+    this.talk = "idle";
+    this.answering = null;
     this.tooltip = null;
     this.restBox = null;
     this.enterFn = null;
@@ -372,6 +455,7 @@ export class RunMapScene implements Scene {
   update(dtMs: number): void {
     if (!this.mounted) return;
     this.t += dtMs;
+    this.tabletop?.update(dtMs);
 
     // live routes: gold motes drifting toward the choices on offer
     const phase = (this.t / 1400) % 1;
@@ -404,10 +488,27 @@ export class RunMapScene implements Scene {
 
   onKey(key: string): boolean {
     if (!this.mounted) return false;
+    // The tabletop card owns the keyboard while it is up: the DOM field stops
+    // propagation itself, so anything that reaches here is the reply beat.
+    if (this.tabletop?.isOpen()) {
+      if (this.talk === "waiting") return true;
+      if (key === "t" && this.tabletop.isInterjecting()) {
+        this.answerInterjection();
+        return true;
+      }
+      if (key === "e" || key === "enter" || key === "space" || key === "esc") {
+        this.closeTalk();
+      }
+      return true;
+    }
     if (this.restBox) {
       if (key === "enter" || key === "space" || key === "e" || key === "esc") {
         this.closeRest();
       }
+      return true;
+    }
+    if (key === "t" && this.tabletop) {
+      this.openTalk();
       return true;
     }
     if (this.busy) return true;
@@ -1169,6 +1270,10 @@ export class RunMapScene implements Scene {
 
   private take(node: MapNode | undefined): void {
     if (!node || this.busy || !this.mounted) return;
+    // Walking on IS an answer to an unprompted beat. The card had its moment;
+    // it must not ride along to the next node.
+    if (this.tabletop?.isInterjecting()) this.closeTalk();
+    if (this.talk !== "idle") return;
     const from = this.currentView();
     this.busy = true;
     this.hideTooltip();
@@ -1193,6 +1298,10 @@ export class RunMapScene implements Scene {
       this.busy = false;
       this.refresh();
       this.resolveArrival();
+      // "arriving at a node" is an authored beat (§4b). `resolveArrival` may
+      // already have handed the floor to another scene, which `openingBeats`
+      // detects and ignores.
+      this.openingBeats();
     };
 
     if (!edge || !to) {
@@ -1476,6 +1585,330 @@ export class RunMapScene implements Scene {
       return;
     }
     this.ctx.scenes.goto("landing");
+  }
+
+  /* --------------------- the tabletop layer (§4b) ----------------------- */
+
+  /** The run, seen through the tabletop/presence extensions. */
+  private get talkRun(): PresenceRun {
+    return this.ctx.run as PresenceRun;
+  }
+
+  /** Build the chip and the card. Idempotent; only ever called with a DM up. */
+  private enableTabletop(): void {
+    if (this.tabletop || !this.mounted) return;
+    const chip = createTabletopChip(() => this.openTalk());
+    chip.view.position.set(rx(RM.tabletopChip), ry(RM.tabletopChip));
+    this.hudC.addChild(chip.view);
+    this.tabletopChip = chip.view;
+    this.tabletop = createTabletopBar({
+      rect: RM.tabletopCard,
+      // The mode — NOT hand-written chrome. One component, one voice, three
+      // hosts (run-map-and-dm.md §4b).
+      mode: "exploration",
+      onSubmit: (text) => this.submitTalk(text),
+      onCancel: () => this.closeTalk(),
+      onDismiss: () => this.closeTalk(),
+      onAnswer: () => {
+        this.talk = "typing";
+      },
+    });
+    this.modalC.addChild(this.tabletop.view);
+  }
+
+  private openTalk(): void {
+    if (!this.tabletop || this.busy || this.restBox || this.talk !== "idle") {
+      return;
+    }
+    this.hideTooltip();
+    this.talk = "typing";
+    this.answering = null;
+    this.tabletop.open();
+  }
+
+  /** Nothing happened; the map is exactly as it was (no RNG was drawn). */
+  private closeTalk(): void {
+    this.tabletop?.close();
+    this.talk = "idle";
+    this.answering = null;
+  }
+
+  /** How the party would describe where they are standing, in one phrase. */
+  private standingOn(): string {
+    const map = this.run.floorMap;
+    const id = this.run.currentNodeId;
+    const node = map && id !== null ? map.nodes[id] : undefined;
+    if (!node) return "the mouth of the floor";
+    const terminal = node.id === map?.bossId;
+    return terminal && node.type !== "boss"
+      ? "the stairs down"
+      : `a ${NODE_NAME[node.type].toLowerCase()} they have already dealt with`;
+  }
+
+  /** The situation handed to the DM: the floor, the spot, the routes ahead. */
+  private situation(): string {
+    return mapSituation({
+      floor: this.run.floorNum,
+      floorName: floorConfig(this.run.floorNum).name,
+      standingOn: this.standingOn(),
+      routes: this.options.map((n) => NODE_NAME[n.type]),
+      cleared: this.floorCleared(),
+    });
+  }
+
+  /**
+   * One typed line on the map. The verdict is re-linted CLIENT-SIDE before
+   * anything is applied (run-map-and-dm.md §3 "defence in depth"), and every
+   * beat — told, refused or dropped — is recorded into the run transcript.
+   */
+  private submitTalk(text: string): void {
+    const bar = this.tabletop;
+    if (!bar || this.talk !== "typing" || !this.ctx.run) return;
+    const answering = this.answering;
+    this.answering = null;
+    this.talk = "waiting";
+    bar.waiting(text);
+    const floor = this.run.floorNum;
+    const situation = answering
+      ? `${this.situation()} You have just interrupted them, unprompted, with: "${answering.narration}"`
+      : this.situation();
+
+    void (async () => {
+      const raw = await this.askDm(text, situation, floor);
+      if (!this.mounted || this.talk !== "waiting") return;
+      if (raw === null) {
+        // mid-run failure: the affordance disappears and the map is untouched
+        markDmUnreachable();
+        this.disableTabletop();
+        bar.reply("The night holds its breath, and lets it out.", "quiet");
+        this.talk = "reply";
+        return;
+      }
+      const check = validateEncounterVerdict(raw, floor);
+      const verdict = check.verdict;
+      if (!verdict) {
+        bar.reply("The night holds its breath, and lets it out.", "quiet");
+        this.talk = "reply";
+        return;
+      }
+      this.recordTalk(text, verdict, check.applied, check.problems);
+      const lines = check.applied ? this.applyTalk(verdict.effects) : [];
+      bar.reply(
+        lines.length > 0
+          ? `${verdict.narration}\n\n${lines.join("   ")}`
+          : verdict.narration,
+        verdict.allowed ? "told" : "refused",
+      );
+      this.talk = "reply";
+    })();
+  }
+
+  /** Ask the persistent DM. Returns the RAW payload, or null on any failure. */
+  private async askDm(
+    text: string,
+    situation: string,
+    floor: number,
+  ): Promise<unknown> {
+    const run = this.talkRun;
+    const ensured = await ensureDmSession(run);
+    if (!ensured) return null;
+    if (this.mounted) this.ctx.run = ensured.run;
+    const res = await requestExplorationVerdict(ensured.session, {
+      floor,
+      prompt: text,
+      situation,
+      shinies: run.inventory.shinies,
+      partyHp: run.cats.filter((c) => c.lives > 0).map((c) => c.hp),
+      onDelta: (_delta, soFar) => this.tabletop?.stream(soFar),
+    });
+    if (!res) return null;
+    if (this.mounted && this.ctx.run) {
+      this.ctx.run = withDmSession(this.talkRun, res.session);
+    }
+    return res.data;
+  }
+
+  /** Record one adjudication into the run transcript, then autosave it. */
+  private recordTalk(
+    prompt: string,
+    verdict: { allowed: boolean; narration: string; effects: Effect[] },
+    applied: boolean,
+    problems: string[],
+  ): void {
+    if (!this.ctx.run) return;
+    this.ctx.run = withAdjudication(this.ctx.run as TabletopRun, {
+      where: "encounter",
+      floor: this.run.floorNum,
+      nodeId: this.run.currentNodeId,
+      prompt,
+      narration: verdict.narration,
+      allowed: verdict.allowed,
+      effects: verdict.effects,
+      applied,
+      problems,
+    });
+    this.ctx.save();
+  }
+
+  /**
+   * Apply an already-linted verdict through the SAME `resolveOption` path a
+   * fixed event option takes, so every clamp, cap and bookkeeping rule the
+   * shipped content obeys applies here untouched.
+   *
+   * The stream is `hash(runSeed, floor, 'tabletop', seq)` — its own derivation
+   * per ARCHITECTURE.md §4, so a typed line can never perturb the map, the
+   * encounter or the loot streams. Returns the delta lines to show.
+   */
+  private applyTalk(effects: Effect[]): string[] {
+    if (effects.length === 0 || !this.ctx.run) return [];
+    const run = this.run;
+    // restoreLife is runtime-gated (events.md invariant 7): with nobody below
+    // 9 Lives, drop that effect rather than the whole verdict.
+    const anyBelow9 = run.cats.some((c) => c.lives > 0 && c.lives < 9);
+    const usable = effects.filter((e) => e.kind !== "restoreLife" || anyBelow9);
+    if (usable.length === 0) return [];
+    this.talkSeq += 1;
+    const f = run.floorNum;
+    const synthetic: GameEvent = {
+      id: "gmTabletopExploration",
+      title: "the table",
+      prompt: "the table",
+      weight: 1,
+      floors: [f, f],
+      options: [
+        {
+          label: "do it",
+          outcomes: [{ weight: 1, text: "", effects: usable }],
+        },
+      ],
+    };
+    const rng = mulberry32(
+      hash(run.runSeed, f, "tabletop", run.currentNodeId ?? -1, this.talkSeq),
+    );
+    try {
+      const out = resolveOption(run, synthetic, 0, rng);
+      this.ctx.run = out.state;
+      this.ctx.save();
+      this.refreshHud();
+      return out.results.map((r) => r.text);
+    } catch {
+      // core refused the shape (never legal from a linted verdict) — the beat
+      // stays pure narration rather than desyncing the run.
+      return [];
+    }
+  }
+
+  /** A DM that stopped answering stops being offered. */
+  private disableTabletop(): void {
+    if (this.tabletopChip) this.tabletopChip.visible = false;
+  }
+
+  /* ---- unprompted beats ------------------------------------------------ */
+
+  /**
+   * Everything the DM might interrupt about right now: what was queued while
+   * another screen was busy, then the beats this arrival is worth.
+   *
+   * Called on mount (after the probe) and every time the party lands on a
+   * node. Cheap and idempotent: `planInterjection` is the rate limit.
+   */
+  private openingBeats(): void {
+    if (!this.mounted || !this.tabletop || !this.ctx.run) return;
+
+    // 1. anything the battle scene could not render at the time
+    const queued = takeQueuedInterjection(this.talkRun);
+    if (queued) {
+      this.ctx.run = queued.run;
+      this.ctx.save();
+      this.deliverInterjection(queued.interjection);
+      return;
+    }
+
+    // 2. this arrival's own beats. `didDescend` must be read BEFORE the floor
+    // is stamped, or a descent is never visible.
+    const descended = didDescend(this.talkRun);
+    const beats: DmBeat[] = [];
+    const map = this.run.floorMap;
+    const id = this.run.currentNodeId;
+    const node = map && id !== null ? map.nodes[id] : undefined;
+    if (descended) beats.push("descend");
+    if (node?.type === "boss") beats.push("bossLair");
+    beats.push("arriveNode", ...dramaticStateBeats(this.run));
+    this.ctx.run = withPresenceFloor(this.talkRun);
+    this.tryInterject(beats);
+  }
+
+  /**
+   * Ask for an interjection, if the policy allows one. NEVER blocking: the
+   * budget is spent synchronously, the request is fired and forgotten, and
+   * the line renders if and when it lands.
+   */
+  private tryInterject(beats: DmBeat[]): void {
+    if (!this.mounted || !this.ctx.run) return;
+    const plan = planInterjection(presenceOf(this.talkRun), beats, {
+      nowMs: Date.now(),
+      floor: this.run.floorNum,
+      available: isDmAvailable(),
+    });
+    if (!plan.beat) return;
+    const beat = plan.beat;
+    const situation = this.situation();
+    this.ctx.run = withBeatSpent(this.talkRun, beat, Date.now());
+    this.ctx.save();
+
+    void (async () => {
+      const res = await requestInterjection(this.talkRun, { beat, situation });
+      if (!res || !this.mounted || !this.ctx.run) return;
+      this.ctx.run = withDmSession(this.talkRun, res.session);
+      const shown = this.canShowInterjection();
+      this.ctx.run = withInterjectionRecorded(this.talkRun, {
+        ...res.interjection,
+        floor: this.run.floorNum,
+        nodeId: this.run.currentNodeId,
+        delivered: shown,
+      });
+      if (!shown) {
+        // it landed on a busy screen; the next quiet one delivers it
+        this.ctx.run = withQueuedInterjection(this.talkRun, res.interjection);
+      }
+      this.ctx.save();
+      if (shown) this.deliverInterjection(res.interjection);
+    })();
+  }
+
+  /** Is the screen quiet enough to interrupt? */
+  private canShowInterjection(): boolean {
+    return (
+      this.mounted &&
+      this.tabletop !== null &&
+      this.talk === "idle" &&
+      !this.busy &&
+      this.restBox === null
+    );
+  }
+
+  /**
+   * Render an unprompted beat, and apply whatever small twist survived the
+   * lint. The card carries the invitation to answer — this is a conversation,
+   * not a cutscene.
+   */
+  private deliverInterjection(i: Interjection): void {
+    if (!this.tabletop || !this.canShowInterjection()) return;
+    const lines = i.applied ? this.applyTalk(i.effects) : [];
+    this.talk = "reply";
+    this.answering = i;
+    this.hideTooltip();
+    this.tabletop.interject(
+      lines.length > 0 ? `${i.narration}\n\n${lines.join("   ")}` : i.narration,
+      i.invite,
+    );
+  }
+
+  /** [T] / Answer on an interjection: straight into the field, same card. */
+  private answerInterjection(): void {
+    if (!this.tabletop?.isInterjecting()) return;
+    this.talk = "typing";
+    this.tabletop.open();
   }
 
   /* ------------------------------ tooltip ------------------------------- */

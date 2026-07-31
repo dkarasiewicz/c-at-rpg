@@ -22,6 +22,7 @@
  *   <ns>:<id>  everything else — appended to `overlay.pool[ns]`
  */
 import type { MetaFile } from "../types.js";
+import type { Bestiary } from "./bestiary.js";
 
 /** `"<namespace>:<localId>"`, e.g. `slot:third`, `class:hexer`, `pool:stand`. */
 export type UnlockId = string;
@@ -100,15 +101,19 @@ export interface RunRecord {
 }
 
 /** Meta-file schema versions this build can read. */
-export type MetaVersionNum = 1 | 2;
+export type MetaVersionNum = 1 | 2 | 3;
 
 /**
  * The persistent profile — localStorage `catrpg.meta.v1` (the KEY keeps its
  * name; `version` is what gates the payload). v1 was lifetime records only;
- * v2 adds the wallet, the owned unlock ids and the run history.
+ * v2 adds the wallet, the owned unlock ids and the run history; v3 adds the
+ * Bestiary (enemy-intel.md §4).
+ *
+ * `version` is the WIDE `MetaVersion` rather than a literal: a profile that
+ * predates the Bestiary is still a valid `MetaProfile` in memory (its
+ * `bestiary` is simply absent), and `migrateMeta` is what stamps it current.
  */
 export interface MetaProfile extends MetaFile {
-  version: 2;
   /** Banked, unspent. */
   shinies: number;
   /** Ever banked — a record, never spent from. */
@@ -117,6 +122,12 @@ export interface MetaProfile extends MetaFile {
   unlocked: UnlockId[];
   /** Most recent runs first, capped at `HISTORY_LIMIT`. */
   history: RunRecord[];
+  /**
+   * Per-enemy earned knowledge (core/meta/bestiary.ts). ABSENT on a v1/v2
+   * payload and on any caller that predates it; every reader goes through
+   * `knowledgeOf`, which treats absent as "nothing learned yet".
+   */
+  bestiary?: Bestiary;
 }
 
 /**

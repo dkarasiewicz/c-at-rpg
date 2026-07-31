@@ -6,7 +6,7 @@
     "cats": [
       {
         "classId": "bruiser",
-        "hp": 23,
+        "hp": 25,
         "lives": 9,
         "weapon": {
           "uid": 1,

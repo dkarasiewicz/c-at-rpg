@@ -144,13 +144,17 @@ Off-Paw combo system (§8) a planning game instead of a guessing game.
 3. crit     = (rngFloat() < user.crt / 100) ? 1.5 : 1.0
 4. offBal   = target has Off-Balance ? 1.3 : 1.0
 5. guard    = target has Guarded     ? 0.5 : 1.0
-6. dmg      = round(base * variance * crit * offBal * guard)   // round half up
-7. final    = max(1, dmg - target.def)
+6. intel    = skill.moveTarget && target weak to 'shove'   ? 1.25
+            : skill.moveTarget && target resists 'shove'   ? 0.80
+            : 1.0                                          // §8.1, no roll
+7. dmg      = round(base * variance * crit * offBal * guard * intel)  // half up
+8. final    = max(1, dmg - target.def)
 ```
 
 There is **no accuracy roll** — attacks always land (misses feel bad in a
 4-actor party; defense is expressed through `def`, Guarded, and positioning).
-Maximum stacked multiplier is 1.1 × 1.5 × 1.3 = 2.145, a bounded burst ceiling.
+Maximum stacked multiplier is 1.1 × 1.5 × 1.3 = 2.145, a bounded burst ceiling
+(2.68 on a shove-weak target, and only for the lower-power shove skills).
 (Off-Balance was ×1.5 through v1; `balance-and-meta.md` §1 cut it to ×1.3
 because crit × Off-Balance at ×2.25 made one cheap shove the correct opening
 move in every single fight. Crit × Off-Balance is now ×1.95.)
@@ -188,20 +192,41 @@ this exact order, so replays with the same seed are identical:
 | # | When | Draw | Skipped entirely when |
 |---|---|---|---|
 | 1 | Round start | initiative, one `int(0,2)` per queue entry — cats rank 1→4, then enemies rank 1→5 | never |
+| 1a | Round start, round 1 only | power `onBattleStart` consults, in queue order | no powers attached |
+| **1b** | **Round start, after 1a** | **DECLARED INTENTS: one AI selection per living enemy, in QUEUE ORDER — each spends a tie-break `int(0, n-1)` only on a genuine tie** | **the tie resolved deterministically by target rank (the usual case: most rounds declare every intent for zero draws)** |
 | 2 | Damage step, per target in rank order | variance `int(0,2)` | the skill deals no damage |
 | 3 | Damage step, per target in rank order | crit `float()` | the skill deals no damage |
 | 4 | **Forced-movement step, per moved target in rank order** | **Off-Paw application chance `float()` vs `skill.offBalanceChance`** | **chance is EXACTLY 1.0, or the target is dead / already Off-Balance / Braced** |
-| 5 | **Immediately after 4, same target** | **tier-resistance `float()`** | **the target's resistance is 0 (cats, tier-1 mooks, bosses), or 4 already failed** |
-| 6 | `applies` step, per effect per recipient | status chance `float()` | chance is EXACTLY 1.0 |
+| 5 | **Immediately after 4, same target** | **tier-resistance `float()`** | **the target's resistance is 0 (cats, tier-1 mooks, bosses, anything WEAK to `offBalance`), or 4 already failed** |
+| 6 | `applies` step, per effect per recipient | status chance `float()` | chance is EXACTLY 1.0, or the recipient RESISTS that status (it can never land), or the recipient is WEAK to it (it always lands) |
 | 7 | **Immediately after 6, when the status is `offBalance`** | **tier-resistance `float()`** | **as row 5** |
 | 8 | Power consults | `chance` predicate `float()` | no power, no charges, earlier predicate failed |
-| 9 | AI | tie-break `int(0, n-1)` | the tie resolved deterministically by target rank |
+| 9 | AI, at an enemy's own slot | tie-break `int(0, n-1)` | **the enemy is acting on a declaration (row 1b) that is still honourable** — see below |
 | 10 | Flee | one `float()` | not fleeing |
 
 Rows 4, 5 and 7 are the draws added by the Off-Balance rework. The rule that
 makes them safe: **a gate is never drawn when the application could not have
 landed anyway.** A shove into a Braced target, a re-shove of something already
-Off-Balance, and a push onto a corpse all cost zero entropy.
+Off-Balance, and a push onto a corpse all cost zero entropy. §8.1's intel
+extends the same rule in both directions — a status the target resists could
+never land, and one it is weak to was never in doubt, so neither rolls.
+
+**Row 1b is the intent rework** (`docs/design/enemy-intel.md` §2). The AI's
+selection did not become more random, it became *earlier*: the tie-break draw
+that used to happen at an enemy's own slot (row 9) now happens at the round
+start, in queue order. Row 9 survives for exactly two cases, and they are the
+same two the enemy AI has always had:
+
+- a **double-turn boss's second slot**, which is deliberately undeclared
+  (`'unknown'` — the state it will act in cannot be known at round start);
+- a **broken declaration**: the declared skill went offline (rank denial, a
+  cooldown, a full summon cap), so the AI picks again *at that slot*, which is
+  precisely where the pre-intent engine picked. A declaration that merely lost
+  its target retargets without any draw at all.
+
+So a broken telegraph never costs a double draw, and a battle in which no
+enemy ties and no telegraph breaks draws exactly what it drew before — only in
+a different place.
 
 ---
 
@@ -420,6 +445,38 @@ during a Poise break (§11), making Cat Pile the boss-fight burst window.
 It's Darkest Dungeon's positioning tension, flipped from dread to slapstick:
 cats batting enemies around like toys, then piling on.
 
+### 8.1 Enemy intel — weaknesses and resistances as modifiers
+
+Every `EnemyDef` declares `weaknesses` and `resistances` over a **closed,
+five-tag vocabulary** (`IntelTag`). Each tag is a hook the resolver already
+has: intel is a modifier on an existing step, never a new mechanic, and it is
+**always drawn-free** (`docs/design/enemy-intel.md` §1).
+
+| tag | weak to it | resists it |
+|---|---|---|
+| `shove` | takes ×1.25 from a `moveTarget` skill (§3 step 6) | takes ×0.80 |
+| `offBalance` | Off-Paw ignores the tier gate — §8 gate 3 is skipped, gate 2 still rolls | **IS** the tier gate (0.25 / 0.40 by tier) |
+| `scratched` | the application always lands; its chance roll is not drawn | it never lands; its chance roll is not drawn |
+| `frazzled` | as `scratched` | as `scratched` |
+| `provoked` | as `scratched` | as `scratched` — Hiss cannot bait it |
+
+Two rules keep this honest:
+
+1. **`offBalance` is the tier resistance, not a second system.** The tier still
+   supplies the magnitude; the def supplies whether it applies at all. Every
+   shipped tier-2/3 mook declares it, so the numbers the balance pass measured
+   (`balance-and-meta.md` §1.1) are unchanged — with exactly one authored
+   exception, the hollow Porcelain Hound, which declares it as a *weakness* and
+   therefore never resists a shove.
+2. **A weakness must change how you play.** ×1.25 on a shove, a status that can
+   never stick, a tier-3 elite that always goes Off-Balance: each of these is a
+   different opening move. Data that would not change the opening move is
+   decoration and does not belong in the table.
+
+Whenever a modifier actually fires the engine emits an `intel` event. That is
+the only way the Bestiary learns a tag (`enemy-intel.md` §4) — knowledge comes
+from watching it happen, never from reading the content table.
+
 ---
 
 ## 9. Player Choices Per Turn (the decision space)
@@ -494,6 +551,39 @@ rank). `expectedDamage` uses variance 1.0 and no crit. Encounter personality
 comes from skill data (`aiWeight`, cooldowns, `usableFrom`), not code. A boss
 script hook runs before scoring: if a windup finished or a phase entry queued a
 scripted move (§11), it executes unconditionally.
+
+### 10.1 WHEN the AI picks — declared intents
+
+The scorer above is unchanged; what changed is when it runs
+(`docs/design/enemy-intel.md` §2, and §3.2 row 1b here).
+
+`startRound` runs it **once per living enemy, in queue order**, and publishes
+the result as a **declared intent**: kind (`strike` / `shove` / `status` /
+`heal` / `buff` / `summon` / `windup` / `advance` / `unknown`), the expected
+value, and the target. `resolveAction` is then **bound** to it — the enemy does
+what it telegraphed, which is the whole point: a player who dies never feels
+cheated.
+
+The intent is truthful, and bends in exactly two ways, both of them the
+player's own doing and both announced with an `intentBroken` event:
+
+- **retargeted** — you killed the declared target, so the same skill follows
+  the line to the §10 scorer's own preference (most wounded, ties to the lower
+  rank), drawing nothing. Killing the telegraphed victim REDIRECTS the blow;
+  it does not defuse it;
+- **rechosen** — you took the skill off the table (shoved it out of
+  `usableFrom`, its cooldown, a full summon cap), so the AI picks again at that
+  slot. Rank denial now visibly *breaks a telegraph* instead of quietly
+  downgrading an attack.
+
+A `doubleTurn` boss declares only its first slot; the second is `'unknown'` and
+is chosen live. That is authored uncertainty, not a gap: the state the second
+slot acts in cannot be known at round start, and inventing a number for it
+would be a lie.
+
+Visibility is a **meta** question, not an engine one: the engine always knows
+the truth, and `core/meta/bestiary.ts` decides whether the UI may show it — a
+species you have never met reads `?` until it acts (`enemy-intel.md` §4/§5).
 
 ---
 
@@ -629,6 +719,13 @@ variance, crit, Off-Paw gate) + 2 (Crow) + 2 (Rat A) + 2 (Bruno) + 0
 (Baguette guards) + 2 (Rat B). The single added draw versus v1 is Mora's
 gate.
 
+*(Intents cost nothing here. After the 7 initiative rolls the three enemies
+declare — Crow: hex from rank 3; Rat A and Rat B: Shiv on Bruno — and not one
+of them ties, so §3.2 row 1b draws zero. Mora's pull then drags the Crow to
+rank 1, where its hex is illegal: the telegraph BREAKS (`rechosen`), the AI
+picks again at the Crow's own slot exactly as it always did, and lands on
+Peck. The numbers below are v1's, unchanged.)*
+
 **Round-end phase:** no round-duration statuses remain — the Crow took its
 Off-Balance to the grave, and because KO already cleared its statuses the
 sweep finds nothing to expire, so **no Braced is granted to anyone** (§6.1
@@ -655,7 +752,9 @@ The engine is **headless and pure** (grafted from Design 2):
 `resolveAction(state, action, rng) -> { newState, events[] }`. The PixiJS
 scene consumes the events queue (`Damage`, `Heal`, `Moved`, `OffBalance`,
 `PoiseBreak`, `CatPilePrompt`, `CatPile`, `StatusApplied`, `KO`, `Revive`,
-`PhaseChange`, `Charging`, `Summon`, `Fled`, `Victory`, `Defeat`, …) and
+`PhaseChange`, `Charging`, `Summon`, `Fled`, `Victory`, `Defeat`, plus the
+three intel events — `intent` (a declaration, §10.1), `intentBroken` (the
+player broke one) and `intel` (a weakness or resistance fired, §8.1) — …) and
 animates it with tween-only motion (position/scale/alpha shakes, flash tints,
 floating `Text` numbers) — zero assets, trivially 60fps, and the whole combat
 core is unit-testable; the worked example above doubles as a unit test.
@@ -666,7 +765,8 @@ core is unit-testable; the worked example above doubles as a unit test.
 | `battle/turns.ts` | 160 | Initiative rolls, round loop, round-end phase, win/lose/flee, Lives bookkeeping |
 | `battle/resolve.ts` | 280 | Skill pipeline (damage formula, movement, statuses, energy), Cat Pile |
 | `battle/status.ts` | 120 | 7 status defs + tick/stack/expiry rules (incl. Braced) |
-| `battle/ai.ts` | 100 | §10 scorer + boss script hook |
+| `battle/ai.ts` | 130 | §10 scorer + boss script hook + `bindIntent` (honour a declaration, retarget, or hand back) |
+| `battle/intent.ts` | 150 | §10.1 declared intents: `declareIntents` at round start, the kind ladder, the telegraphed value, `declaredIntents` for the UI |
 | `battle/boss.ts` | 100 | Poise, double-turn, phase swap, charge telegraph, summons |
 | `battle/ui.ts` | 550 | PixiJS: rank slots, cat/enemy blobs, initiative timeline, skill bar, Life pips, Poise counter, floating damage Text, dust-cloud Cat Pile, tweened lunges; mouse targeting + 1–5 keys |
 | `data/*.ts` | (content, not engine) | 4 classes × 4 skills, ~10 enemies, 3 bosses, items, encounters, the per-floor `ENEMY_CURVE` |

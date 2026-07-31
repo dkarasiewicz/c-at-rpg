@@ -5,6 +5,10 @@
  * when one exists, then rolls initiative in the documented draw order (cats
  * rank 1→4, then enemies rank 1→5; a `doubleTurn` boss draws two independent
  * entries) and freezes the queue for the round.
+ *
+ * It then PUBLISHES the round's declared intents (enemy-intel.md §2): one AI
+ * selection per living enemy, in queue order, which `resolveAction` is bound
+ * to honour. Same seeded stream, only earlier — see combat.md §3.2.
  */
 import type {
   BattleEvent,
@@ -25,6 +29,7 @@ import {
 } from "./state.js";
 import { clearStatuses, roundEndPhase } from "./status.js";
 import { bossDataOf } from "./boss.js";
+import { declareIntents } from "./intent.js";
 import {
   consultBattleStart,
   reclonePowers,
@@ -92,6 +97,12 @@ export function startRound(
   if (s.round === 1 && consultBattleStart(s, events, rng)) {
     processDeathsAndOutcome(s, events);
   }
+  // Declared intents (enemy-intel.md §2, combat.md §3.2 row 1b): LAST, so
+  // every declaration is made against the freshest state — after the queue is
+  // frozen, after the round-1 onBattleStart consults, and after the death
+  // sweep those consults can trigger. The AI's tie-break draws simply move
+  // here from the enemies' own slots; a round with no ties draws nothing.
+  events.push(...declareIntents(s, rng));
   return { state: s, events };
 }
 

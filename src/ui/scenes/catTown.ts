@@ -24,7 +24,7 @@
  * procedural cat recipe for the clowder.
  */
 import { Container, Graphics, Sprite, Text } from "pixi.js";
-import type { ClassId } from "../../core/types.js";
+import type { ClassId, EnemyId } from "../../core/types.js";
 import type {
   PlaceDef,
   Payout,
@@ -46,10 +46,13 @@ import {
   unlockCatalog,
   unlocksAt,
   unlockState,
+  knownIntel,
+  KILLS_TO_COMPLETE,
   type UnlockState,
 } from "../../core/meta/index.js";
 import { saveMeta } from "../../core/run/save.js";
 import { CLASSES } from "../../content/classes.js";
+import { ENEMIES } from "../../content/enemies.js";
 import { PAL } from "../palette.js";
 import { DESIGN_H, DESIGN_W, RADIUS, SPACE } from "../layout.js";
 import { TYPE } from "../textStyles.js";
@@ -57,6 +60,7 @@ import {
   avatar,
   bar,
   button,
+  enemyAvatar,
   heading,
   label,
   makeSpriteIcon,
@@ -65,6 +69,7 @@ import {
   sceneBackdrop,
   vignette,
 } from "../widgets.js";
+import { makeIntelBlock, makeLevelChip, makeTierPill } from "../draw/intel.js";
 import { drawCat } from "../draw/cats.js";
 import { catTexture } from "../sprites.js";
 import { tween } from "../tween.js";
@@ -118,6 +123,17 @@ const CAT_H = 118;
 
 const BAR_Y = 648;
 const BAR_H = 52;
+
+/* ---- the Bestiary (enemy-intel.md §4) --------------------------------- */
+/** Modal card, sized like the place panel's big brother. */
+const BEST_W = 940;
+const BEST_H = 620;
+/** Grid of species tiles: 5 across × 3 down holds the whole roster. */
+const TILE_W = 168;
+const TILE_H = 142;
+const TILE_COLS = 5;
+const TILE_GAP = SPACE.md;
+const TILE_TOP = 82;
 
 /** The place panel (a modal over the town) — height follows its rows. */
 const PLACE_W = 720;
@@ -182,6 +198,23 @@ interface TownCat {
   phase: number;
 }
 
+/**
+ * Every species the Bestiary tracks, in the order you meet them: tier first,
+ * then bosses last inside a tier, then alphabetically — so the page reads as
+ * a descent rather than a hash-map dump.
+ */
+function bestiaryRoster(): EnemyId[] {
+  return Object.values(ENEMIES)
+    .sort((a, b) => {
+      if (a.tier !== b.tier) return a.tier - b.tier;
+      const ab = a.boss ? 1 : 0;
+      const bb = b.boss ? 1 : 0;
+      if (ab !== bb) return ab - bb;
+      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
+    })
+    .map((d) => d.id);
+}
+
 export class CatTownScene implements Scene {
   private view: Container | null = null;
   private ctx: GameCtx | null = null;
@@ -206,6 +239,9 @@ export class CatTownScene implements Scene {
   private townBarText: Text | null = null;
   private placeBox: Container | null = null;
   private openPlace: string | null = null;
+  /** The Bestiary modal, and which species it has drilled into. */
+  private bestiaryBox: Container | null = null;
+  private bestiaryEntry: EnemyId | null = null;
   private t = 0;
 
   mount(root: Container, ctx: GameCtx, params?: unknown): void {
@@ -268,6 +304,22 @@ export class CatTownScene implements Scene {
     toTitle.view.position.set(DESIGN_W - 40 - 320 - SPACE.lg - 150, BAR_Y);
     view.addChild(toTitle.view);
 
+    // The Bestiary is knowledge, not a purchase, so it sits on the action bar
+    // rather than becoming a seventh PLACE (places sell unlocks; this one
+    // sells nothing). Same button, same hotkey chip, same modal idiom.
+    const bestiary = button(
+      "The Bestiary",
+      190,
+      BAR_H,
+      () => this.showBestiary(null),
+      { hotkey: "B" },
+    );
+    bestiary.view.position.set(
+      DESIGN_W - 40 - 320 - SPACE.lg - 150 - SPACE.lg - 190,
+      BAR_Y,
+    );
+    view.addChild(bestiary.view);
+
     this.refreshAll();
   }
 
@@ -285,6 +337,18 @@ export class CatTownScene implements Scene {
   }
 
   onKey(key: string): boolean {
+    if (this.bestiaryBox) {
+      if (key === "esc" || key === "b") {
+        if (this.bestiaryEntry !== null) this.showBestiary(null);
+        else this.closeBestiary();
+        return true;
+      }
+      return true; // modal, like the place panel
+    }
+    if (key === "b") {
+      this.showBestiary(null);
+      return true;
+    }
     if (this.placeBox) {
       if (key === "esc" || key === "x") {
         this.closePlace();
@@ -324,6 +388,8 @@ export class CatTownScene implements Scene {
     this.townBarText = null;
     this.placeBox = null;
     this.openPlace = null;
+    this.bestiaryBox = null;
+    this.bestiaryEntry = null;
     this.view?.destroy({ children: true });
     this.view = null;
   }
@@ -836,6 +902,221 @@ export class CatTownScene implements Scene {
     this.placeBox?.destroy({ children: true });
     this.placeBox = null;
     this.openPlace = null;
+  }
+
+  /* ---- THE BESTIARY (enemy-intel.md §4) --------------------------------- */
+
+  /**
+   * Knowledge as a collection. Cat Town hosts it because that is where the
+   * meta profile lives: entries fill in as you fight, they persist across
+   * runs, and a completed one is a real (non-numeric) power increase — you
+   * start the next descent already reading the early roster's telegraphs.
+   *
+   * Darkest Dungeon's rule again: an entry you have not earned is a
+   * SILHOUETTE with `???` in every field, never a hidden row — so the page
+   * always shows you how much there is left to learn.
+   */
+  private showBestiary(entry: EnemyId | null = null): void {
+    const view = this.view;
+    const ctx = this.ctx;
+    if (!view || !ctx) return;
+    this.bestiaryBox?.destroy({ children: true });
+    this.bestiaryEntry = entry;
+
+    const box = new Container();
+    const back = scrim(DESIGN_W, DESIGN_H, 0.72);
+    back.eventMode = "static";
+    back.on("pointertap", () => this.closeBestiary());
+    box.addChild(back);
+
+    const card = panel(BEST_W, BEST_H, { variant: "raised", accent: PAL.gold });
+    card.position.set((DESIGN_W - BEST_W) / 2, (DESIGN_H - BEST_H) / 2);
+    box.addChild(card);
+
+    const ids = bestiaryRoster();
+    const done = ids.filter((id) => knownIntel(ctx.meta, id).complete).length;
+    const met = ids.filter((id) => knownIntel(ctx.meta, id).met > 0).length;
+
+    const title = heading("THE BESTIARY", 2, { fill: PAL.gold });
+    title.position.set(SPACE.lg, SPACE.md);
+    const blurb = label(
+      "Everything the alley has taught you. What you have not seen yet stays a shape and a question mark.",
+      { dim: true, size: TYPE.small, wrap: BEST_W - SPACE.lg * 2 - 220 },
+    );
+    blurb.position.set(SPACE.lg, SPACE.md + 32);
+    card.addChild(title, blurb);
+
+    const tally = label(`${met}/${ids.length} met · ${done} complete`, {
+      mono: true,
+      fill: done === ids.length ? PAL.heal : PAL.gold,
+    });
+    tally.anchor.set(1, 0);
+    tally.position.set(BEST_W - SPACE.lg, SPACE.md + 6);
+    card.addChild(tally);
+
+    if (entry === null) this.buildBestiaryGrid(card, ids);
+    else this.buildBestiaryEntry(card, entry);
+
+    const close = button(
+      entry === null ? "Back to town" : "All entries",
+      200,
+      44,
+      () => (entry === null ? this.closeBestiary() : this.showBestiary(null)),
+      { hotkey: "Esc" },
+    );
+    close.view.position.set(BEST_W - 200 - SPACE.lg, BEST_H - 44 - SPACE.md);
+    card.addChild(close.view);
+
+    view.addChild(box);
+    this.bestiaryBox = box;
+  }
+
+  /** The grid of species tiles — the collection you are filling in. */
+  private buildBestiaryGrid(card: Container, ids: readonly EnemyId[]): void {
+    const ctx = this.ctx!;
+    const gridX =
+      (BEST_W - (TILE_COLS * TILE_W + (TILE_COLS - 1) * TILE_GAP)) / 2;
+    ids.forEach((id, i) => {
+      const intel = knownIntel(ctx.meta, id);
+      const def = ENEMIES[id];
+      const col = i % TILE_COLS;
+      const row = Math.floor(i / TILE_COLS);
+      const tile = new Container();
+      tile.position.set(
+        gridX + col * (TILE_W + TILE_GAP),
+        TILE_TOP + row * (TILE_H + TILE_GAP),
+      );
+      const seen = intel.met > 0;
+      tile.addChild(
+        panel(TILE_W, TILE_H, {
+          variant: "solid",
+          radius: RADIUS.button,
+          ...(intel.complete ? { accent: PAL.gold } : {}),
+        }),
+      );
+
+      const face = enemyAvatar(id, 58, { shape: "rounded" });
+      face.position.set(TILE_W / 2, 42);
+      if (!seen) {
+        // a SILHOUETTE, not a blank: you can see there is something there
+        face.tint = PAL.void;
+        face.alpha = 0.75;
+      }
+      tile.addChild(face);
+      if (!seen) {
+        const q = label("?", { size: 28, bold: true, center: true, dim: true });
+        q.position.set(TILE_W / 2, 42);
+        tile.addChild(q);
+      }
+
+      const name = label(seen ? def.name : "???", {
+        size: TYPE.small,
+        bold: true,
+        center: true,
+        fill: seen ? PAL.text : PAL.textDim,
+      });
+      name.position.set(TILE_W / 2, 80);
+      tile.addChild(name);
+
+      const lvl = makeLevelChip(intel.level.value);
+      lvl.position.set((TILE_W - Math.ceil(lvl.width)) / 2, 96);
+      tile.addChild(lvl);
+
+      const foot = label(
+        intel.complete
+          ? "✓ COMPLETE"
+          : `${intel.kills}/${KILLS_TO_COMPLETE} felled`,
+        {
+          size: TYPE.tiny,
+          mono: true,
+          center: true,
+          fill: intel.complete ? PAL.heal : PAL.textDim,
+        },
+      );
+      foot.position.set(TILE_W / 2, TILE_H - 18);
+      tile.addChild(foot);
+
+      tile.eventMode = "static";
+      tile.cursor = "pointer";
+      tile.hitArea = {
+        contains: (x, y) => x >= 0 && x <= TILE_W && y >= 0 && y <= TILE_H,
+      };
+      tile.on("pointertap", () => this.showBestiary(id));
+      tile.on("pointerover", () =>
+        tween(tile.scale, { x: 1.04, y: 1.04 }, 110),
+      );
+      tile.on("pointerout", () => tween(tile.scale, { x: 1, y: 1 }, 110));
+      tile.pivot.set(TILE_W / 2, TILE_H / 2);
+      tile.position.x += TILE_W / 2;
+      tile.position.y += TILE_H / 2;
+      card.addChild(tile);
+    });
+  }
+
+  /** One species, in full — the same block the battle inspect card uses. */
+  private buildBestiaryEntry(card: Container, id: EnemyId): void {
+    const ctx = this.ctx!;
+    const intel = knownIntel(ctx.meta, id);
+    const def = ENEMIES[id];
+    const seen = intel.met > 0;
+    const left = SPACE.lg;
+    const top = 96;
+
+    const face = enemyAvatar(id, 148, { shape: "rounded" });
+    face.position.set(left + 74, top + 74);
+    if (!seen) {
+      face.tint = PAL.void;
+      face.alpha = 0.75;
+    }
+    card.addChild(face);
+
+    const statsX = left;
+    let sy = top + 160;
+    const stat = (k: string, v: string): void => {
+      const t = label(`${k}  ${v}`, { size: TYPE.tiny, mono: true, dim: true });
+      t.position.set(statsX, sy);
+      card.addChild(t);
+      sy += 18;
+    };
+    stat("MET   ", String(intel.met));
+    stat(
+      "FELLED",
+      intel.complete
+        ? `${intel.kills} ✓`
+        : `${intel.kills}/${KILLS_TO_COMPLETE}`,
+    );
+    stat("HP    ", seen ? String(def.stats.hp) : "???");
+    stat("ATK   ", seen ? String(def.stats.atk) : "???");
+    stat("DEF   ", seen ? String(def.stats.def) : "???");
+    stat("SPD   ", seen ? String(def.stats.spd) : "???");
+    stat("XP    ", seen ? String(def.xp) : "???");
+    stat("ROW   ", seen ? def.row : "???");
+
+    const colX = left + 180;
+    const colW = BEST_W - colX - SPACE.lg;
+
+    const name = heading(intel.name.value ?? "???", 2, {
+      fill: seen ? PAL.text : PAL.textDim,
+    });
+    name.position.set(colX, top - 8);
+    card.addChild(name);
+
+    const lvl = makeLevelChip(intel.level.value);
+    lvl.position.set(colX, top + 26);
+    card.addChild(lvl);
+    const tier = makeTierPill(intel.tier.value);
+    tier.position.set(colX + Math.ceil(lvl.width) + 8, top + 26);
+    card.addChild(tier);
+
+    const block = makeIntelBlock(intel, colW);
+    block.view.position.set(colX, top + 56);
+    card.addChild(block.view);
+  }
+
+  private closeBestiary(): void {
+    this.bestiaryBox?.destroy({ children: true });
+    this.bestiaryBox = null;
+    this.bestiaryEntry = null;
   }
 
   /* ---- leaving --------------------------------------------------------- */

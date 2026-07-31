@@ -15,6 +15,7 @@ import type {
   BattleState,
   ClassId,
   Combatant,
+  DeclaredIntent,
   EnemyId,
   MewHookId,
   Skill,
@@ -34,9 +35,19 @@ import {
 } from "../../services/gm.js";
 import {
   ensureDmSession,
+  isDmAvailable,
   markDmUnreachable,
+  planInterjection,
+  presenceOf,
   probeDm,
   requestCombatVerdict,
+  requestInterjection,
+  withBeatSpent,
+  withInterjectionRecorded,
+  withQueuedInterjection,
+  type DmBeat,
+  type Interjection,
+  type PresenceRun,
 } from "../../services/dm.js";
 import {
   canAffordImprovisation,
@@ -63,6 +74,7 @@ import {
   type ImproviseAction,
 } from "../../core/combat/resolve.js";
 import { takeEnemyTurn } from "../../core/combat/ai.js";
+import { intentFor } from "../../core/combat/intent.js";
 import {
   byId,
   hypotheticalDistance,
@@ -71,9 +83,19 @@ import {
   lookupSkill,
   nextActor,
   previewDamage,
+  shoveDamageMult,
   wouldMoveDistance,
   type LegalActions,
 } from "../../core/combat/state.js";
+import {
+  intentsVisibleFor,
+  knownIntel,
+  maskIntent,
+  recordBattle,
+  KILLS_TO_COMPLETE,
+  type EnemyKnowledge,
+} from "../../core/meta/index.js";
+import { saveMeta } from "../../core/run/save.js";
 import { applyBattleResult } from "../../core/run/runState.js";
 import {
   effectiveStats,
@@ -118,6 +140,7 @@ import {
 import { catTexture, enemyTexture } from "../sprites.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 import type { EventWinContext, LootOverlayParams } from "../overlays/loot.js";
+import { makeIntentBadge, type IntentBadge } from "../draw/intel.js";
 import {
   drawGhostArrow,
   makeActivePanel,
@@ -125,7 +148,10 @@ import {
   makeCatPileBanner,
   makeChargeMark,
   makeContactShadow,
+  makeDamagePreview,
+  makeFieldZones,
   makeFleeButton,
+  makeInspectPanel,
   makeLogStrip,
   makeNameplate,
   makePoisePips,
@@ -138,12 +164,16 @@ import {
   makeSkillBar,
   makeStatusPreviewChip,
   makeTargetRing,
+  makeThreatLayer,
   makeUnitGlow,
   type BattleStage,
   type ChargeMark,
+  type FieldZones,
   type PresenceAura,
   type RoundChip,
   type SlotSpec,
+  type ThreatLayer,
+  type ThreatLink,
 } from "./battleWidgets.js";
 
 /* ---------------------------------------------------------------------- */
@@ -189,6 +219,8 @@ interface UnitView {
   statusRow: Container;
   statuses: Map<StatusId, { count: number; value: number }>;
   stars: Container;
+  /** the over-head telegraph (enemies only) — enemy-intel.md §2 */
+  intent: IntentBadge | null;
   poise?: { set(n: number): void; max: number };
   charge: ChargeMark | null;
   flood: Graphics | null;
@@ -202,22 +234,64 @@ interface UnitView {
 }
 
 /**
- * Where rank 1 of each side stands, recomputed per battle from the actual
- * headcounts and the biggest enemy on the field so the whole formation stays
- * centred on x=640 at 2v1 and at 4v5 alike. Module-scope because `slotX` is
- * called from a dozen animation callbacks; `layOutFormation` is the only
- * writer and runs once, at mount.
+ * ── STAGE COMPOSITION ────────────────────────────────────────────────────
+ * Where rank 1 of each side stands, plus the pitch between ranks and the
+ * no-man's-land between the two formations — all recomputed per battle from
+ * the actual headcounts and the biggest enemy on the field.
+ *
+ * The previous pass scaled characters up (draw/spriteFrame.ts), which was
+ * right, but it left every fight huddled in the middle of the frame with dead
+ * margins on both sides and NO visible line between your cats and theirs: the
+ * whole board read as one crowd. Three rules fix that, and they hold at 2v1
+ * and at 4v5 alike:
+ *
+ *  1. **Each side owns a share of the stage** proportional to `(n + 1)`, so a
+ *     2-cat party is not asked to fill the same width as a 5-enemy pack and
+ *     the outer margins come out even on both sides.
+ *  2. **The two shares are separated by a real gap** — `divide.half` on each
+ *     side of `divide.x`, widened for a big enemy so a boss never shares
+ *     pixels with the front cat. `battleWidgets.makeFieldZones` paints that
+ *     band as unlit ground with a dashed centre line.
+ *  3. **Formations lean toward the line** (`LEAN`) rather than sitting dead
+ *     centre in their share, so slack goes to the OUTSIDE of the frame where
+ *     it costs nothing and the fight still reads as a confrontation.
+ *
+ * Module-scope because `slotX` is called from a dozen animation callbacks;
+ * `layOutFormation` is the only writer and runs once, at mount.
  */
 const front = { cat: 556, enemy: 722 };
-
-const slotX = (side: "cat" | "enemy", rank: number): number => {
-  const f = R.combat.formation;
-  return side === "cat"
-    ? front.cat - (rank - 1) * f.catPitch
-    : front.enemy + (rank - 1) * f.enemyPitch;
+const pitch: { cat: number; enemy: number } = {
+  cat: R.combat.formation.catPitch,
+  enemy: R.combat.formation.enemyPitch,
 };
+/** Centre of the no-man's-land, and half its width. */
+const divide = { x: DESIGN_W / 2, half: 100 };
+
+/** The formation never crosses this outer margin. */
+const STAGE_PAD = 86;
+/** Neutral band: a floor, plus room bought by the biggest enemy present. */
+const GAP_BASE = 70;
+const GAP_PER_HEIGHT = 0.16;
+/** Rank pitch bounds — under the min ranks fuse, over the max they float. */
+const PITCH = { catMin: 104, catMax: 180, foeMin: 96, foeMax: 168 };
+/** 0 = centre the formation in its share, 1 = jam it against the centre line. */
+const LEAN = 0.72;
+
+const slotX = (side: "cat" | "enemy", rank: number): number =>
+  side === "cat"
+    ? front.cat - (rank - 1) * pitch.cat
+    : front.enemy + (rank - 1) * pitch.enemy;
+
+const clampN = (n: number, lo: number, hi: number): number =>
+  n < lo ? lo : n > hi ? hi : n;
 
 const HEAD_Y = -104; // status rows / floaters spawn height above the feet
+/**
+ * World y the over-head stack may not rise above — clear of the turn-order
+ * strip (R.combat.ribbon runs y 8-68). A boss is 306px tall and used to wear
+ * its Poise pips level with the ribbon.
+ */
+const OVERHEAD_MIN_Y = 96;
 /** The stage's warm key colour — the bounce light behind every unit. */
 const KEY_LIGHT = mix(PAL.gold, PAL.text, 0.55);
 const TILT = (8 * Math.PI) / 180;
@@ -247,24 +321,48 @@ const spriteHeightFor = (c: Combatant): number => {
 };
 
 /**
- * Centre the two formations on the stage for THIS battle's headcounts. Fixed
- * rank tables were tuned for 4 cats vs 5 enemies; a 2-cat opening or a lone
- * boss left half the stage empty and pushed the fight off-centre.
+ * Lay the board out for THIS battle's headcounts (see the STAGE COMPOSITION
+ * note above). Writes `front`, `pitch` and `divide`; everything else on the
+ * stage — the ground zones, the centre line, the rank plates — is derived
+ * from those four numbers.
  */
 const layOutFormation = (combatants: readonly Combatant[]): void => {
-  const f = R.combat.formation;
   const cats = combatants.filter((c) => c.side === "cat");
   const foes = combatants.filter((c) => c.side === "enemy");
   const nc = Math.max(1, cats.length);
   const ne = Math.max(1, foes.length);
-  const biggest = foes.reduce((m, c) => Math.max(m, spriteHeightFor(c)), 0);
-  // a boss needs a wider no-man's-land than a rat does
-  const gap = f.gapBase + (biggest || UNIT_HEIGHT.medium) * f.gapPerEnemyHeight;
-  const wCats = (nc - 1) * f.catPitch;
-  const wFoes = (ne - 1) * f.enemyPitch;
-  const left = DESIGN_W / 2 - (wCats + gap + wFoes) / 2;
-  front.cat = left + wCats;
-  front.enemy = front.cat + gap;
+  const biggest =
+    foes.reduce((m, c) => Math.max(m, spriteHeightFor(c)), 0) ||
+    UNIT_HEIGHT.medium;
+
+  divide.half = GAP_BASE + biggest * GAP_PER_HEIGHT;
+  // width left over once both margins and the neutral band are taken out
+  const usable = DESIGN_W - STAGE_PAD * 2 - divide.half * 2;
+  // `n + 1` rather than `n`: a lone boss still gets a presentable slice, and
+  // a 2-cat party is not stretched across the same width as a 5-enemy pack
+  const catShare = (usable * (nc + 1)) / (nc + ne + 2);
+  const foeShare = usable - catShare;
+
+  pitch.cat = clampN(catShare / nc, PITCH.catMin, PITCH.catMax);
+  pitch.enemy = clampN(foeShare / ne, PITCH.foeMin, PITCH.foeMax);
+  const spanC = (nc - 1) * pitch.cat;
+  const spanF = (ne - 1) * pitch.enemy;
+
+  divide.x = STAGE_PAD + catShare + divide.half;
+  front.cat = divide.x - divide.half - (catShare - spanC) * (1 - LEAN);
+  front.enemy = divide.x + divide.half + (foeShare - spanF) * (1 - LEAN);
+};
+
+/** World-x extents of a side's occupied ranks — what the zone wash hugs. */
+const sideExtent = (
+  combatants: readonly Combatant[],
+  side: "cat" | "enemy",
+): [number, number] => {
+  const ranks = combatants.filter((c) => c.side === side).map((c) => c.rank);
+  const maxRank = ranks.length > 0 ? Math.max(...ranks) : 1;
+  const a = slotX(side, 1);
+  const b = slotX(side, maxRank);
+  return a < b ? [a, b] : [b, a];
 };
 
 /* ---------------------------------------------------------------------- */
@@ -302,11 +400,20 @@ export function createBattleScene(): Scene {
   const activePanel = makeActivePanel();
   const banner = makeCatPileBanner();
   let stage: BattleStage | null = null;
+  let zones: FieldZones | null = null;
+  let threat: ThreatLayer | null = null;
+  const inspect = makeInspectPanel();
   let roundChip: RoundChip | null = null;
   let logText: BitmapText | null = null;
   let activeSlot: Graphics | null = null;
   let scrollPanel: Container | null = null;
   let scrollOffset = 0;
+
+  // intel (enemy-intel.md): species that have moved in THIS battle — rule §5's
+  // "a first-timer shows ? until it acts once".
+  const actedSpecies = new Set<EnemyId>();
+  /** last rendered telegraph signature, so the board only rebuilds on change */
+  let intentSig = "";
 
   // units
   const units = new Map<string, UnitView>();
@@ -340,6 +447,8 @@ export function createBattleScene(): Scene {
   let improvising = false;
   let elapsed = 0;
   let finished = false;
+  /** §4b: was the last damage event a crit? (the fight-ending-crit beat) */
+  let lastHitWasCrit = false;
 
   const logLines: string[] = [];
 
@@ -571,9 +680,32 @@ export function createBattleScene(): Scene {
       root.addChild(pips.view);
     }
 
+    /* -- the over-head stack --------------------------------------------
+     * Built top-down and CLAMPED under the turn-order strip: a 306px boss
+     * used to put its own chips level with the ribbon. Enemies carry the
+     * intent badge closest to the crown (Slay the Spire's placement — the
+     * telegraph is the thing you look at), status chips above it, and the
+     * hover nameplate above those.
+     */
+    const badgeY = headY - 28;
+    let statusY = c.side === "enemy" ? badgeY - 30 : headY - 20;
+    const lift = Math.max(
+      0,
+      OVERHEAD_MIN_Y - (R.combat.groundY + statusY - 10),
+    );
+    statusY += lift;
+    const plateY = statusY - 26;
+
+    let intent: IntentBadge | null = null;
+    if (c.side === "enemy") {
+      intent = makeIntentBadge(1);
+      intent.view.position.set(0, badgeY + lift);
+      root.addChild(intent.view);
+    }
+
     // status chips centered above the head
     const statusRow = new Container();
-    statusRow.position.set(0, headY - 20);
+    statusRow.position.set(0, statusY);
     root.addChild(statusRow);
 
     // Off-Balance orbit stars
@@ -607,6 +739,7 @@ export function createBattleScene(): Scene {
       statusRow,
       statuses: new Map(),
       stars,
+      intent,
       charge: null,
       flood: null,
       nameplate: null,
@@ -617,21 +750,26 @@ export function createBattleScene(): Scene {
       headY,
     };
 
-    // boss: always-visible Poise pips above the status row
+    // Boss Poise: a SECOND RESOURCE, so it now reads under the HP bar next to
+    // it instead of competing for the crowded airspace over the boss's head.
     if (c.poiseMax !== undefined) {
       const pips = makePoisePips(c.poiseMax);
-      pips.view.position.set(0, headY - 44);
+      pips.view.position.set(0, 30);
       pips.view.pivot.x = (c.poiseMax * 18) / 2 - 6;
       pips.set(c.poise ?? c.poiseMax);
       root.addChild(pips.view);
       u.poise = { set: pips.set, max: c.poiseMax };
     }
 
-    // hover nameplate + tap interactions
+    // hover nameplate + tap interactions. The hit box tracks the ART now that
+    // sizes are graded: a 306px boss with a 108px-tall hit box was unclickable
+    // above its knees, and phone-scale taps need the whole silhouette
+    // (docs/design/mobile.md §3).
     root.eventMode = "static";
+    const halfW = Math.max(46, h * 0.34);
     root.hitArea = {
       contains: (px: number, py: number) =>
-        px >= -44 && px <= 44 && py >= -108 && py <= 16,
+        px >= -halfW && px <= halfW && py >= -(h + 18) && py <= 20,
     };
     root.cursor = "pointer";
     root.on("pointerover", () => {
@@ -639,7 +777,7 @@ export function createBattleScene(): Scene {
       const cc = bs.combatants.find((x) => x.id === u.id);
       if (!cc || u.nameplate) return;
       u.nameplate = makeNameplate(cc);
-      u.nameplate.position.set(0, u.headY - 42 - (u.poise ? 24 : 0));
+      u.nameplate.position.set(0, plateY);
       root.addChild(u.nameplate);
       if (targeting && targeting.targetIds.includes(u.id)) {
         targeting.idx = targeting.targetIds.indexOf(u.id);
@@ -655,6 +793,136 @@ export function createBattleScene(): Scene {
   };
 
   const unitOf = (id: string): UnitView | undefined => units.get(id);
+
+  /* ---------------- intel: telegraphs, threat, inspection ---------------- */
+
+  /**
+   * What the player is ALLOWED to see about one enemy's declaration
+   * (enemy-intel.md §2 "learning is the reward"). The engine is never masked —
+   * `maskIntent` only trims the view, so an unmet species reads `?` while the
+   * AI still does exactly what it committed to.
+   */
+  const visibleIntent = (c: Combatant): DeclaredIntent | null => {
+    if (!bs || !ctx || c.side !== "enemy" || !c.speciesId) return null;
+    const raw = intentFor(bs, c.id);
+    if (!raw) return null;
+    return maskIntent(
+      raw,
+      intentsVisibleFor(ctx.meta, c.speciesId, actedSpecies.has(c.speciesId)),
+    );
+  };
+
+  /** Every living enemy's masked telegraph, keyed by combatant id. */
+  const currentIntents = (): Map<string, DeclaredIntent | null> => {
+    const out = new Map<string, DeclaredIntent | null>();
+    if (!bs) return out;
+    for (const c of bs.combatants) {
+      if (c.side !== "enemy" || c.ko || c.hp <= 0) continue;
+      out.set(c.id, visibleIntent(c));
+    }
+    return out;
+  };
+
+  /**
+   * Repaint every telegraph surface — over-head badges, the turn-order strip
+   * and the threat links — from the engine's own declarations. Cheap and
+   * idempotent: it diffs a signature first, so calling it every frame costs a
+   * string compare per enemy.
+   */
+  const syncIntents = (): void => {
+    if (!bs) return;
+    const intents = currentIntents();
+    // the round is part of the signature so a fresh queue always repaints,
+    // even in the rare case where every enemy re-declares an identical action
+    let sig = `r${bs.round}/${bs.queueIndex}|`;
+    for (const [id, i] of intents) {
+      sig += `${id}:${i ? `${i.kind}/${i.value}/${i.targetId ?? ""}/${i.status ?? ""}` : "-"}|`;
+    }
+    if (sig === intentSig) return;
+    intentSig = sig;
+
+    for (const u of units.values()) {
+      if (!u.intent) continue;
+      u.intent.set(u.dead ? null : (intents.get(u.id) ?? null));
+    }
+    ribbon.refresh(bs, intents);
+
+    /* -- threat: connect each declaration to the cat it lands on --------- */
+    const links: ThreatLink[] = [];
+    for (const [id, intent] of intents) {
+      if (!intent) continue;
+      if (
+        intent.kind !== "strike" &&
+        intent.kind !== "shove" &&
+        intent.kind !== "status"
+      ) {
+        continue;
+      }
+      const from = unitOf(id);
+      if (!from || from.dead) continue;
+      const targets: UnitView[] = [];
+      if (intent.ranks) {
+        // a row skill sweeps ranks, not a combatant — highlight all of them
+        for (const u of units.values()) {
+          if (u.side === "cat" && !u.dead && intent.ranks.includes(u.rank)) {
+            targets.push(u);
+          }
+        }
+      } else if (intent.targetId) {
+        const t = unitOf(intent.targetId);
+        if (t && t.side === "cat" && !t.dead) targets.push(t);
+      }
+      for (const t of targets) {
+        links.push({
+          fromX: from.root.x,
+          fromY: from.root.y + from.headY - 14,
+          toX: t.root.x,
+          toY: t.root.y,
+          // above the cat's own status-chip row (which sits at headY − 20),
+          // so a threatened, Scratched cat does not wear two overlapping chips
+          headY: t.root.y + t.headY - 26,
+          color:
+            intent.kind === "shove"
+              ? PAL.offBal
+              : intent.kind === "status"
+                ? PAL.stFrazzled
+                : PAL.danger,
+          incoming: intent.value,
+          kind: intent.kind,
+          ...(intent.status ? { status: intent.status } : {}),
+        });
+      }
+    }
+    threat?.set(links);
+    // the open inspect card must not go stale behind a new declaration
+    if (inspect.openId !== null) showInspect(inspect.openId);
+  };
+
+  /** Open (or re-render) the inspect card for an enemy — enemy-intel.md §3. */
+  const showInspect = (id: string): void => {
+    if (!bs || !ctx?.run) return;
+    const c = bs.combatants.find((x) => x.id === id);
+    if (!c || c.side !== "enemy" || !c.speciesId) return;
+    const intel = knownIntel(ctx.meta, c.speciesId, ctx.run.floorNum);
+    const intent = visibleIntent(c);
+    const targetName =
+      intent?.targetId !== undefined ? nameOf(intent.targetId) : null;
+    inspect.show({
+      combatant: c,
+      intel,
+      stand: standNameOf(c.id),
+      intent,
+      intentTargetName: targetName,
+      targetable:
+        targeting !== null &&
+        targeting.targetIds.includes(id) &&
+        phase === "targeting",
+    });
+  };
+
+  const closeInspect = (): void => {
+    inspect.show(null);
+  };
 
   /* ---------------- battlefield build ---------------- */
 
@@ -672,6 +940,13 @@ export function createBattleScene(): Scene {
     worldC.addChild(stage.ground);
 
     layOutFormation(bs.combatants);
+
+    // YOUR HALF / THEIR HALF — the ground washes and the no-man's-land line.
+    // Under everything else on the world layer so it never fights a sprite.
+    const [catA, catB] = sideExtent(bs.combatants, "cat");
+    const [foeA, foeB] = sideExtent(bs.combatants, "enemy");
+    zones = makeFieldZones(catA, catB, foeA, foeB);
+    worldC.addChild(zones.view);
 
     // rank marks: a recessed floor plate + numeral per slot
     const slots = new Graphics();
@@ -714,6 +989,12 @@ export function createBattleScene(): Scene {
       const u = makeUnit(c);
       units.set(c.id, u);
       worldC.addChild(u.root);
+    }
+
+    // threat links ride above the units but below the HUD
+    if (fxC) {
+      threat = makeThreatLayer();
+      fxC.addChild(threat.view);
     }
   };
 
@@ -766,6 +1047,11 @@ export function createBattleScene(): Scene {
     activePanel.set(null);
     hudC.addChild(activePanel.view);
 
+    // the enemy inspect card (enemy-intel.md §3) — modal layer so it is never
+    // painted over by a floater, but it lives in the LEFT gutter so the enemy
+    // you tapped stays visible and tappable underneath
+    modalC.addChild(inspect.view);
+
     // Cat Pile banner lives on the modal layer
     modalC.addChild(banner.view);
 
@@ -785,11 +1071,16 @@ export function createBattleScene(): Scene {
         // instead: the vault ceiling above the units is empty, so the typing
         // beat now leaves the whole field visible.
         rect: [(DESIGN_W - 760) / 2, 96, 760, 212],
-        title: "WHAT DO YOU DO?",
-        placeholder: "Pixel throws the lantern at the oil slick…",
+        // The context, not the copy (run-map-and-dm.md §4b): the eyebrow,
+        // placeholder and guidance are the shared component's `fight` mode.
+        mode: "fight",
         onSubmit: (text) => submitImprovisation(text),
         onCancel: () => returnTurn(),
         onDismiss: () => returnTurn(),
+        // Answering an interjection is an ordinary improvised turn: the card
+        // reopens its own field and `submitImprovisation` takes it from there.
+        // The callback's presence is what puts the Answer button on the card.
+        onAnswer: () => clearTargeting(),
       });
       modalC.addChild(tabletop.view);
     });
@@ -853,6 +1144,9 @@ export function createBattleScene(): Scene {
     if (!bs || !rng || !ctx?.run) return;
     clearTargeting();
     closeFlyout();
+    // The player acted instead of answering: the DM's unprompted line has had
+    // its moment and must not hang over the animation.
+    if (tabletop?.isInterjecting()) tabletop.close();
     phase = "anim";
     skillBar.set([null, null, null, null, null, null]);
     activePanel.set(null);
@@ -1057,6 +1351,93 @@ export function createBattleScene(): Scene {
     tabletop.open();
   };
 
+  /* ------- presence: the DM interjects on its own (§4b) --------------- */
+
+  /**
+   * Is the board quiet enough to be interrupted? Only on the player's own
+   * turn, with nothing else on the card — an interjection must never land
+   * mid-animation, mid-targeting or over the Cat Pile banner.
+   */
+  const canShowInterjection = (): boolean =>
+    alive &&
+    !finished &&
+    phase === "input" &&
+    !improvising &&
+    tabletop !== null &&
+    !tabletop.isOpen();
+
+  /** Where the fight is, in a line. Short: this is a spike, not a briefing. */
+  const battleSituation = (): string => {
+    if (!bs) return "A fight is in progress.";
+    const side = (s: "cat" | "enemy"): string =>
+      bs!.combatants
+        .filter((c) => c.side === s && !c.ko)
+        .map((c) => `${c.name} ${c.hp}/${c.stats.hp}`)
+        .join(", ") || "nobody left standing";
+    return (
+      `Mid-fight, round ${bs.round}. Cats: ${side("cat")}. ` +
+      `Against them: ${side("enemy")}.`
+    );
+  };
+
+  /**
+   * In a fight the DM narrates and nothing more: an interjection's effect
+   * vocabulary is the OUT-OF-COMBAT one (`Effect`, not `EffectSpec`), and the
+   * only thing allowed to touch a battle's numbers is the encounter subagent's
+   * verdict going through `resolveAction`. So the twist is stripped here,
+   * honestly, and the reason is recorded.
+   */
+  const narrationOnly = (i: Interjection): Interjection => ({
+    ...i,
+    effects: [],
+    applied: false,
+    problems:
+      i.effects.length > 0
+        ? [...i.problems, "in-combat interjections are narration only"]
+        : i.problems,
+  });
+
+  /**
+   * One authored spike. NEVER blocking: the budget is spent synchronously so
+   * two spikes in one round cannot both slip through, the ask is fired and
+   * forgotten, and the line renders if and when it lands — or is queued for
+   * the run map, or is simply never seen. Offline, `planInterjection` refuses
+   * before a single request is made.
+   */
+  const fireBeat = (beat: DmBeat): void => {
+    if (!ctx?.run || !tabletop || finished) return;
+    const plan = planInterjection(presenceOf(ctx.run as PresenceRun), [beat], {
+      nowMs: Date.now(),
+      floor: ctx.run.floorNum,
+      available: isDmAvailable(),
+    });
+    if (!plan.beat) return;
+    ctx.run = withBeatSpent(ctx.run as PresenceRun, plan.beat, Date.now());
+    ctx.save();
+
+    void (async () => {
+      const res = await requestInterjection(ctx!.run as PresenceRun, {
+        beat,
+        situation: battleSituation(),
+      });
+      if (!res || !alive || !ctx?.run) return;
+      ctx.run = withDmSession(ctx.run as TabletopRun, res.session);
+      const flat = narrationOnly(res.interjection);
+      const shown = canShowInterjection();
+      ctx.run = withInterjectionRecorded(ctx.run as PresenceRun, {
+        ...flat,
+        floor: ctx.run.floorNum,
+        nodeId: ctx.run.currentNodeId,
+        delivered: shown,
+      });
+      // the board was busy; the run map delivers it when the party is out
+      if (!shown)
+        ctx.run = withQueuedInterjection(ctx.run as PresenceRun, flat);
+      ctx.save();
+      if (shown) tabletop?.interject(flat.narration, flat.invite);
+    })();
+  };
+
   const listUsableItems = (): { defId: string; count: number }[] => {
     if (!ctx?.run || !bs) return [];
     const counts = new Map<string, number>();
@@ -1239,11 +1620,28 @@ export function createBattleScene(): Scene {
       const target = byId(bs, tid);
       const sk = targeting?.skill;
       if (!sk || !targetFx) return;
-      // damage / heal preview chip
+      // DAMAGE PREVIEW (enemy-intel.md §5): expected number, the ±10% roll
+      // band around it, and the HP it would leave — so a shove combo can be
+      // planned instead of discovered. Every number comes from the engine's
+      // own `previewDamage`; the scene only formats it.
       if (sk.kind === "damage" && sk.power > 0) {
         const n = previewDamage(bs, sk.id, actorId, tid);
-        const chip = makePreviewChip(`≈${n}`, PAL.text);
-        chip.position.set(u.root.x, u.root.y + u.headY - 6);
+        const lo = Math.max(1, Math.round(n * 0.9));
+        const hi = Math.max(lo, Math.round(n * 1.1));
+        const chip = makeDamagePreview(n, lo, hi, {
+          hpLeft: Math.max(0, target.hp - n),
+          hpMax: target.stats.hp,
+          lethal: n >= target.hp,
+          ...(sk.moveTarget && shoveDamageMult(target, sk) !== 1
+            ? {
+                note:
+                  shoveDamageMult(target, sk) > 1
+                    ? "weak to shoves ×1.25"
+                    : "shrugs off shoves ×0.8",
+              }
+            : {}),
+        });
+        chip.position.set(u.root.x, u.root.y + u.headY - 26);
         targetFx.addChild(chip);
       } else if (sk.kind === "heal" && sk.power > 0) {
         // display-only estimate: same "power% of atk" reading as the tooltip
@@ -1316,7 +1714,35 @@ export function createBattleScene(): Scene {
     refreshTargeting();
   };
 
+  /**
+   * TAP TO INSPECT, TAP AGAIN TO TARGET (docs/design/mobile.md §2 — touch has
+   * no hover, so every hover-only affordance needs a two-tap equivalent).
+   *
+   * First tap on an enemy opens its inspect card and, while targeting, makes
+   * it the previewed target — you see the damage numbers and what you know
+   * about it BEFORE committing. The second tap on the same enemy commits.
+   * Away from targeting the second tap just closes the card.
+   */
   const onUnitTap = (u: UnitView): void => {
+    if (u.side === "enemy" && !u.dead) {
+      const already = inspect.openId === u.id;
+      if (phase === "targeting" && targeting?.targetIds.includes(u.id)) {
+        if (already) {
+          closeInspect();
+          targeting.idx = targeting.targetIds.indexOf(u.id);
+          confirmTargeting();
+          return;
+        }
+        targeting.idx = targeting.targetIds.indexOf(u.id);
+        refreshTargeting();
+        showInspect(u.id);
+        return;
+      }
+      if (already) closeInspect();
+      else showInspect(u.id);
+      return;
+    }
+    closeInspect();
     if (phase === "targeting" && targeting) {
       if (targeting.targetIds.includes(u.id)) {
         targeting.idx = targeting.targetIds.indexOf(u.id);
@@ -1376,8 +1802,24 @@ export function createBattleScene(): Scene {
         pushLog(`— round ${e.round} —`);
         return 280;
       }
+      /* -- intel plumbing: state changes, not beats -----------------------
+       * These three carry NO animation of their own — the badge, the strip
+       * and the threat links repaint from `syncIntents`. Returning 0 keeps
+       * them out of the pacing budget; the animator's `default: 80` would
+       * otherwise cost ~240 ms of dead air per round with three enemies.
+       */
+      case "intent":
+      case "intentBroken":
+      case "intel":
+        return 0;
       case "turnStart": {
         lastActorId = e.id;
+        // rule §5: an enemy the party has never met telegraphs `?` — until it
+        // acts once, at which point its whole species reads for this fight
+        if (bs) {
+          const c = bs.combatants.find((x) => x.id === e.id);
+          if (c?.side === "enemy" && c.speciesId) actedSpecies.add(c.speciesId);
+        }
         const u = unitOf(e.id);
         if (u && activeSlot) {
           activeSlot.visible = true;
@@ -1392,6 +1834,7 @@ export function createBattleScene(): Scene {
       }
       case "damage": {
         const u = unitOf(e.id);
+        lastHitWasCrit = e.crit;
         if (!u) return 100;
         // attack lunge (90ms out, 180ms back)
         const a = e.source !== "scratched" ? unitOf(lastActorId ?? "") : null;
@@ -1417,6 +1860,10 @@ export function createBattleScene(): Scene {
         }
         u.hpNow = Math.max(0, u.hpNow - e.amount);
         u.hpBar.set(u.hpNow, u.hpMax);
+        // §4b beat: a cat one hit from going down. Rate-limited upstream.
+        if (u.side === "cat" && u.hpNow > 0 && u.hpNow <= u.hpMax * 0.2) {
+          fireBeat("nearDeath");
+        }
         // hit flash + jitter + Stand-aura flash
         u.gfx.tint = 0xff9a9a;
         delay(90, () => {
@@ -1667,6 +2114,7 @@ export function createBattleScene(): Scene {
           });
         }
         pushLog(`CAT PILE! Everyone piles on for ${e.damageEach} each!`);
+        fireBeat("catPile"); // §4b beat
         return 333;
       }
       case "ko": {
@@ -1674,6 +2122,8 @@ export function createBattleScene(): Scene {
         if (u) {
           u.dead = true;
           u.statuses.clear();
+          u.intent?.set(null);
+          if (inspect.openId === e.id) closeInspect();
           rebuildStatusRow(u);
           setTilt(u, false);
           killTweens(u.body.scale);
@@ -1705,6 +2155,8 @@ export function createBattleScene(): Scene {
         }
         if (bs) ribbon.refresh(bs);
         pushLog(`${nameOf(e.id)} is knocked out!`);
+        // §4b beat: a cat going down is a spike; an enemy going down is Tuesday
+        if (u?.side === "cat") fireBeat("ko");
         return 300;
       }
       case "revive": {
@@ -1803,6 +2255,9 @@ export function createBattleScene(): Scene {
       }
       case "victory": {
         pushLog("Victory! The alley is quiet again.");
+        // §4b beat: "a crit that ends a fight". The card is almost certainly
+        // gone by the time this lands, so it queues for the run map.
+        if (lastHitWasCrit) fireBeat("finishingCrit");
         return 300;
       }
       case "defeat": {
@@ -1871,6 +2326,13 @@ export function createBattleScene(): Scene {
     if (activeSlot) activeSlot.visible = false;
     const run = ctx.run;
     const result = battleResult(bs, log);
+
+    // THE BESTIARY WRITE (enemy-intel.md §4). Knowledge is earned by fighting,
+    // not by surviving, so this runs before the win/lose/flee branches: a
+    // battle you ran from still taught you what hit you. `recordBattle` reads
+    // the log only — the scene never decides what was learned.
+    ctx.meta = recordBattle(ctx.meta, bs, log);
+    saveMeta(ctx.meta);
 
     if (result.outcome === "fled") {
       // A fled node fight simply hands the route back: the node is already
@@ -2137,6 +2599,25 @@ export function createBattleScene(): Scene {
             .map((c) => c.classId)
             .slice(0, n);
         }
+        // `?known=met|complete` fakes Bestiary progress so the intel UI can be
+        // screenshotted at every knowledge level without grinding five kills
+        // per species. Writes only the IN-MEMORY profile — never saved.
+        const known = q.get("known");
+        if (known === "met" || known === "complete") {
+          const bestiary: Record<string, EnemyKnowledge> = {
+            ...(ctx.meta.bestiary ?? {}),
+          };
+          for (const id of params.enemies) {
+            bestiary[id] = {
+              met: 3,
+              kills: known === "complete" ? KILLS_TO_COMPLETE : 1,
+              skills: [],
+              weak: [],
+              resist: [],
+            };
+          }
+          ctx.meta = { ...ctx.meta, bestiary };
+        }
       }
       isBoss = params.isBoss ?? params.encounterIndex === 0;
 
@@ -2147,6 +2628,13 @@ export function createBattleScene(): Scene {
         return;
       }
       bs = createBattle(setup);
+      // Dev/CI observability hook, read-only and DEV-only (sibling of
+      // main.ts's `__scene`/`__run`): lets a screenshot harness wait until
+      // the telegraphs are actually readable instead of guessing from
+      // pixels. Never shipped — stripped by the import.meta.env.DEV guard.
+      if (import.meta.env?.DEV === true) {
+        (window as unknown as { __battle?: () => unknown }).__battle = () => bs;
+      }
       // battleRng stream (§4): re-engaging a fled pack restarts the stream
       rng = mulberry32(
         hash(ctx.run.runSeed, ctx.run.floorNum, params.encounterIndex),
@@ -2188,6 +2676,9 @@ export function createBattleScene(): Scene {
       finished = true;
       anim.length = 0;
       onDrained = null;
+      if (import.meta.env?.DEV === true) {
+        delete (window as unknown as { __battle?: () => unknown }).__battle;
+      }
       // the tabletop card owns a DOM <input>: it must go before the pixi
       // layers below it are destroyed (and before the element is orphaned)
       tabletop?.destroy();
@@ -2202,6 +2693,10 @@ export function createBattleScene(): Scene {
       improvising = false;
       bgC = worldC = fxC = hudC = floatC = modalC = null;
       stage = null;
+      zones = null;
+      threat = null;
+      actedSpecies.clear();
+      intentSig = "";
       roundChip = null;
       logText = null;
       activeSlot = null;
@@ -2237,6 +2732,14 @@ export function createBattleScene(): Scene {
       // stage: backdrop parallax drift + stage-light breathing (the backdrop
       // is NOT shaken with the world layer — that difference IS the parallax)
       stage?.update(elapsed);
+      zones?.update(elapsed);
+
+      // telegraphs repaint from the engine's own declarations; the call diffs
+      // a signature first, so a frame with nothing new costs a string compare
+      syncIntents();
+      threat?.update(elapsed);
+      ribbon.update(elapsed);
+      for (const u of units.values()) u.intent?.update(elapsed);
 
       // ambience: idle bob + breathing, star orbits, slot pulse, charge bounce
       const t = elapsed / 1000;
@@ -2273,8 +2776,14 @@ export function createBattleScene(): Scene {
 
       // The tabletop card owns the keyboard while it is up. While typing the
       // DOM field swallows everything itself; what reaches here is the reply
-      // beat, where any confirm key dismisses it and hands the turn back.
+      // beat, where any confirm key dismisses it and hands the turn back —
+      // or an unprompted beat, where [T] answers it instead of ignoring it
+      // (run-map-and-dm.md §4b: an interjection is never a cutscene).
       if (tabletop?.isOpen()) {
+        if (key === "t" && tabletop.isInterjecting()) {
+          tabletop.open();
+          return true;
+        }
         if (
           key === "e" ||
           key === "enter" ||
@@ -2293,6 +2802,28 @@ export function createBattleScene(): Scene {
       }
       if (key === "l") {
         toggleScrollback();
+        return true;
+      }
+
+      // [I] inspect: opens the card for the enemy you are aiming at, or for
+      // the front-rank enemy when nothing is selected. Esc closes it first,
+      // before it would cancel targeting or reach the pause menu.
+      if (key === "i") {
+        if (inspect.openId !== null) closeInspect();
+        else {
+          const aimed =
+            targeting?.targetIds[targeting.idx] ??
+            (bs
+              ? bs.combatants
+                  .filter((c) => c.side === "enemy" && !c.ko && c.hp > 0)
+                  .sort((a, b) => a.rank - b.rank)[0]?.id
+              : undefined);
+          if (aimed !== undefined) showInspect(aimed);
+        }
+        return true;
+      }
+      if (key === "esc" && inspect.openId !== null) {
+        closeInspect();
         return true;
       }
 

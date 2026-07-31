@@ -25,9 +25,11 @@ import { Container, Graphics, Sprite, Text } from "pixi.js";
 import type {
   BattleState,
   Combatant,
+  DeclaredIntent,
   Skill,
   StatusId,
 } from "../../core/types.js";
+import type { KnownIntel } from "../../core/meta/bestiary.js";
 import { ENEMIES } from "../../content/enemies.js";
 import { PAL, THEMES, darken, mix } from "../palette.js";
 import { DESIGN_H, DESIGN_W, R, RADIUS, SPACE, rh, rw } from "../layout.js";
@@ -55,6 +57,15 @@ import {
   makeHeavyGlyph,
   makeTierChevrons,
 } from "../draw/enemies.js";
+import {
+  INTENT_VISUAL,
+  intentSentence,
+  makeIntelBlock,
+  makeIntentBadge,
+  makeLevelChip,
+  makeTierPill,
+  type IntentBadge,
+} from "../draw/intel.js";
 import { hasSprite } from "../sprites.js";
 
 /* ---------------------------------------------------------------------- */
@@ -91,6 +102,20 @@ function fitText(t: Text, maxW: number): void {
     if (t.width <= maxW) return;
   }
   t.text = "…";
+}
+
+/**
+ * Ellipsise a 「BRACKETED」 name at WORD boundaries, keeping both brackets.
+ * Deliberate truncation — "「THE DUMPSTER…」", never "「THE DUMPST…」".
+ */
+function fitWords(t: Text, name: string, maxW: number): void {
+  const words = name.split(/\s+/).filter((s) => s.length > 0);
+  for (let n = words.length - 1; n >= 1; n--) {
+    t.text = `「${words.slice(0, n).join(" ")}…」`;
+    if (t.width <= maxW) return;
+  }
+  // a single word that still will not fit: fall back to a character trim
+  fitText(t, maxW);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -374,6 +399,243 @@ export function makeBattleStage(floorNum: number): BattleStage {
 }
 
 /* ---------------------------------------------------------------------- */
+/* The two sides of the field + the no-man's-land between them             */
+/* ---------------------------------------------------------------------- */
+
+export interface FieldZones {
+  view: Container;
+  /** Slow breathing on the centre line so it reads as live, not printed. */
+  update(elapsedMs: number): void;
+}
+
+/**
+ * WHOSE HALF IS WHOSE (enemy-intel.md §5 readability, Darkest Dungeon's
+ * rank-legibility lesson). Before this the four-to-nine units read as one
+ * crowd: nothing on the stage said where the party ended and the enemy pack
+ * began.
+ *
+ * Three cheap, non-competing cues, all on the floor plane so they never fight
+ * the sprites:
+ *  - a cool (cat) and a warm (enemy) ground wash, each hugging only its own
+ *    ranks, with a bright edge line under the units;
+ *  - a DARKENED neutral column between them — the no-man's-land is literally
+ *    unlit, which is what makes both formations pop;
+ *  - a dashed centre line with facing chevrons, so the divide survives even
+ *    when the washes are lost to a bright painted backdrop.
+ *
+ * Takes world x extents, not ranks: only the scene knows where rank 3 is.
+ */
+export function makeFieldZones(
+  catFrom: number,
+  catTo: number,
+  foeFrom: number,
+  foeTo: number,
+): FieldZones {
+  const gy = R.combat.groundY;
+  const view = new Container();
+  const g = new Graphics();
+
+  const pad = 74;
+  const zone = (x0: number, x1: number, color: number): void => {
+    const a = Math.max(6, x0 - pad);
+    const b = Math.min(DESIGN_W - 6, x1 + pad);
+    const w = b - a;
+    const cx = (a + b) / 2;
+    // soft elliptical pool of the side's colour, stacked for a feathered edge
+    for (let i = 10; i >= 1; i--) {
+      const t = i / 10;
+      g.ellipse(cx, gy + 6, (w / 2) * t, 54 * t).fill({ color, alpha: 0.055 });
+    }
+    // The lit edge the units stand on, drawn as segments that fade out toward
+    // both ends. (An arrowhead cap was the first draft and it read as a stray
+    // UI arrow parked on the floor.)
+    const SEG = 22;
+    for (let x = a; x < b; x += SEG) {
+      const t = (x - a) / Math.max(1, w);
+      const fade = Math.min(1, Math.sin(Math.PI * t) * 1.9);
+      g.moveTo(x, gy)
+        .lineTo(Math.min(b, x + SEG), gy)
+        .stroke({ width: 3, color, alpha: 0.6 * fade });
+      g.moveTo(x, gy + 3)
+        .lineTo(Math.min(b, x + SEG), gy + 3)
+        .stroke({ width: 1, color: PAL.void, alpha: 0.5 * fade });
+    }
+  };
+  zone(catFrom, catTo, PAL.energy);
+  zone(foeFrom, foeTo, PAL.danger);
+
+  // the unlit neutral column
+  const mid = (catTo + foeFrom) / 2;
+  const half = Math.max(40, (foeFrom - catTo) / 2);
+  const dark = new Graphics();
+  for (let i = 7; i >= 1; i--) {
+    const t = i / 7;
+    dark
+      .rect(mid - half * t, gy - 230, half * 2 * t, 290)
+      .fill({ color: PAL.void, alpha: 0.055 });
+  }
+  view.addChild(dark, g);
+
+  // the line itself: dashed, ending in a floor lozenge with two facing
+  // arrowheads — small, but the one hard edge that survives any backdrop
+  const line = new Graphics();
+  for (let y = gy - 196; y < gy - 12; y += 18) {
+    line.moveTo(mid, y).lineTo(mid, Math.min(gy - 12, y + 9));
+  }
+  line.stroke({ width: 2, color: PAL.text, alpha: 0.16 });
+  line
+    .ellipse(mid, gy, 34, 11)
+    .fill({ color: PAL.void, alpha: 0.4 })
+    .stroke({ width: 1, color: PAL.text, alpha: 0.18 });
+  for (const dir of [-1, 1]) {
+    const c = dir < 0 ? PAL.energy : PAL.danger;
+    line
+      .poly([mid + dir * 8, gy - 7, mid + dir * 24, gy, mid + dir * 8, gy + 7])
+      .fill({ color: c, alpha: 0.6 });
+  }
+  view.addChild(line);
+  view.eventMode = "none";
+
+  return {
+    view,
+    update(elapsedMs: number): void {
+      line.alpha = 0.7 + 0.3 * Math.sin((elapsedMs / 1000) * 0.9);
+    },
+  };
+}
+
+/* ---------------------------------------------------------------------- */
+/* Threat highlight — "who is about to be hit, and for how much"           */
+/* ---------------------------------------------------------------------- */
+
+/** One declared attack, resolved to screen space by the scene. */
+export interface ThreatLink {
+  fromX: number;
+  fromY: number;
+  toX: number;
+  /** ground y of the threatened unit (its feet) */
+  toY: number;
+  /** head y of the threatened unit, for the incoming chip */
+  headY: number;
+  color: number;
+  /** expected damage summed over every intent aimed here (0 ⇒ no numeral) */
+  incoming: number;
+  /** the shove/status kind changes the chip's glyph */
+  kind: "strike" | "shove" | "status";
+  status?: StatusId;
+}
+
+export interface ThreatLayer {
+  view: Container;
+  set(links: readonly ThreatLink[]): void;
+  update(elapsedMs: number): void;
+}
+
+/**
+ * Into the Breach's core promise, at rank scale: the cost of NOT defending is
+ * drawn, not implied. Each declared attack gets a tapered dashed line from the
+ * attacker's badge down to a pulsing ground ring under its target, and every
+ * threatened cat wears one chip totalling the damage aimed at it this round.
+ */
+export function makeThreatLayer(): ThreatLayer {
+  const view = new Container();
+  const lines = new Graphics();
+  const rings = new Graphics();
+  const chips = new Container();
+  view.addChild(lines, rings, chips);
+  view.eventMode = "none";
+  let current: ThreatLink[] = [];
+
+  const paint = (): void => {
+    lines.clear();
+    rings.clear();
+    chips.removeChildren().forEach((c) => c.destroy({ children: true }));
+    // one chip per TARGET, not per link: two rats on Bruno reads as one total
+    const byTarget = new Map<number, ThreatLink[]>();
+    for (const l of current) {
+      const key = Math.round(l.toX);
+      const arr = byTarget.get(key);
+      if (arr) arr.push(l);
+      else byTarget.set(key, [l]);
+    }
+    for (const l of current) {
+      // dashed bezier-ish arc: sampled as short segments so it can taper
+      const midX = (l.fromX + l.toX) / 2;
+      // arc height scales with the span so a short link still bows visibly
+      const midY =
+        Math.min(l.fromY, l.headY) - 40 - Math.abs(l.toX - l.fromX) * 0.13;
+      const N = 26;
+      for (let i = 0; i < N; i += 2) {
+        const t0 = i / N;
+        const t1 = (i + 1) / N;
+        const px = (t: number): number =>
+          (1 - t) * (1 - t) * l.fromX + 2 * (1 - t) * t * midX + t * t * l.toX;
+        const py = (t: number): number =>
+          (1 - t) * (1 - t) * l.fromY +
+          2 * (1 - t) * t * midY +
+          t * t * (l.headY - 6);
+        lines
+          .moveTo(px(t0), py(t0))
+          .lineTo(px(t1), py(t1))
+          .stroke({
+            width: 1.5 + 3.5 * t1,
+            color: l.color,
+            alpha: 0.85,
+            cap: "round",
+          });
+      }
+      // arrowhead planted on the target
+      lines
+        .poly([
+          l.toX,
+          l.headY,
+          l.toX - 9,
+          l.headY - 13,
+          l.toX + 9,
+          l.headY - 13,
+        ])
+        .fill({ color: l.color, alpha: 0.9 });
+      rings
+        .ellipse(l.toX, l.toY + 2, 50, 15)
+        .stroke({ width: 3, color: l.color, alpha: 0.9 });
+      rings
+        .ellipse(l.toX, l.toY + 2, 50, 15)
+        .fill({ color: l.color, alpha: 0.16 });
+    }
+    for (const [, group] of byTarget) {
+      const first = group[0];
+      const total = group.reduce((n, l) => n + l.incoming, 0);
+      const shove = group.some((l) => l.kind === "shove");
+      const st = group.find((l) => l.status)?.status;
+      const parts: string[] = [];
+      if (total > 0) parts.push(`▼ ${total}`);
+      if (shove) parts.push("»»");
+      if (st) parts.push(STATUS_STYLE[st].glyph);
+      const chip = makePreviewChip(
+        parts.length > 0 ? parts.join("  ") : "▼",
+        first.color,
+      );
+      // above the arrowhead, and above the target's own status-chip row
+      chip.position.set(first.toX, first.headY - 30);
+      chips.addChild(chip);
+    }
+  };
+
+  return {
+    view,
+    set(links: readonly ThreatLink[]): void {
+      current = [...links];
+      paint();
+    },
+    update(elapsedMs: number): void {
+      const p = 0.55 + 0.45 * Math.abs(Math.sin((elapsedMs / 1000) * Math.PI));
+      rings.alpha = p;
+      lines.alpha = 0.65 + 0.35 * p;
+    },
+  };
+}
+
+/* ---------------------------------------------------------------------- */
 /* Unit presentation (readability: shadow, rim, glow, boss presence)       */
 /* ---------------------------------------------------------------------- */
 
@@ -492,15 +754,21 @@ interface RibbonChip {
   ring: Graphics;
   wash: Graphics;
   frazzle: Container;
+  intent: IntentBadge;
   collapsed: boolean;
 }
+
+/** Per-enemy telegraph the strip echoes, already masked for visibility. */
+export type IntentMap = ReadonlyMap<string, DeclaredIntent | null>;
 
 export interface Ribbon {
   view: Container;
   /** Rebuild all chips from the frozen round queue. */
-  setRound(state: BattleState): void;
+  setRound(state: BattleState, intents?: IntentMap): void;
   /** Re-style: acted-dim, current-actor pop, frazzle glyphs, death collapse. */
-  refresh(state: BattleState): void;
+  refresh(state: BattleState, intents?: IntentMap): void;
+  /** Badge breathing — call once per frame. */
+  update(elapsedMs: number): void;
 }
 
 /** Kit avatar for a combatant (cat portrait / enemy face), fail-soft. */
@@ -525,6 +793,11 @@ export function makeRibbon(): Ribbon {
   let chips: RibbonChip[] = [];
   let tail: Container | null = null;
   let tailW = 108;
+  // The scene refreshes the strip from TWO places — the event animator (which
+  // knows nothing about telegraphs) and the intent sync. Remembering the last
+  // map means a plain `refresh(state)` restyles the chips without silently
+  // wiping every badge off them.
+  let lastIntents: IntentMap = new Map();
 
   const setPanelWidth = (contentW: number): void => {
     plateHolder?.destroy({ children: true });
@@ -548,7 +821,11 @@ export function makeRibbon(): Ribbon {
   const ribbon: Ribbon = {
     view,
 
-    setRound(state: BattleState): void {
+    update(elapsedMs: number): void {
+      for (const chip of chips) chip.intent.update(elapsedMs);
+    },
+
+    setRound(state: BattleState, intents?: IntentMap): void {
       view.removeChildren().forEach((c) => c.destroy({ children: true }));
       plateHolder = null;
       chips = [];
@@ -601,6 +878,12 @@ export function makeRibbon(): Ribbon {
           .stroke({ width: 2, color: PAL.gold });
         ring.visible = false;
         box.addChild(ring);
+        // the strip echoes each enemy's telegraph, so the whole ROUND reads
+        // at a glance and not just the enemy you happen to be looking at
+        // (enemy-intel.md §5)
+        const intent = makeIntentBadge(0.38);
+        intent.view.position.set(CHIP - 12, 11);
+        box.addChild(intent.view);
         box.pivot.set(CHIP / 2, CHIP / 2);
         box.position.y = h / 2;
         view.addChild(box);
@@ -612,6 +895,7 @@ export function makeRibbon(): Ribbon {
           ring,
           wash,
           frazzle,
+          intent,
           collapsed: false,
         });
       });
@@ -633,11 +917,13 @@ export function makeRibbon(): Ribbon {
       tail.addChild(next);
       tailW = 12 + Math.ceil(next.width);
       view.addChild(tail);
-      ribbon.refresh(state);
+      ribbon.refresh(state, intents);
       layout(false);
     },
 
-    refresh(state: BattleState): void {
+    refresh(state: BattleState, intents?: IntentMap): void {
+      if (intents) lastIntents = intents;
+      const live = intents ?? lastIntents;
       let currentIndex = -1;
       for (let i = 0; i < state.queue.length; i++) {
         const entry = state.queue[i];
@@ -648,6 +934,11 @@ export function makeRibbon(): Ribbon {
         }
       }
       let anyCollapsed = false;
+      // A double-turn boss declares only its FIRST slot (enemy-intel.md §2's
+      // authored uncertainty): its second entry must read `?`, not a copy of
+      // the first, or the strip would promise a telegraph the engine has not
+      // made.
+      const declared = new Set<string>();
       for (const chip of chips) {
         const entry = state.queue[chip.entryIndex];
         const c = state.combatants.find((x) => x.id === chip.combatantId);
@@ -664,6 +955,21 @@ export function makeRibbon(): Ribbon {
         chip.wash.visible = entry.acted;
         chip.ring.visible = current;
         chip.frazzle.visible = c.statuses.some((s) => s.id === "frazzled");
+        // a slot that has already acted no longer telegraphs anything
+        const first = !declared.has(c.id);
+        declared.add(c.id);
+        chip.intent.set(
+          entry.acted || c.side !== "enemy"
+            ? null
+            : first
+              ? (live.get(c.id) ?? null)
+              : {
+                  id: c.id,
+                  kind: "unknown",
+                  value: 0,
+                  round: state.round,
+                },
+        );
         const scale = current ? 1.2 : 1;
         tween(chip.box.scale, { x: scale, y: scale }, 120);
         tween(chip.box, { y: h / 2 - (current ? 4 : 0) }, 120);
@@ -887,19 +1193,29 @@ function buildSlot(
   costRow.position.set(w - SPACE.sm - cx, SPACE.sm);
   slot.addChild(costRow);
 
-  // Stand eyebrow — 「THE DUMPSTER KING」
+  // Stand eyebrow — 「THE DUMPSTER KING」. The bracketed name is SIZED to fit
+  // rather than chopped mid-word: shrink the type first (10 → 8px, still
+  // legible at design scale), and only if the longest Stand name still
+  // overflows drop whole words with an ellipsis. The old code measured the
+  // bare name, then added 「」 afterwards, which is what pushed
+  // "「THE DUMPST…」" past the card edge.
   if (spec.kind === "skill" && spec.stand !== undefined && spec.stand !== "") {
+    // the eyebrow may use the full card width less its own left inset — it is
+    // a single line with nothing to its right, and "「THE DUMPSTER KING」" needs
+    // every pixel of it
+    const room = w - SPACE.sm - SPACE.xs;
     const eyebrow = new Text({
-      text: spec.stand,
+      text: `「${spec.stand}」`,
       style: ui(10, {
         fontWeight: "bold",
-        letterSpacing: 0.6,
+        letterSpacing: 0.2,
         fill: spec.ok ? PAL.gold : PAL.goldDark,
       }),
     });
-    // reserve room for the 「」 so a long Stand name never loses its bracket
-    fitText(eyebrow, w - SPACE.sm * 2 - 18);
-    eyebrow.text = `「${eyebrow.text}」`;
+    for (let size = 10; size >= 7.5 && eyebrow.width > room; size -= 0.5) {
+      eyebrow.style.fontSize = size;
+    }
+    if (eyebrow.width > room) fitWords(eyebrow, spec.stand, room);
     eyebrow.position.set(SPACE.sm, 30);
     slot.addChild(eyebrow);
   }
@@ -1045,23 +1361,17 @@ export function makeActivePanel(): ActivePanel {
       livesTag.position.set(COL + 9 * 8 + SPACE.sm, 80);
       content.addChild(livesTag);
 
+      // status chips carry their duration AND explain themselves on hover/tap
+      // (enemy-intel.md §5 — never a bare icon you have to have memorised)
       let sx = COL;
       for (const st of c.statuses) {
-        const chip = makeStatusChip(st.id, st.value || undefined);
+        const chip = makeStatusChip(st.id, st.value || undefined, {
+          duration: st.duration,
+          explain: true,
+        });
         chip.position.set(sx, 100);
         content.addChild(chip);
-        if (st.id === "scratched" || st.id === "mending") {
-          const d = label(`${st.duration}r`, {
-            size: 9,
-            mono: true,
-            dim: true,
-          });
-          d.position.set(sx + 18, 102);
-          content.addChild(d);
-          sx += 18 + Math.ceil(d.width) + 6;
-        } else {
-          sx += 22;
-        }
+        sx += 40;
       }
     },
   };
@@ -1299,6 +1609,269 @@ export function makePreviewChip(text: string, color: number): Container {
     .stroke({ width: 1, color: darken(color) });
   view.addChild(bg, t);
   return view;
+}
+
+/**
+ * DAMAGE PREVIEW (enemy-intel.md §5): the expected number big, the roll band
+ * under it, and the HP it would leave — so a shove combo is planned rather
+ * than discovered.
+ *
+ * `lo`/`hi` are the ±10% variance band the design's damage table specifies
+ * (combat.md §3 step 2, `variance = 0.9 | 1.0 | 1.1`) shown around the
+ * engine's own `previewDamage`; the chip is marked `≈` because the engine
+ * rounds before subtracting DEF and the band is therefore an estimate, while
+ * the headline number is not.
+ */
+export function makeDamagePreview(
+  expected: number,
+  lo: number,
+  hi: number,
+  opts: {
+    hpLeft?: number;
+    hpMax?: number;
+    lethal?: boolean;
+    note?: string;
+  } = {},
+): Container {
+  const view = new Container();
+  const accent = opts.lethal === true ? PAL.danger : PAL.text;
+  const big = new Text({
+    text: `≈${expected}`,
+    style: mono(20, { fill: accent, fontWeight: "bold" }),
+  });
+  big.anchor.set(0.5, 0);
+  const band = new Text({
+    text: lo === hi ? "exact" : `${lo}–${hi}`,
+    style: mono(11, { fill: PAL.textDim }),
+  });
+  band.anchor.set(0.5, 0);
+  const rows: Text[] = [big, band];
+  if (opts.hpLeft !== undefined && opts.hpMax !== undefined) {
+    const t = new Text({
+      text:
+        opts.lethal === true ? "LETHAL" : `${opts.hpLeft}/${opts.hpMax} left`,
+      style: mono(11, {
+        fill: opts.lethal === true ? PAL.danger : PAL.textDim,
+        fontWeight: opts.lethal === true ? "bold" : "normal",
+      }),
+    });
+    t.anchor.set(0.5, 0);
+    rows.push(t);
+  }
+  if (opts.note !== undefined && opts.note !== "") {
+    const t = new Text({
+      text: opts.note,
+      style: mono(11, { fill: PAL.offBal }),
+    });
+    t.anchor.set(0.5, 0);
+    rows.push(t);
+  }
+  const w = Math.max(64, Math.ceil(Math.max(...rows.map((r) => r.width))) + 18);
+  const h = rows.reduce((n, r) => n + Math.ceil(r.height) + 1, 10);
+  view.addChild(
+    new Graphics()
+      .roundRect(-w / 2, -h / 2, w, h, RADIUS.chip + 1)
+      .fill({ color: PAL.bgDeep, alpha: 0.95 })
+      .stroke({ width: 1.5, color: darken(accent) }),
+  );
+  let y = -h / 2 + 4;
+  for (const r of rows) {
+    r.position.set(0, y);
+    view.addChild(r);
+    y += Math.ceil(r.height) + 1;
+  }
+  return view;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Inspect panel (enemy-intel.md §3)                                       */
+/* ---------------------------------------------------------------------- */
+
+export interface InspectSubject {
+  combatant: Combatant;
+  intel: KnownIntel;
+  /** the Stand name, when content carries one */
+  stand: string | null;
+  /** the enemy's live telegraph, already masked for visibility */
+  intent: DeclaredIntent | null;
+  /** display name of the intent's target, for the sentence */
+  intentTargetName: string | null;
+  /** true while this enemy is a legal target of the pending skill */
+  targetable: boolean;
+}
+
+export interface InspectPanel {
+  view: Container;
+  /** null closes it. */
+  show(subject: InspectSubject | null): void;
+  readonly openId: string | null;
+}
+
+/** Panel geometry — parked on the left gutter, clear of the enemy ranks. */
+const INSPECT = { x: 16, y: 84, w: 372 } as const;
+
+/**
+ * TAP AN ENEMY, LEARN WHAT YOU KNOW (enemy-intel.md §3).
+ *
+ * Darkest Dungeon's half of the design made literal: everything the Bestiary
+ * has unlocked is spelled out, and everything it has NOT renders `???` in
+ * place rather than being hidden — so the card doubles as a checklist of what
+ * is left to learn about this species.
+ *
+ * It lives in the LEFT gutter on purpose: enemies always stand right of the
+ * centre line, so the card can never cover the thing you tapped, and the
+ * second tap that commits the attack always lands (docs/design/mobile.md
+ * "tap to inspect, tap again to target").
+ */
+export function makeInspectPanel(): InspectPanel {
+  const view = new Container();
+  view.visible = false;
+  let openId: string | null = null;
+
+  const panelRef: InspectPanel = {
+    view,
+    get openId(): string | null {
+      return openId;
+    },
+    show(subject: InspectSubject | null): void {
+      view.removeChildren().forEach((c) => c.destroy({ children: true }));
+      view.visible = subject !== null;
+      openId = subject?.combatant.id ?? null;
+      if (!subject) return;
+
+      const { combatant: c, intel } = subject;
+      const w = INSPECT.w;
+      const pad = SPACE.md;
+      const inner = w - pad * 2;
+      const body = new Container();
+
+      /* -- header: face, name, «STAND», level + tier ------------------- */
+      const face = enemyAvatar(c.speciesId ?? "", 64, { shape: "rounded" });
+      face.position.set(pad + 32, pad + 32);
+      body.addChild(face);
+
+      const colX = pad + 76;
+      const name = heading(intel.name.value ?? c.name, 2, {
+        fill: intel.name.known ? PAL.text : PAL.textDim,
+      });
+      fitText(name, w - colX - pad);
+      name.position.set(colX, pad - 2);
+      body.addChild(name);
+
+      if (subject.stand !== null) {
+        const stand = label(`「${subject.stand}」`, {
+          size: TYPE.tiny,
+          bold: true,
+          fill: PAL.gold,
+        });
+        fitText(stand, w - colX - pad);
+        stand.position.set(colX, pad + 26);
+        body.addChild(stand);
+      }
+
+      const lvl = makeLevelChip(intel.level.value);
+      lvl.position.set(colX, pad + 44);
+      body.addChild(lvl);
+      // tier as a WORD plus its chevrons: the nameplate's ‹‹ alone is a
+      // 12px glyph nobody decodes on a stat card
+      let tierX = colX + Math.ceil(lvl.width) + 8;
+      const tierPill = makeTierPill(intel.tier.value);
+      tierPill.position.set(tierX, pad + 44);
+      body.addChild(tierPill);
+      tierX += Math.ceil(tierPill.width) + 8;
+      if (c.traits.includes("heavy")) {
+        const anchor = label("▼ HEAVY", {
+          size: TYPE.tiny,
+          mono: true,
+          dim: true,
+        });
+        anchor.position.set(tierX, pad + 47);
+        body.addChild(anchor);
+      }
+
+      let y = pad + 76;
+
+      /* -- HP (always true — it is on the screen already) --------------- */
+      const hp = bar(inner - 62, 10, { kind: "hp" });
+      hp.view.position.set(pad, y);
+      hp.set(c.hp, c.stats.hp, false);
+      body.addChild(hp.view);
+      const hpNum = label(`${c.hp}/${c.stats.hp}`, {
+        size: TYPE.tiny,
+        mono: true,
+      });
+      hpNum.position.set(pad + inner - 56, y - 3);
+      body.addChild(hpNum);
+      y += 20;
+
+      /* -- live statuses, each able to explain itself ------------------- */
+      if (c.statuses.length > 0) {
+        let sx = pad;
+        for (const st of c.statuses) {
+          const chip = makeStatusChip(st.id, st.value || undefined, {
+            duration: st.duration,
+            explain: true,
+          });
+          chip.position.set(sx, y);
+          body.addChild(chip);
+          sx += 40;
+        }
+        y += 24;
+      }
+
+      /* -- the telegraph, in words ------------------------------------- */
+      if (subject.intent) {
+        const v = INTENT_VISUAL[subject.intent.kind];
+        const strip = new Container();
+        const badge = makeIntentBadge(0.5);
+        badge.set(subject.intent);
+        badge.view.position.set(20, 18);
+        strip.addChild(badge.view);
+        const line = label(
+          intentSentence(subject.intent, subject.intentTargetName),
+          { size: TYPE.small, wrap: inner - 48, fill: v.color },
+        );
+        line.position.set(44, 8);
+        strip.addChild(line);
+        const sh = Math.max(36, Math.ceil(line.height) + 14);
+        const plate = new Graphics()
+          .roundRect(0, 0, inner, sh, RADIUS.button)
+          .fill({ color: PAL.hpBack, alpha: 0.85 })
+          .stroke({ width: 1, color: darken(v.color) });
+        strip.addChildAt(plate, 0);
+        badge.view.position.set(20, sh / 2);
+        strip.position.set(pad, y);
+        body.addChild(strip);
+        y += sh + SPACE.sm;
+      }
+
+      /* -- earned knowledge -------------------------------------------- */
+      const block = makeIntelBlock(intel, inner);
+      block.view.position.set(pad, y);
+      body.addChild(block.view);
+      y += block.height + SPACE.sm;
+
+      /* -- footer ------------------------------------------------------- */
+      const foot = label(
+        subject.targetable
+          ? "tap again to attack  ·  Esc closes"
+          : `met ${intel.met}×  ·  felled ${intel.kills}  ·  I / Esc closes`,
+        subject.targetable
+          ? { size: TYPE.tiny, mono: true, fill: PAL.gold }
+          : { size: TYPE.tiny, mono: true, dim: true },
+      );
+      foot.position.set(pad, y);
+      body.addChild(foot);
+      y += 20;
+
+      view.addChild(
+        panel(w, y + SPACE.xs, { variant: "raised", accent: PAL.danger }),
+        body,
+      );
+      view.position.set(INSPECT.x, INSPECT.y);
+    },
+  };
+  return panelRef;
 }
 
 /** Small status-glyph chip used for shove-destination previews. */

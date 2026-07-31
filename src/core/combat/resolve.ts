@@ -44,17 +44,24 @@ import {
   cloneState,
   hasStatus,
   hypotheticalDistance,
+  intelTagOfStatus,
   isAlive,
   living,
   nextEntryIndex,
   OFF_BALANCE_MULT,
   offBalanceResistOf,
+  offBalanceTierResist,
   opposite,
   repositionWithin,
+  resistsTag,
+  shoveDamageMult,
   swapRanks,
   traitTier,
   validTargets,
+  weakTo,
 } from "./state.js";
+import { bindIntent } from "./ai.js";
+import { consumeIntent, intentFor } from "./intent.js";
 import {
   applyStatus,
   braceAfterOffBalance,
@@ -151,16 +158,27 @@ function offBalanceLandable(t: Combatant): boolean {
  * Tier-resistance gate: one `rng.float()` for a tier-2 (25%) or tier-3 (40%)
  * enemy, no draw at all for cats and tier-1 mooks. Returns true when the
  * application was shrugged off.
+ *
+ * Intel (enemy-intel.md §1) sits on top of the tier and NEVER adds a draw: an
+ * enemy weak to `offBalance` that its tier says should have resisted skips
+ * the roll and lands the debuff; one that resists reveals the resistance the
+ * moment it is felt.
  */
 function resistsOffBalance(
   t: Combatant,
   events: BattleEvent[],
   rng: Rng,
 ): boolean {
+  if (weakTo(t, "offBalance") && offBalanceTierResist(t) > 0) {
+    // Off-Paw lands regardless of tier — and the player just learned why.
+    events.push({ t: "intel", id: t.id, tag: "offBalance", effect: "weak" });
+    return false;
+  }
   const resist = offBalanceResistOf(t);
   if (resist <= 0) return false;
   if (rng.float() >= resist) return false;
   events.push({ t: "log", text: `${t.name} keeps its footing.` });
+  events.push({ t: "intel", id: t.id, tag: "offBalance", effect: "resist" });
   return true;
 }
 
@@ -216,6 +234,33 @@ export function resolveAction(
   s.queueIndex = entryIdx;
   const actor = byId(s, entry.combatantId);
 
+  // ---- declared intent: the enemy is BOUND to what it telegraphed ----
+  // Bound BEFORE the turn-start phase so the cooldown numbers are the same
+  // pre-tick ones the driver's `takeEnemyTurn` saw — the two agree by
+  // construction. The declaration is consumed here, so a lost slot (Frazzled,
+  // a lethal Scratched tick) burns it too and a double-turn boss's second
+  // slot is genuinely undeclared. Draws nothing (enemy-intel.md §2).
+  let act: BattleAction | ImproviseAction = action;
+  let broken: "retargeted" | "rechosen" | null = null;
+  const declared = actor.side === "enemy" ? intentFor(s, actor.id) : null;
+  if (declared) {
+    consumeIntent(s, actor.id);
+    if (declared.kind !== "unknown") {
+      const bound = bindIntent(s, actor, declared);
+      if (bound) {
+        // honourable: the engine executes THE DECLARATION, whatever the
+        // caller passed. That is what "bound to honour" means.
+        act = bound.action;
+        broken = bound.reason;
+      } else {
+        // The skill went offline — rank denial, a cooldown, a full summon
+        // cap. `takeEnemyTurn` already re-picked (and drew) for this slot, so
+        // the caller's action stands and nothing is drawn twice.
+        broken = "rechosen";
+      }
+    }
+  }
+
   // ---- turn-start phase ----
   const frazzled = hasStatus(actor, "frazzled");
   const turnStart: { t: "turnStart"; id: string; energyAfterRegen?: number } = {
@@ -254,11 +299,15 @@ export function resolveAction(
   // (a frazzled actor already returned — the lost slot consults nothing).
   consultPower(s, "onTurnStart", { ownerId: actor.id }, events, rng);
 
+  // The telegraph bent — say so, so the UI can strike the icon through and
+  // the player can see their shove/kill did that (enemy-intel.md §2).
+  if (broken) events.push({ t: "intentBroken", id: actor.id, reason: broken });
+
   // ---- the action ----
-  switch (action.type) {
+  switch (act.type) {
     case "skill": {
-      const skill = SKILLS[action.skillId];
-      if (!skill) throw new Error(`combat: unknown skill '${action.skillId}'`);
+      const skill = SKILLS[act.skillId];
+      if (!skill) throw new Error(`combat: unknown skill '${act.skillId}'`);
       const bdata = actor.side === "enemy" ? bossDataOf(actor) : undefined;
       if (bdata?.windup && skill.id === bdata.windup.skillId) {
         if (actor.charging?.skillId === skill.id) {
@@ -288,13 +337,13 @@ export function resolveAction(
         if (canSummon(s, actor)) doSummon(s, actor, events);
         break;
       }
-      resolveSkill(s, actor, skill, action.targetId, events, rng, {});
+      resolveSkill(s, actor, skill, act.targetId, events, rng, {});
       break;
     }
 
     case "move": {
       if (actor.side !== "cat") throw new Error("combat: move is a cat action");
-      const targetRank = actor.rank + (action.dir === "forward" ? -1 : 1);
+      const targetRank = actor.rank + (act.dir === "forward" ? -1 : 1);
       const other = living(s, "cat").find((c) => c.rank === targetRank);
       if (!other) throw new Error("combat: no adjacent cat to swap with");
       const fromA = actor.rank;
@@ -342,8 +391,8 @@ export function resolveAction(
     }
 
     case "item": {
-      const def = CONSUMABLES[action.itemId];
-      if (!def) throw new Error(`combat: unknown item '${action.itemId}'`);
+      const def = CONSUMABLES[act.itemId];
+      if (!def) throw new Error(`combat: unknown item '${act.itemId}'`);
       if (def.oncePerBattle) {
         if (s.cucumberUsed)
           throw new Error("combat: The Cucumber was already used");
@@ -357,7 +406,7 @@ export function resolveAction(
         doFlee(s, events, 1.0, true);
         break;
       }
-      resolveSkill(s, actor, def.battleSkill, action.targetId, events, rng, {
+      resolveSkill(s, actor, def.battleSkill, act.targetId, events, rng, {
         isItem: true,
         flatHeal: def.explore?.heal,
       });
@@ -393,23 +442,23 @@ export function resolveAction(
       }
       // The DM's line lands first, whatever the mechanics turn out to be —
       // a refused or budget-dropped improvisation is still a told beat.
-      events.push({ t: "log", text: action.narration });
-      const cost = Math.max(0, Math.round(action.energyCost));
+      events.push({ t: "log", text: act.narration });
+      const cost = Math.max(0, Math.round(act.energyCost));
       if (actor.energy < cost) {
         throw new Error("combat: not enough energy to improvise");
       }
       // Spend only for an improvisation that will actually land: a list the
       // lint drops costs the turn (the cat tried) but not the energy.
-      if (lintImprovisation(action.effects, action.budgetCap).ok && cost > 0) {
+      if (lintImprovisation(act.effects, act.budgetCap).ok && cost > 0) {
         actor.energy -= cost;
         events.push({ t: "energy", id: actor.id, delta: -cost });
       }
       consultImprovisation(
         s,
         actor.id,
-        action.targetId,
-        action.effects,
-        action.budgetCap,
+        act.targetId,
+        act.effects,
+        act.budgetCap,
         events,
       );
       break;
@@ -419,7 +468,7 @@ export function resolveAction(
       throw new Error("combat: no Cat Pile prompt is pending");
 
     default: {
-      const never: never = action;
+      const never: never = act;
       throw new Error(`combat: unknown action ${JSON.stringify(never)}`);
     }
   }
@@ -523,13 +572,19 @@ function resolveSkill(
       const crit = rng.float() < critChance / 100;
       const offBal = hasStatus(t, "offBalance");
       const guard = hasStatus(t, "guarded");
+      // Intel (enemy-intel.md §1): a shove-type hit — any skill carrying
+      // `moveTarget` — lands ×1.25 on something weak to being knocked about
+      // and ×0.80 on something that shrugs it off. Data, not a new mechanic:
+      // one more factor in the §3 formula, drawn from no rng at all.
+      const shoveMod = shoveDamageMult(t, skill);
       const dmg = roundHalfUp(
         (skill.power / 100) *
           actor.stats.atk *
           variance *
           (crit ? 1.5 : 1.0) *
           (offBal ? OFF_BALANCE_MULT : 1.0) *
-          (guard ? 0.5 : 1.0),
+          (guard ? 0.5 : 1.0) *
+          shoveMod,
       );
       const final = Math.max(1, dmg - t.stats.def);
       t.hp = Math.max(0, t.hp - final);
@@ -541,6 +596,14 @@ function resolveSkill(
         offBal,
         source: skill.id,
       });
+      if (shoveMod !== 1.0) {
+        events.push({
+          t: "intel",
+          id: t.id,
+          tag: "shove",
+          effect: shoveMod > 1.0 ? "weak" : "resist",
+        });
+      }
       // Hook: The Red Dot — crits also inflict Off-Balance (heavy boss:
       // chip 1 Poise instead); max once per skill use.
       if (crit && actor.hooks.includes("critOffBalance") && !hookOffBalUsed) {
@@ -701,7 +764,21 @@ function resolveSkill(
             : targets;
       for (const r of recipients) {
         if (!isAlive(r)) continue;
-        const chance = alwaysHit ? 1.0 : app.chance;
+        // Intel gates (enemy-intel.md §1). Both directions are decided BEFORE
+        // the chance roll and therefore cost zero entropy — the §3.2 rule that
+        // a gate is never drawn when the outcome was already settled:
+        //   resisted → it can never land, so nothing is rolled;
+        //   weak     → it always lands, so nothing is rolled.
+        const tag = intelTagOfStatus(app.status);
+        if (tag && resistsTag(r, tag)) {
+          events.push({ t: "intel", id: r.id, tag, effect: "resist" });
+          continue;
+        }
+        const forced = !!tag && weakTo(r, tag);
+        const chance = alwaysHit || forced ? 1.0 : app.chance;
+        if (forced && app.chance < 1.0 && !alwaysHit) {
+          events.push({ t: "intel", id: r.id, tag: tag!, effect: "weak" });
+        }
         // A chance of EXACTLY 1.0 draws no roll (GDD §4 ruling).
         const hit = chance >= 1.0 ? true : rng.float() < chance;
         if (!hit) continue;

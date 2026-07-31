@@ -48,6 +48,25 @@ export type TraitId =
   | "stringTheory"
   | "purrEngine";
 
+/**
+ * The BOUNDED intel vocabulary (docs/design/enemy-intel.md §1). Every tag is a
+ * hook that `resolveAction` ALREADY has — a weakness or a resistance is a
+ * modifier on an existing step, never a new mechanic:
+ *
+ * | tag          | weakness                                  | resistance |
+ * |--------------|-------------------------------------------|------------|
+ * | `shove`      | ×1.25 damage from a `moveTarget` skill    | ×0.80 damage from one |
+ * | `offBalance` | Off-Paw ignores tier resistance entirely  | THE tier resistance (combat.md §8 gate 3) |
+ * | `scratched`  | the application always lands (no roll)    | it never lands (no roll) |
+ * | `frazzled`   | as `scratched`                            | as `scratched` |
+ * | `provoked`   | as `scratched`                            | as `scratched` — it cannot be baited |
+ *
+ * Both status directions are drawn-free: the §3.2 rule is that a gate is never
+ * rolled when the outcome was already decided, so intel costs zero entropy.
+ */
+export type IntelTag =
+  "shove" | "offBalance" | "scratched" | "frazzled" | "provoked";
+
 // ---- stats ----
 export type StatKey = "hp" | "atk" | "def" | "spd" | "crt" | "enMax";
 export interface Stats {
@@ -192,6 +211,64 @@ export interface QueueEntry {
   acted: boolean;
 }
 
+/* ---- declared intents (enemy-intel.md §2) ---- */
+
+/**
+ * What an enemy has COMMITTED to doing on its next slot this round.
+ * `'unknown'` is authored uncertainty, not missing data: a double-turn boss
+ * declares only its first slot and its second is deliberately `'unknown'`.
+ */
+export type IntentKind =
+  /** damaging skill */
+  | "strike"
+  /** damaging or not, it force-moves — the signature mechanic, so it wins the label */
+  | "shove"
+  /** a status application with no damage */
+  | "status"
+  /** heal an ally */
+  | "heal"
+  /** self-buff / utility */
+  | "buff"
+  /** spawns a minion */
+  | "summon"
+  /** the first slot of a two-slot telegraphed nuke */
+  | "windup"
+  /** no legal skill — it shuffles a rank forward */
+  | "advance"
+  /** authored uncertainty, or an enemy the player has not learned yet */
+  | "unknown";
+
+/**
+ * The intent `startRound` publishes and `resolveAction` is BOUND to honour
+ * (enemy-intel.md §2). It is TRUTHFUL: the declared skill is the skill the AI
+ * executes, chosen from the same seeded stream, only earlier.
+ *
+ * Two documented ways it bends, both of them player counterplay and both
+ * announced with an `intentBroken` event:
+ *  - the declared target died or left the skill's ranks → the SAME skill
+ *    retargets deterministically (§10's own preference — most wounded, ties to
+ *    the lower rank — no roll);
+ *  - the skill became unusable (shoved out of `usableFrom`) → the enemy
+ *    fizzles into `advance`.
+ */
+export interface DeclaredIntent {
+  /** the enemy that declared it */
+  id: string;
+  kind: IntentKind;
+  /** absent on 'advance' / 'unknown' */
+  skillId?: SkillId;
+  /** absent on self/row skills */
+  targetId?: string;
+  /** expected damage (strike/shove, variance 1.0 no crit) or heal; else 0 */
+  value: number;
+  /** the ranks a row skill will sweep — what the threat highlight draws */
+  ranks?: number[];
+  /** the status a 'status' intent will try to apply */
+  status?: StatusId;
+  /** the round it was declared in (stale intents are never honoured) */
+  round: number;
+}
+
 export interface BattleState {
   /** all, both sides (KO'd stay, ranks compressed) */
   combatants: Combatant[];
@@ -207,6 +284,14 @@ export interface BattleState {
   canFlee: boolean;
   encounterIndex: number;
   outcome: "ongoing" | "victory" | "defeat" | "fled";
+  /**
+   * Declared intents by combatant id, published by `startRound` and consumed
+   * (deleted) as each enemy's slot resolves — so a double-turn boss's SECOND
+   * slot has none and is chosen live (`'unknown'`, enemy-intel.md §2).
+   * ABSENT on a state built before intents existed ⇒ the pre-intent
+   * behaviour, byte for byte.
+   */
+  intents?: Record<string, DeclaredIntent>;
 }
 
 export interface BattleSetup {
@@ -248,7 +333,8 @@ export type BattleAction =
 
 // Engine API (core/combat):
 //   createBattle(setup: BattleSetup): BattleState
-//   startRound(state, rng): { state, events }        // initiative rolls
+//   startRound(state, rng): { state, events }        // initiative rolls, then
+//                                                    // the declared intents
 //   nextActor(state): Combatant | null               // null => round exhausted
 //   legalActions(state): { action-shaped descriptors for UI enabling }
 //   resolveAction(state, action, rng): { state: BattleState; events: BattleEvent[] }
@@ -299,6 +385,21 @@ export type BattleEvent =
   | { t: "chargeCancelled"; id: string }
   | { t: "summon"; id: string; minion: EnemyId; rank: number }
   | { t: "traitTriggered"; id: string; trait: TraitId }
+  /** an enemy declared its next action (round start) — enemy-intel.md §2 */
+  | { t: "intent"; id: string; intent: DeclaredIntent }
+  /** the declared action could not run as declared — the player broke it */
+  | {
+      t: "intentBroken";
+      id: string;
+      /**
+       * `retargeted` — the declared target left, the same skill followed the
+       * line forward; `rechosen` — the declared skill went offline (rank
+       * denial, cooldown, summon cap) and the AI picked again.
+       */
+      reason: "retargeted" | "rechosen";
+    }
+  /** a weakness or resistance modifier actually fired (Bestiary reveal) */
+  | { t: "intel"; id: string; tag: IntelTag; effect: "weak" | "resist" }
   | { t: "fleeAttempt"; ok: boolean; chance: number }
   | { t: "victory" }
   | { t: "defeat" }
@@ -363,6 +464,26 @@ export interface EnemyDef {
   id: EnemyId;
   name: string;
   tier: 1 | 2 | 3;
+  /**
+   * Display level (enemy-intel.md §1). DERIVED, never hand-typed: every def
+   * gets it from `baseLevel(tier, isBoss)` in content/enemies.ts, and the
+   * per-fight value is `enemyLevel(def, floor)` — the same `ENEMY_CURVE` row
+   * that scales the stat block also moves the level, so the number on the
+   * inspect panel and the number in the damage formula never drift apart.
+   */
+  level: number;
+  /** 1-2 lines of flavour; the Stand's nature hinted, not spelled out. */
+  description: string;
+  /** One line naming how it telegraphs — the flavour behind the intent icon. */
+  tell: string;
+  /** Intel tags it takes EXTRA from (mechanical — see `IntelTag`). */
+  weaknesses: IntelTag[];
+  /**
+   * Intel tags it shrugs off. `'offBalance'` IS the tier Off-Paw resistance
+   * (combat.md §8 gate 3) — one system, declared per def instead of implied
+   * by the tier, so `offBalanceResistOf` has exactly one source of truth.
+   */
+  resistances: IntelTag[];
   /** pack-budget cost; bosses/summons: 0 */
   threat: number;
   /** formation ordering in pack build */
@@ -735,10 +856,11 @@ export interface SaveFile {
 }
 
 /**
- * Meta-file schema versions (core/meta/profile.ts META_VERSION = 2).
- * v1 = lifetime records only; v2 = Cat Town (wallet, unlocks, history).
+ * Meta-file schema versions (core/meta/profile.ts META_VERSION = 3).
+ * v1 = lifetime records only; v2 = Cat Town (wallet, unlocks, history);
+ * v3 = the Bestiary (per-enemy earned knowledge, enemy-intel.md §4).
  */
-export type MetaVersion = 1 | 2;
+export type MetaVersion = 1 | 2 | 3;
 
 /**
  * localStorage 'catrpg.meta.v1' — the lifetime record half. Cat Town's

@@ -44,6 +44,27 @@ Cat Town · **1–3 / arrows** pick a route on the run map · **1–6** skills �
   every enemy Off-Balance at once and the party unleashes a **Cat Pile** — a
   synchronized Stand barrage. Heavy bosses trade movement for a **Poise** meter —
   chip it to open them up. KO'd cats spend from a pool of **Nine Lives**.
+- **Enemy intel — intents, inspection, the Bestiary** — combat tells you what is
+  about to happen. Every living enemy telegraphs its next action above its head:
+  a plate whose *silhouette* carries the meaning (a downward blade for a strike,
+  a stretched wedge for a shove, a chip for a status, an upward point for a
+  buff/heal, a diamond for a boss winding up), with the expected damage printed
+  on it — so the HUD still reads in greyscale. Threat lines connect an intending
+  enemy to the cat it named, and that cat carries the **total** it is about to
+  take. This is an *engine* change, not a veneer: `startRound` publishes the
+  declaration and the resolver is **bound** to it, so the telegraph cannot lie.
+  It bends in exactly two ways, both your doing and both announced — kill or move
+  the declared target and the same skill retargets; deny the skill's rank and the
+  AI must pick again. Tap `I` to inspect: level, tier, description, its `tell`,
+  and **what you know** — weaknesses, resistances and skills you have actually
+  seen, everything else rendered `???` so the card doubles as a checklist.
+  Knowledge is earned and persists: meeting a species opens its name and
+  description *and* its telegraphs from the next fight on, watching a modifier
+  fire reveals that tag, and five kills complete the entry forever. Cat Town
+  hosts the **Bestiary** as a collection worth finishing. Weaknesses are
+  mechanical, never decoration — a shove-weak enemy takes ×1.25 from any
+  force-move hit, and a status it is weak to *always* lands while one it resists
+  *never* does (neither rolls, because neither outcome was ever in doubt).
 - **Cat Town** — the hub between runs. Shinies are banked **win or lose** (a failed
   run still pays), and spent at six places on a painted street: the bowls, the stoop,
   the fence, the cart, the notice board, the storm drain. Every unlock adds to the
@@ -100,8 +121,9 @@ Cat Town · **1–3 / arrows** pick a route on the run map · **1–6** skills �
 | | |
 |---|---|
 | ![Cat Town](docs/screenshots/cattown.png) | ![The run map](docs/screenshots/runmap.png) |
-| ![Battle](docs/screenshots/battle.png) | ![The Landing](docs/screenshots/landing.png) |
-| ![The Den](docs/screenshots/progress.png) | ![Event](docs/screenshots/event.png) |
+| ![Battle — every enemy telegraphs its next move](docs/screenshots/battle.png) | ![Inspect — what you know, and what you don't](docs/screenshots/inspect.png) |
+| ![The Bestiary](docs/screenshots/bestiary.png) | ![A boss](docs/screenshots/boss.png) |
+| ![Coming home](docs/screenshots/progress.png) | ![Event](docs/screenshots/event.png) |
 | ![Say what you do](docs/screenshots/tabletop.png) | ![Results](docs/screenshots/results.png) |
 
 ## Art & UI

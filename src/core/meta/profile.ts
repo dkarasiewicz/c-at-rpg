@@ -17,9 +17,14 @@ import type {
 import { computePayout } from "./payout.js";
 import type { Payout } from "./types.js";
 import { unlockCatalog, unlockDef } from "./unlocks.js";
+import { observeBattle, readBestiary } from "./bestiary.js";
+import type { BattleEvent, BattleState } from "../types.js";
 
-/** Current meta schema. v1 = lifetime records only; v2 = the town. */
-export const META_VERSION = 2 as const;
+/**
+ * Current meta schema. v1 = lifetime records only; v2 = the town;
+ * v3 = the Bestiary (enemy-intel.md §4).
+ */
+export const META_VERSION = 3 as const;
 
 /** Runs kept in `history` (newest first). */
 export const HISTORY_LIMIT = 10;
@@ -37,6 +42,7 @@ export function emptyProfile(): MetaProfile {
     lifetimeShinies: 0,
     unlocked: [],
     history: [],
+    bestiary: {},
   };
 }
 
@@ -71,12 +77,18 @@ function readHistory(v: unknown): RunRecord[] {
  * v1 → v2: the counters and records carry over verbatim; the town starts
  * empty (no wallet, no unlocks, no history). A v1 player keeps their best
  * score and simply arrives in a town they have not built yet.
+ *
+ * v2 → v3: the Bestiary (enemy-intel.md §4). A v2 file has none, so it loads
+ * with an empty one — the player keeps every shiny and unlock and simply has
+ * not met anything yet. A v3 file is repaired rather than trusted
+ * (`readBestiary`), so a hand-edited entry cannot claim a tag outside the
+ * vocabulary, a skill the species does not own, or more kills than meetings.
  */
 export function migrateMeta(raw: unknown): MetaProfile | null {
   if (!raw || typeof raw !== "object") return null;
   const m = raw as Omit<Partial<MetaProfile>, "version"> &
     Omit<Partial<MetaFile>, "version"> & { version?: unknown };
-  if (m.version !== 1 && m.version !== 2) return null;
+  if (m.version !== 1 && m.version !== 2 && m.version !== 3) return null;
 
   const base = emptyProfile();
   const counters = m.counters ?? base.counters;
@@ -98,6 +110,7 @@ export function migrateMeta(raw: unknown): MetaProfile | null {
     lifetimeShinies: Math.max(0, Math.floor(num(m.lifetimeShinies))),
     unlocked: dedupe(strings(m.unlocked)),
     history: readHistory(m.history),
+    bestiary: readBestiary(m.bestiary),
   };
   // a v1 file (or a hand-edited one) can have banked less than it owns
   if (profile.lifetimeShinies < profile.shinies) {
@@ -154,6 +167,21 @@ export function bankRun(meta: MetaProfile, summary: RunSummary): BankResult {
       history: [record, ...meta.history].slice(0, HISTORY_LIMIT),
     },
   };
+}
+
+/**
+ * Fold ONE finished battle into the Bestiary (enemy-intel.md §4) — the write
+ * the battle scene makes when the outcome lands, win, lose or flee. Knowledge
+ * is earned by fighting, not by surviving: a battle you fled still taught you
+ * what hit you.
+ */
+export function recordBattle(
+  meta: MetaProfile,
+  state: BattleState,
+  events: readonly BattleEvent[],
+): MetaProfile {
+  const bestiary = observeBattle(meta.bestiary ?? {}, state, events);
+  return { ...meta, bestiary };
 }
 
 /** Grant shinies outside a run end (debug hooks, gifts, GM rewards). */

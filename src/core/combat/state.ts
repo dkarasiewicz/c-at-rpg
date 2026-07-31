@@ -10,6 +10,8 @@
 import type {
   BattleState,
   Combatant,
+  EnemyDef,
+  IntelTag,
   Skill,
   SkillId,
   StatusInstance,
@@ -33,17 +35,90 @@ import { roundHalfUp, clamp } from "../util.js";
 export const OFF_BALANCE_MULT = 1.3;
 
 /**
+ * Damage multiplier a shove-type hit takes from the target's intel
+ * (enemy-intel.md §1). A "shove-type hit" is any skill carrying `moveTarget` —
+ * the damage step of the very skill that is about to force-move something.
+ */
+export const SHOVE_WEAK_MULT = 1.25;
+export const SHOVE_RESIST_MULT = 0.8;
+
+/** The `EnemyDef` behind a combatant, or null for cats and unknown species. */
+export function enemyDefOf(c: Combatant): EnemyDef | null {
+  if (c.side !== "enemy" || !c.speciesId) return null;
+  return ENEMIES[c.speciesId] ?? null;
+}
+
+/** Does `c`'s species take EXTRA from `tag`? (Cats never do.) */
+export function weakTo(c: Combatant, tag: IntelTag): boolean {
+  return enemyDefOf(c)?.weaknesses.includes(tag) ?? false;
+}
+
+/**
+ * Does `c`'s species shrug `tag` off? A weakness always wins over a
+ * resistance, so a def that (wrongly) declares both is still legible.
+ */
+export function resistsTag(c: Combatant, tag: IntelTag): boolean {
+  const def = enemyDefOf(c);
+  if (!def) return false;
+  if (def.weaknesses.includes(tag)) return false;
+  return def.resistances.includes(tag);
+}
+
+/**
  * Chance a combatant SHRUGS OFF an Off-Balance application (balance-and-meta
  * §1 "tier resistance"). Cats and tier-1 enemies never resist and never draw;
  * tier 2 resists 25%, tier 3 40%. Bosses never reach this path — they are
  * `heavy`, so their only Off-Balance source is a Poise break (§11.1), which
  * bypasses both this roll and Braced.
+ *
+ * The tier supplies the MAGNITUDE; the def's `resistances` supplies the
+ * "whether" (enemy-intel.md §1 — one system, not two). Every shipped tier-2/3
+ * mook declares `'offBalance'`, so this returns exactly what the balance pass
+ * measured; a def declaring it as a WEAKNESS instead returns 0 and Off-Paw
+ * lands on it regardless of tier.
  */
 export function offBalanceResistOf(c: Combatant): number {
-  if (c.side !== "enemy" || !c.speciesId) return 0;
-  const def = ENEMIES[c.speciesId];
+  if (!resistsTag(c, "offBalance")) return 0;
+  return offBalanceTierResist(c);
+}
+
+/**
+ * The tier's raw Off-Paw resistance, ignoring what the def declared. Used
+ * only to tell "this thing never resists anyway" (tier 1, cats, bosses) apart
+ * from "this thing SHOULD have resisted but is weak to being knocked over" —
+ * the second is a Bestiary reveal, the first is nothing at all.
+ */
+export function offBalanceTierResist(c: Combatant): number {
+  const def = enemyDefOf(c);
   if (!def || def.boss) return 0;
   return OFF_BALANCE_RESIST_BY_TIER[def.tier] ?? 0;
+}
+
+/**
+ * The intel tag a status application is gated by, or null when the status is
+ * outside the vocabulary (`guarded` / `mending` / `braced` are self-inflicted
+ * bookkeeping, never something an enemy is weak to). `offBalance` is absent
+ * on purpose: it has its own dedicated gate (the tier resistance).
+ */
+export function intelTagOfStatus(status: StatusId): IntelTag | null {
+  return status === "scratched" ||
+    status === "frazzled" ||
+    status === "provoked"
+    ? status
+    : null;
+}
+
+/**
+ * The intel multiplier on one damage application: ×1.25 / ×0.80 when the
+ * skill force-moves and the target is weak / resistant to `shove`, else 1.0.
+ * Shared by `resolveAction` and `previewDamage`, so the number the intent
+ * declares is the number the hit lands for.
+ */
+export function shoveDamageMult(target: Combatant, skill: Skill): number {
+  if (!skill.moveTarget) return 1.0;
+  if (weakTo(target, "shove")) return SHOVE_WEAK_MULT;
+  if (resistsTag(target, "shove")) return SHOVE_RESIST_MULT;
+  return 1.0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -169,6 +244,9 @@ export function cloneState(state: BattleState): BattleState {
         : (c.charging ?? null),
     })),
     queue: state.queue.map((e) => ({ ...e })),
+    // declared intents: a fresh record per clone so consuming one never
+    // reaches back into the caller's state (absent stays absent).
+    ...(state.intents ? { intents: { ...state.intents } } : {}),
   };
 }
 
@@ -331,7 +409,9 @@ export function previewDamage(
   const base = (skill.power / 100) * user.stats.atk;
   const offBal = hasStatus(target, "offBalance") ? OFF_BALANCE_MULT : 1.0;
   const guard = hasStatus(target, "guarded") ? 0.5 : 1.0;
-  const dmg = roundHalfUp(base * 1.0 * offBal * guard);
+  const dmg = roundHalfUp(
+    base * 1.0 * offBal * guard * shoveDamageMult(target, skill),
+  );
   return Math.max(1, dmg - target.stats.def);
 }
 
