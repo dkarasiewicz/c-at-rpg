@@ -30,6 +30,7 @@ import {
 import { hasSprite } from "../sprites.js";
 import { isTouch } from "../touch.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
+import { hydrateDreamedDefs } from "../../services/pool.js";
 
 /* ---- vertical rhythm (design px) ------------------------------------- */
 const EMBLEM_Y = 268;
@@ -57,15 +58,32 @@ export function createBootScene(): Scene {
     mount(root, gameCtx) {
       ctx = gameCtx;
 
+      // Re-register anything this browser ever dreamed, from localStorage,
+      // SYNCHRONOUSLY and with no request. A saved town holding a dreamed
+      // item must open even with the pool switched off — the def has to be
+      // back in the table before any panel looks it up by id.
+      hydrateDreamedDefs();
+
       // 'scene:boot' is the screen's own art when it exists; the title hero
       // is the stand-in, pushed well back so the emblem stays the subject.
       // With neither, the kit paints its palette wash — which IS the old
       // boot look, so the screen can never come up empty.
-      const id = hasSprite("scene:boot") ? "scene:boot" : "title:hero";
+      const own = hasSprite("scene:boot");
+      const id = own ? "scene:boot" : "title:hero";
       view.addChild(
-        // blurred + dimmed: the emblem is the subject of this screen, and
-        // the art behind it is depth of field, not a second illustration
-        sceneBackdrop(id, DESIGN_W, DESIGN_H, { dim: 0.66, blur: true }),
+        // Blurred + dimmed: the emblem is the subject of this screen, and the
+        // art behind it is depth of field, not a second illustration.
+        //
+        // Two dims, because they are two different pictures. `title:hero` is
+        // the cast poster — bright, busy, and it has to be knocked most of the
+        // way back or it fights the crest. `scene:boot` was painted FOR this
+        // screen (a stairway going down, one lantern, almost no incident), so
+        // the same 0.66 just erases it; at 0.44 the lantern still glows behind
+        // the wordmark and the screen has somewhere to be.
+        sceneBackdrop(id, DESIGN_W, DESIGN_H, {
+          dim: own ? 0.44 : 0.66,
+          blur: true,
+        }),
         vignette(DESIGN_W, DESIGN_H, 0.9),
       );
 

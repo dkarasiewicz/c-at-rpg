@@ -180,9 +180,12 @@ function buildCats(
  */
 function takeCatTurn(actor: Combatant, state: BattleState): BattleAction {
   const la = legalActions(state);
-  let best: { action: BattleAction; score: number } | null = null;
+  // Collected, then reduced — rather than kept in a `let` the closure writes,
+  // which TypeScript's control-flow analysis cannot follow (it narrows the
+  // variable to `never` at the return and the pick does not compile).
+  const offers: { action: BattleAction; score: number }[] = [];
   const offer = (action: BattleAction, score: number): void => {
-    if (!best || score > best.score) best = { action, score };
+    offers.push({ action, score });
   };
 
   for (const opt of la.skills) {
@@ -247,6 +250,11 @@ function takeCatTurn(actor: Combatant, state: BattleState): BattleAction {
   // poor. Scored low enough that any live skill beats it.
   if (la.canGuard) offer({ type: "guard" }, actor.energy <= 1 ? 22 : 8);
 
+  // FIRST offer wins a tie, exactly as the `score > best.score` this replaced.
+  let best: { action: BattleAction; score: number } | null = null;
+  for (const candidate of offers) {
+    if (!best || candidate.score > best.score) best = candidate;
+  }
   return best ? best.action : { type: "guard" };
 }
 
@@ -519,6 +527,8 @@ export interface FloorReport {
   winPct: number;
   clearPct: number;
   avgRounds: number;
+  /** Battles that hit the round cap without either side winning. */
+  stalematePct: number;
   obUptimePct: number;
   pilesPerBattle: number;
   avgLivesLost: number;

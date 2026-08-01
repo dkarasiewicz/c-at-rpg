@@ -8,10 +8,21 @@
  */
 import type { GameEvent, Rng } from "../types.js";
 import { pickWeighted } from "../util.js";
+import {
+  pickDreamed,
+  filterDreamed,
+  type DreamedChoice,
+  type DreamedOrigin,
+} from "../loot/dreamed.js";
 
 /** Result of stepping on an event tile: an event to show, or the guard fallback. */
 export type EventSelection =
-  | { kind: "event"; event: GameEvent }
+  | {
+      kind: "event";
+      event: GameEvent;
+      /** Present when the card came out of the shared pool, not the box. */
+      dreamed?: DreamedOrigin;
+    }
   | { kind: "fallback"; shinies: number; text: string };
 
 /**
@@ -48,7 +59,34 @@ export function selectEvent(
   firedEventIds: readonly string[],
   floorFiredEventIds: readonly string[],
   rng: Rng,
+  /**
+   * THE DREAMING: event cards from the shared pool, each already re-linted by
+   * `services/pool.ts` with the SAME `core/events/validate` invariants the
+   * shipped cards pass. They are held to the §2.1 pool filter here too — a
+   * dreamed card obeys its own floor band, `once`, and the no-repeat rule
+   * exactly like an authored one.
+   *
+   * Omitted or empty ⇒ zero extra draws and the authored selection verbatim.
+   */
+  dreamed?: DreamedChoice<GameEvent>,
 ): EventSelection {
+  // Pool-first, BEFORE the authored weighted pick: a hit skips that draw
+  // entirely rather than burning it (events.md §2.2 draw #1 is whichever
+  // pick actually happens).
+  const dream = pickDreamed(
+    rng,
+    filterDreamed(
+      dreamed,
+      (e) =>
+        floorNum >= e.floors[0] &&
+        floorNum <= e.floors[1] &&
+        !(e.once && firedEventIds.includes(e.id)) &&
+        !floorFiredEventIds.includes(e.id),
+    ),
+  );
+  if (dream) {
+    return { kind: "event", event: dream.value, dreamed: dream.origin };
+  }
   const pool = eligibleEvents(
     events,
     floorNum,

@@ -90,6 +90,24 @@ export interface ContentRow {
   frameworkVer?: number;
 }
 
+/**
+ * One keyed picture: where the bytes actually live, and the style contract
+ * they were drawn against.
+ *
+ * `url` is a PUBLIC `catrpg-art` URL — never a generator URL. A generator URL
+ * is not a durable host, and a dreamed thing whose picture 404s in a month is
+ * not persisted, it is remembered wrong (roster-and-persistence.md §6).
+ */
+export interface ArtRow {
+  /** Asset id: the manifest key for shipped art, `<kind>:<ref>` for dreamed. */
+  key: string;
+  url: string;
+  /** The full composed prompt, when it is known. Null for hand-made assets. */
+  prompt?: string | null;
+  /** `ART_STYLE.version` at the time the bytes were made. */
+  styleVersion: number;
+}
+
 /** Narrowing for a pool-first read: kind + floor band + style version. */
 export interface PoolQuery {
   floor?: number;
@@ -137,6 +155,18 @@ export interface ContentPool extends PoolStore {
   ): Promise<string | null>;
   /** Download a generator URL and re-host it in the bucket. Null on failure. */
   rehostArt(objectPath: string, sourceUrl: string): Promise<string | null>;
+  /** Upsert one keyed art row. */
+  putArtRow(row: ArtRow): Promise<boolean>;
+  /** Upsert many keyed art rows in ONE request; returns how many landed. */
+  putArtRows(rows: readonly ArtRow[]): Promise<number>;
+  /**
+   * THE REASON `style_version` EXISTS: every keyed picture drawn against a
+   * style contract OLDER than `version`, oldest first. A style bump makes this
+   * list non-empty and it is the regeneration queue.
+   */
+  staleArt(version: number, limit?: number): Promise<ArtRow[]>;
+  /** The same question for content rows that carry their own picture. */
+  staleContentArt(version: number, limit?: number): Promise<ContentRow[]>;
   /** False when this is the in-memory fallback (no database configured). */
   readonly durable: boolean;
 }
@@ -252,6 +282,33 @@ export function rowFromEntryJson(
   };
 }
 
+/**
+ * Read an `ArtRow` out of the JSON shape `setEntry("art", …)` has always
+ * taken, so the legacy keyed-table call site lands a properly columned row.
+ */
+export function artRowFromEntryJson(key: string, entryJson: string): ArtRow {
+  let body: Record<string, unknown> = {};
+  try {
+    const parsed: unknown = JSON.parse(entryJson);
+    if (typeof parsed === "object" && parsed !== null) {
+      body = parsed as Record<string, unknown>;
+    }
+  } catch {
+    /* an unparseable entry still gets a row, with an empty url */
+  }
+  return {
+    key,
+    url:
+      typeof body.url === "string"
+        ? body.url
+        : typeof body.file === "string"
+          ? body.file
+          : "",
+    prompt: typeof body.prompt === "string" ? body.prompt : null,
+    styleVersion: typeof body.styleVersion === "number" ? body.styleVersion : 1,
+  };
+}
+
 /* ------------------------------------------------------------------------ */
 /* In-memory (dev / no database) — the offline-first guarantee               */
 /* ------------------------------------------------------------------------ */
@@ -343,8 +400,51 @@ export class MemoryPool implements ContentPool {
   }
 
   setEntry(kind: KeyedPoolKind, key: string, entryJson: string): Promise<void> {
+    if (kind === "art") {
+      return this.putArtRow(artRowFromEntryJson(key, entryJson)).then(() => {});
+    }
     this.table(kind).set(key, entryJson);
     return Promise.resolve();
+  }
+
+  putArtRow(row: ArtRow): Promise<boolean> {
+    this.table("art").set(row.key, JSON.stringify(row));
+    return Promise.resolve(true);
+  }
+
+  async putArtRows(rows: readonly ArtRow[]): Promise<number> {
+    // De-duplicate on key exactly as `SupabasePool` must, so a dry run reports
+    // the number of ROWS that would exist, not the number of writes attempted.
+    const byKey = new Map<string, ArtRow>();
+    for (const row of rows) byKey.set(row.key, row);
+    let n = 0;
+    for (const row of byKey.values()) if (await this.putArtRow(row)) n++;
+    return n;
+  }
+
+  staleArt(version: number, limit = 200): Promise<ArtRow[]> {
+    const out: ArtRow[] = [];
+    for (const json of this.table("art").values()) {
+      try {
+        const row = JSON.parse(json) as ArtRow;
+        if (row.styleVersion < version) out.push(row);
+      } catch {
+        /* an unparseable row is not evidence of a stale style */
+      }
+    }
+    out.sort((a, b) => a.styleVersion - b.styleVersion);
+    return Promise.resolve(out.slice(0, limit));
+  }
+
+  staleContentArt(version: number, limit = 200): Promise<ContentRow[]> {
+    const out: ContentRow[] = [];
+    for (const rows of this.lists.values()) {
+      for (const row of rows) {
+        if (row.artUrl && row.styleVersion < version) out.push(row);
+      }
+    }
+    out.sort((a, b) => a.styleVersion - b.styleVersion);
+    return Promise.resolve(out.slice(0, limit));
   }
 
   putArt(): Promise<string | null> {
@@ -376,6 +476,18 @@ interface RestRow {
 const CONTENT_COLUMNS =
   "id,payload,art_url,art_prompt,style_version,floor_min,floor_max,tier," +
   "author_session,framework_ver";
+
+/**
+ * `content.kind` column value → the plural `PoolKind` callers use. The inverse
+ * of `DREAMED_KIND_COLUMN`, derived from it rather than written out, so the two
+ * cannot drift when a kind is added.
+ */
+const KIND_FROM_COLUMN: Record<string, PoolKind> = Object.fromEntries(
+  Object.entries(DREAMED_KIND_COLUMN).map(([plural, column]) => [
+    column,
+    plural as PoolKind,
+  ]),
+) as Record<string, PoolKind>;
 
 export class SupabasePool implements ContentPool {
   readonly durable = true;
@@ -604,6 +716,11 @@ export class SupabasePool implements ContentPool {
       body = {};
     }
 
+    if (kind === "art") {
+      await this.putArtRow(artRowFromEntryJson(key, entryJson));
+      return;
+    }
+
     if (kind === "powers") {
       // A power is content: same table, `kind='power'`, so the pool-first read
       // is one query across everything that has ever been dreamed.
@@ -623,35 +740,20 @@ export class SupabasePool implements ContentPool {
       return;
     }
 
-    const [table, payload] =
-      kind === "interactions"
-        ? [
-            "interactions",
-            {
-              pair_key: key,
-              // NULL IS A VERDICT. `rule: null` means "judged, and they do not
-              // resonate" — stored precisely so it is never recomputed.
-              rule: body.rule ?? null,
-              flavor: typeof body.flavor === "string" ? body.flavor : null,
-              announce:
-                typeof body.announce === "string" ? body.announce : null,
-              framework_ver:
-                typeof body.frameworkVer === "number" ? body.frameworkVer : 1,
-              first_by: typeof body.firstBy === "string" ? body.firstBy : null,
-            },
-          ]
-        : [
-            "art",
-            {
-              key,
-              url: typeof body.url === "string" ? body.url : (body.file ?? ""),
-              prompt: typeof body.prompt === "string" ? body.prompt : null,
-              style_version:
-                typeof body.styleVersion === "number" ? body.styleVersion : 1,
-            },
-          ];
+    // Only `interactions` is left: `art` and `powers` returned above.
+    const payload = {
+      pair_key: key,
+      // NULL IS A VERDICT. `rule: null` means "judged, and they do not
+      // resonate" — stored precisely so it is never recomputed.
+      rule: body.rule ?? null,
+      flavor: typeof body.flavor === "string" ? body.flavor : null,
+      announce: typeof body.announce === "string" ? body.announce : null,
+      framework_ver:
+        typeof body.frameworkVer === "number" ? body.frameworkVer : 1,
+      first_by: typeof body.firstBy === "string" ? body.firstBy : null,
+    };
 
-    await this.rest(table, {
+    await this.rest("interactions", {
       method: "POST",
       write: true,
       extraHeaders: {
@@ -660,6 +762,86 @@ export class SupabasePool implements ContentPool {
       },
       body: JSON.stringify([payload]),
     });
+  }
+
+  /* -- keyed art rows ---------------------------------------------------- */
+
+  async putArtRow(row: ArtRow): Promise<boolean> {
+    return (await this.putArtRows([row])) === 1;
+  }
+
+  async putArtRows(rows: readonly ArtRow[]): Promise<number> {
+    if (rows.length === 0) return 0;
+    // De-duplicate on key first: PostgREST refuses a single ON CONFLICT batch
+    // that names the same key twice ("cannot affect row a second time"), and
+    // one repeat would reject the WHOLE upsert.
+    const byKey = new Map<string, ArtRow>();
+    for (const row of rows) byKey.set(row.key, row);
+    const res = await this.rest("art", {
+      method: "POST",
+      write: true,
+      extraHeaders: {
+        "content-type": "application/json",
+        prefer: "resolution=merge-duplicates,return=minimal",
+      },
+      body: JSON.stringify(
+        [...byKey.values()].map((r) => ({
+          key: r.key,
+          url: r.url,
+          prompt: r.prompt ?? null,
+          style_version: r.styleVersion,
+        })),
+      ),
+    });
+    return res?.ok ? byKey.size : 0;
+  }
+
+  /**
+   * Every keyed picture drawn against a style contract OLDER than `version`.
+   *
+   * This is what `style_version` is FOR. Bump `ART_STYLE.version` and this
+   * list is the regeneration queue — without it the column is a number nobody
+   * ever asks a question of.
+   */
+  async staleArt(version: number, limit = 200): Promise<ArtRow[]> {
+    const rows = await this.selectRows(
+      `art?style_version=lt.${version}&select=key,url,prompt,style_version` +
+        `&order=style_version.asc,key.asc&limit=${Math.max(1, limit)}`,
+    );
+    if (!rows) return [];
+    const out: ArtRow[] = [];
+    for (const raw of rows) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const r = raw as Record<string, unknown>;
+      if (typeof r.key !== "string" || typeof r.url !== "string") continue;
+      out.push({
+        key: r.key,
+        url: r.url,
+        prompt: typeof r.prompt === "string" ? r.prompt : null,
+        styleVersion: typeof r.style_version === "number" ? r.style_version : 1,
+      });
+    }
+    return out;
+  }
+
+  /** The same question for content rows that carry a picture of their own. */
+  async staleContentArt(version: number, limit = 200): Promise<ContentRow[]> {
+    const rows = await this.selectRows(
+      `content?art_url=not.is.null&style_version=lt.${version}` +
+        `&select=kind,${CONTENT_COLUMNS}` +
+        `&order=style_version.asc,id.asc&limit=${Math.max(1, limit)}`,
+    );
+    if (!rows) return [];
+    const out: ContentRow[] = [];
+    for (const raw of rows) {
+      if (typeof raw !== "object" || raw === null) continue;
+      const column = (raw as { kind?: unknown }).kind;
+      const kind = typeof column === "string" ? KIND_FROM_COLUMN[column] : null;
+      if (!kind) continue;
+      const row = SupabasePool.toRow(kind, raw);
+      if (row) out.push(row);
+    }
+    return out;
   }
 
   /* -- storage ----------------------------------------------------------- */

@@ -1,0 +1,470 @@
+{
+ "version": 1,
+ "sprites": {
+  "bestiary:unknown": {
+   "file": "bestiary-unknown.png",
+   "w": 320,
+   "h": 320
+  },
+  "equip:appliesAlwaysHit": {
+   "file": "equip-appliesAlwaysHit.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:batteryCollar": {
+   "file": "equip-batteryCollar.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:bubbleWrapRuff": {
+   "file": "equip-bubbleWrapRuff.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:cardboardCuirass": {
+   "file": "equip-cardboardCuirass.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:catPileDouble": {
+   "file": "equip-catPileDouble.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:chimeBell": {
+   "file": "equip-chimeBell.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:critOffBalance": {
+   "file": "equip-critOffBalance.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:driedLuckyBeetle": {
+   "file": "equip-driedLuckyBeetle.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:flealessBand": {
+   "file": "equip-flealessBand.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:fluffyCollar": {
+   "file": "equip-fluffyCollar.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:healsGrantMending": {
+   "file": "equip-healsGrantMending.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:leadLinedCollar": {
+   "file": "equip-leadLinedCollar.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:mittsOfMenace": {
+   "file": "equip-mittsOfMenace.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:moverOffBalance": {
+   "file": "equip-moverOffBalance.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:ninthBell": {
+   "file": "equip-ninthBell.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:noNameTag": {
+   "file": "equip-noNameTag.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:poiseChip2": {
+   "file": "equip-poiseChip2.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:quiltedGorget": {
+   "file": "equip-quiltedGorget.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:ribbonRapier": {
+   "file": "equip-ribbonRapier.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:spikedCollar": {
+   "file": "equip-spikedCollar.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:startEnergy6": {
+   "file": "equip-startEnergy6.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:tangleTalisman": {
+   "file": "equip-tangleTalisman.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:tinBell": {
+   "file": "equip-tinBell.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:wardCollar": {
+   "file": "equip-wardCollar.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:wovenCollar": {
+   "file": "equip-wovenCollar.png",
+   "w": 128,
+   "h": 128
+  },
+  "equip:yarnBangle": {
+   "file": "equip-yarnBangle.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:bagOfFleas": {
+   "file": "item-bagOfFleas.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:canOpenerRecording": {
+   "file": "item-canOpenerRecording.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:cardboardBox": {
+   "file": "item-cardboardBox.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:catnip": {
+   "file": "item-catnip.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:featherWand": {
+   "file": "item-featherWand.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:sardineTin": {
+   "file": "item-sardineTin.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:shinies": {
+   "file": "item-shinies.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:squeakyToy": {
+   "file": "item-squeakyToy.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:theCucumber": {
+   "file": "item-theCucumber.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:tunaSnack": {
+   "file": "item-tunaSnack.png",
+   "w": 128,
+   "h": 128
+  },
+  "item:warmMilk": {
+   "file": "item-warmMilk.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:binLidBulwark": {
+   "file": "skill-binLidBulwark.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:bite": {
+   "file": "skill-bite.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:bodySlam": {
+   "file": "skill-bodySlam.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:bottleCapFlick": {
+   "file": "skill-bottleCapFlick.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:boxAmbush": {
+   "file": "skill-boxAmbush.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:clawSwipe": {
+   "file": "skill-clawSwipe.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:dampSlap": {
+   "file": "skill-dampSlap.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:dumpsterDunk": {
+   "file": "skill-dumpsterDunk.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:dustBlast": {
+   "file": "skill-dustBlast.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:everyBoxAtOnce": {
+   "file": "skill-everyBoxAtOnce.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:fullUnravel": {
+   "file": "skill-fullUnravel.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:grizzledCuff": {
+   "file": "skill-grizzledCuff.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:hairballHex": {
+   "file": "skill-hairballHex.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:hex": {
+   "file": "skill-hex.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:hiss": {
+   "file": "skill-hiss.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:hoseWhack": {
+   "file": "skill-hoseWhack.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:junkyardToss": {
+   "file": "skill-junkyardToss.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:kneadTheKnots": {
+   "file": "skill-kneadTheKnots.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:laserZap": {
+   "file": "skill-laserZap.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:lidBash": {
+   "file": "skill-lidBash.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:maul": {
+   "file": "skill-maul.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:maxSuction": {
+   "file": "skill-maxSuction.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:nibble": {
+   "file": "skill-nibble.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:nineLivesNudge": {
+   "file": "skill-nineLivesNudge.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:ninthKnotCurse": {
+   "file": "skill-ninthKnotCurse.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:ovenSpring": {
+   "file": "skill-ovenSpring.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:peck": {
+   "file": "skill-peck.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:phantomCucumber": {
+   "file": "skill-phantomCucumber.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:pounce": {
+   "file": "skill-pounce.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:purrquake": {
+   "file": "skill-purrquake.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:ram": {
+   "file": "skill-ram.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:scepterBonk": {
+   "file": "skill-scepterBonk.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:scruffToss": {
+   "file": "skill-scruffToss.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:shiv": {
+   "file": "skill-shiv.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:snarlOfThreads": {
+   "file": "skill-snarlOfThreads.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:soothingPurr": {
+   "file": "skill-soothingPurr.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:spray": {
+   "file": "skill-spray.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:squirt": {
+   "file": "skill-squirt.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:summonVermin": {
+   "file": "skill-summonVermin.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:swoop": {
+   "file": "skill-swoop.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:theBigBark": {
+   "file": "skill-theBigBark.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:trashCompactor": {
+   "file": "skill-trashCompactor.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:trashToss": {
+   "file": "skill-trashToss.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:tripWire": {
+   "file": "skill-tripWire.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:warmLoafPress": {
+   "file": "skill-warmLoafPress.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:whiskerFeint": {
+   "file": "skill-whiskerFeint.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:yankOfYarn": {
+   "file": "skill-yankOfYarn.png",
+   "w": 128,
+   "h": 128
+  },
+  "skill:yarnSlam": {
+   "file": "skill-yarnSlam.png",
+   "w": 128,
+   "h": 128
+  },
+  "status:braced": {
+   "file": "status-braced.png",
+   "w": 64,
+   "h": 64
+  },
+  "status:frazzled": {
+   "file": "status-frazzled.png",
+   "w": 64,
+   "h": 64
+  },
+  "status:guarded": {
+   "file": "status-guarded.png",
+   "w": 64,
+   "h": 64
+  },
+  "status:mending": {
+   "file": "status-mending.png",
+   "w": 64,
+   "h": 64
+  },
+  "status:offBalance": {
+   "file": "status-offBalance.png",
+   "w": 64,
+   "h": 64
+  },
+  "status:provoked": {
+   "file": "status-provoked.png",
+   "w": 64,
+   "h": 64
+  },
+  "status:scratched": {
+   "file": "status-scratched.png",
+   "w": 64,
+   "h": 64
+  }
+ }
+}

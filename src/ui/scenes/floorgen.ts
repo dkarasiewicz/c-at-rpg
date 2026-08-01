@@ -15,6 +15,10 @@ import { Container } from "pixi.js";
 import { FLOORS } from "../../content/floors.js";
 import { generateCurrentFloorMap } from "../../core/run/runState.js";
 import { maxHp } from "../../core/run/party.js";
+import { hash, mulberry32 } from "../../core/rng.js";
+import { pickDreamed, type DreamedBackdrop } from "../../core/loot/dreamed.js";
+import { dreamedBackdrops } from "../../services/pool.js";
+import { dreamChip, primeFloorDreams } from "./dreaming.js";
 import { applyPartyContent } from "./partyCreator.js";
 import { PAL } from "../palette.js";
 import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
@@ -63,8 +67,17 @@ export function createFloorgenScene(): Scene {
         ctx.run = run;
       }
 
+      // THE DREAMING: the descent beat is exactly when the pool should be
+      // warming, and it is the first place a dreamed floor NAME can show.
+      // Fire and forget — the hold below is on a timer, never on a fetch.
+      primeFloorDreams(run);
+      const dressed = pickDreamed<DreamedBackdrop>(
+        mulberry32(hash(run.runSeed, "backdrop", run.floorNum)),
+        dreamedBackdrops(run.floorNum),
+      );
       const cfg = FLOORS[run.floorNum - 1];
-      const name = cfg ? cfg.name : `Floor ${run.floorNum}`;
+      const name =
+        dressed?.value.name ?? (cfg ? cfg.name : `Floor ${run.floorNum}`);
 
       view.addChild(
         sceneBackdrop("scene:floorgen", DESIGN_W, DESIGN_H, { dim: 0.5 }),
@@ -93,6 +106,12 @@ export function createFloorgenScene(): Scene {
       seed.position.set(DESIGN_W / 2, NAME_Y + SPACE.lg + SPACE.xs);
 
       view.addChild(eyebrow, banner, floorName, seed);
+      if (dressed) {
+        const chip = dreamChip(dressed.origin);
+        chip.pivot.x = chip.width / 2;
+        chip.position.set(DESIGN_W / 2, NAME_Y + SPACE.xl + SPACE.md);
+        view.addChild(chip);
+      }
 
       // hold meter: a plain progress read-out on the shared bar widget
       meter = bar(METER_W, 6, { kind: "xp", ticks: false });

@@ -103,6 +103,14 @@ import {
   traitTier,
 } from "../../core/run/party.js";
 import { rollBossLoot, rollChest, rollVictory } from "../../core/loot/roll.js";
+import type { DreamedOrigin } from "../../core/loot/dreamed.js";
+import {
+  dreamedEnemies,
+  dreamedEquips,
+  noteDreamedUse,
+} from "../../services/pool.js";
+import { dreamChip, dreamLine } from "./dreaming.js";
+import { EQUIP_DEFS } from "../../content/equipment.js";
 import type { LootCtx } from "../../core/loot/roll.js";
 import { isStack, removeConsumable } from "../../core/loot/inventory.js";
 import { roundHalfUp } from "../../core/util.js";
@@ -203,6 +211,13 @@ export interface BattleSceneParams {
   lootMode?: "none" | "normal" | "bonus";
   /** event fights: onWinEffects context, passed to the loot overlay. */
   eventWin?: EventWinContext;
+  /**
+   * Species ids in `enemies` that came out of the SHARED POOL rather than the
+   * floor's authored roster (core/map/encounter.ts). Purely presentational:
+   * the nameplate of a dreamed body wears the mark, so a stranger in the pack
+   * reads as a stranger.
+   */
+  dreamedSpecies?: string[];
 }
 
 /* ---------------------------------------------------------------------- */
@@ -385,6 +400,21 @@ const announcedResonances = new Set<string>();
 export function createBattleScene(): Scene {
   let ctx: GameCtx | null = null;
   let params: BattleSceneParams | null = null;
+
+  /**
+   * The pool row a pack member came from, or null for authored bodies.
+   * `params.dreamedSpecies` is what the run map decided; the origin itself is
+   * read back out of the (already validated) candidate cache, so nothing has
+   * to be plumbed through a scene boundary as loose text.
+   */
+  const dreamedOriginOfSpecies = (speciesId: string): DreamedOrigin | null => {
+    if (!params?.dreamedSpecies?.includes(speciesId)) return null;
+    const floorNum = ctx?.run?.floorNum ?? 1;
+    return (
+      dreamedEnemies(floorNum).candidates.find((d) => d.value.id === speciesId)
+        ?.origin ?? null
+    );
+  };
   let alive = false;
 
   // engine state
@@ -710,6 +740,19 @@ export function createBattleScene(): Scene {
       intent = makeIntentBadge(1);
       intent.view.position.set(0, badgeY + lift);
       root.addChild(intent.view);
+    }
+
+    // THE MARK: a body that joined this pack out of the shared pool wears it
+    // under its feet, permanently — not on the hover plate, because "who is
+    // this" has to be answerable without hovering anything.
+    if (c.side === "enemy" && c.speciesId) {
+      const origin = dreamedOriginOfSpecies(c.speciesId);
+      if (origin) {
+        const chip = dreamChip(origin);
+        chip.pivot.x = chip.width / 2;
+        chip.position.set(0, 46);
+        root.addChild(chip);
+      }
     }
 
     // status chips centered above the head
@@ -2583,7 +2626,13 @@ export function createBattleScene(): Scene {
       uniquesDropped: out.run.uniquesDropped,
       nextUid: out.run.inventory.nextUid,
       currentShinies: out.run.inventory.shinies,
+      // A victory can hand over somebody else's item (core/loot/dreamed.ts).
+      dreamed: dreamedEquips(run.floorNum),
+      onDreamed: (uid, origin) => {
+        dreamedDrops.set(uid, origin);
+      },
     };
+    const dreamedDrops = new Map<number, DreamedOrigin>();
     const grant =
       params.lootMode === "none"
         ? { shinies: 0, equips: [], consumables: [] }
@@ -2599,10 +2648,21 @@ export function createBattleScene(): Scene {
       levelBefore,
       livesLost,
       eventWin: params.eventWin,
-      extraLines: out.died.map((cat) => ({
-        text: `${cat.name} is out of Lives — gone for good.`,
-        tone: "loss" as const,
-      })),
+      extraLines: [
+        ...out.died.map((cat) => ({
+          text: `${cat.name} is out of Lives — gone for good.`,
+          tone: "loss" as const,
+        })),
+        // The mark, as a delta line: the spoils panel is where a dropped item
+        // is actually read, so that is where "this came from the world" goes.
+        ...grant.equips
+          .filter((e) => dreamedDrops.has(e.uid))
+          .map((e) => {
+            const origin = dreamedDrops.get(e.uid)!;
+            noteDreamedUse("items", origin, "victory", e.defId);
+            return dreamLine(origin, EQUIP_DEFS[e.defId]?.name ?? e.defId);
+          }),
+      ],
       onClosed: after,
     };
     delay(600, () => ctx?.scenes.pushOverlay("loot", lootParams));

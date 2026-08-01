@@ -15,7 +15,7 @@
  * Tapping a card calls back with a new order and the SCENE writes it through
  * `setDescending`, so the panel can be rebuilt from the profile at any time.
  */
-import { Container, Graphics } from "pixi.js";
+import { Container, Graphics, Sprite } from "pixi.js";
 import type { CatId, EquipInstance } from "../../core/types.js";
 import type {
   MemorialEntry,
@@ -29,7 +29,17 @@ import { EQUIP_DEFS } from "../../content/equipment.js";
 import { PAL } from "../palette.js";
 import { DESIGN_H, DESIGN_W, RADIUS, SPACE } from "../layout.js";
 import { TYPE } from "../textStyles.js";
-import { avatar, button, heading, label, panel, scrim } from "../widgets.js";
+import {
+  avatar,
+  button,
+  heading,
+  label,
+  panel,
+  sceneBackdrop,
+  scrim,
+  vignette,
+} from "../widgets.js";
+import { hasSprite, spriteTextureFor } from "../sprites.js";
 import { padHit } from "../touch.js";
 
 /* ---- geometry (design px) -------------------------------------------- */
@@ -41,6 +51,19 @@ const CARD_GAP = SPACE.md;
 const CARD_COLS = 3;
 const GRID_TOP = 118;
 const FOOT_H = 44;
+
+/* ---- the art (visual-v2 §backdrops) ---------------------------------- */
+
+/** Backdrop id per face of the screen. Absent art ⇒ the old flat scrim. */
+const SCREEN_ART = {
+  clowder: "scene:roster",
+  memorial: "scene:memorial",
+} as const;
+/** The keyed emblem the memorial is titled with. */
+const MEMORIAL_MARK = "prop:memorialMark";
+/** Emblem size in the header, and in the "nobody yet" empty state. */
+const MARK_H = 56;
+const MARK_EMPTY = 132;
 
 export interface RosterPanelOpts {
   meta: MetaProfile;
@@ -180,6 +203,78 @@ export function memorialLine(m: MemorialEntry): string {
   return `${m.name} · Lv ${m.level} · floor ${m.floor} · ${m.cause}`;
 }
 
+/* ---- the art ---------------------------------------------------------- */
+
+/**
+ * The painting INSIDE a card: cover-fitted, masked to the card's own rounded
+ * corners, and washed darker as it goes down so rows and buttons keep their
+ * contrast.
+ *
+ * This is the difference between a screen and a form. The clowder grid is
+ * three cats wide and six deep, so a town with two cats in it left two thirds
+ * of a 1000×640 card as flat purple — and the memorial with three names on it
+ * was worse, because the emptiness is the subject there. The art fills that
+ * space with the place the screen is ABOUT, and everything readable is drawn
+ * on top of an opaque tile regardless.
+ *
+ * Fail-soft like every other painted-first helper: no texture, no art, and
+ * the caller's layout does not move a pixel.
+ */
+function cardArt(
+  id: string,
+  w: number,
+  h: number,
+  opts: { alpha?: number; fade?: number } = {},
+): Container | null {
+  const tex = spriteTextureFor(id);
+  if (!tex || tex.width <= 0 || tex.height <= 0) return null;
+  const view = new Container();
+
+  const sp = new Sprite({ texture: tex });
+  const s = Math.max(w / tex.width, h / tex.height);
+  sp.scale.set(s);
+  sp.position.set((w - tex.width * s) / 2, (h - tex.height * s) / 2);
+  sp.alpha = opts.alpha ?? 0.5;
+  view.addChild(sp);
+
+  // Top-lit: the header band keeps the painting and the body sinks into the
+  // card, because everything the player has to READ is lower down and the
+  // brightest thing in both paintings (candle wax, moonlit crates) is too.
+  //
+  // 40 bands, eased: fewer and the step between two flat alphas is a visible
+  // horizontal seam across the card — 14 of them looked like scan lines.
+  const wash = new Graphics();
+  const steps = 40;
+  const deep = opts.fade ?? 0.62;
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1);
+    wash
+      .rect(0, (h * i) / steps, w, h / steps + 1)
+      .fill({ color: PAL.bgDeep, alpha: deep * t * t });
+  }
+  view.addChild(wash);
+
+  const mask = new Graphics()
+    .roundRect(0, 0, w, h, RADIUS.panel)
+    .fill(PAL.text);
+  view.addChild(mask);
+  view.mask = mask;
+  view.eventMode = "none";
+  return view;
+}
+
+/** The keyed memorial emblem at `size`, or null when the art pack lacks it. */
+function memorialMark(size: number): Container | null {
+  const tex = spriteTextureFor(MEMORIAL_MARK);
+  if (!tex || tex.height <= 0) return null;
+  const view = new Container();
+  const sp = new Sprite({ texture: tex, anchor: 0.5 });
+  sp.scale.set(size / tex.height);
+  view.addChild(sp);
+  view.eventMode = "none";
+  return view;
+}
+
 /* ---- the panel ------------------------------------------------------- */
 
 /**
@@ -189,7 +284,20 @@ export function memorialLine(m: MemorialEntry): string {
  */
 export function makeRosterPanel(opts: RosterPanelOpts): Container {
   const box = new Container();
-  const back = scrim(DESIGN_W, DESIGN_H, 0.72);
+
+  // WHERE YOU ARE, not what you left. The clowder and the memorial are two
+  // different places in the town, so each gets its own room behind the card
+  // instead of a blur of whatever screen the modal opened over. With no art
+  // pack this is exactly the flat scrim it has always been.
+  const artId = opts.memorial ? SCREEN_ART.memorial : SCREEN_ART.clowder;
+  const painted = hasSprite(artId);
+  if (painted) {
+    box.addChild(
+      sceneBackdrop(artId, DESIGN_W, DESIGN_H, { dim: 0.52 }),
+      vignette(DESIGN_W, DESIGN_H, 0.95),
+    );
+  }
+  const back = scrim(DESIGN_W, DESIGN_H, painted ? 0.34 : 0.72);
   back.eventMode = "static";
   back.on("pointertap", () => opts.onClose());
   box.addChild(back);
@@ -200,6 +308,11 @@ export function makeRosterPanel(opts: RosterPanelOpts): Container {
   });
   card.position.set((DESIGN_W - ROSTER_W) / 2, (DESIGN_H - ROSTER_H) / 2);
   box.addChild(card);
+  const inside = cardArt(artId, ROSTER_W, ROSTER_H, {
+    alpha: opts.memorial ? 0.5 : 0.44,
+    fade: 0.84,
+  });
+  if (inside) card.addChild(inside);
 
   const roster = livingRoster(opts.meta);
   const fallen = opts.meta.memorial ?? [];
@@ -207,19 +320,28 @@ export function makeRosterPanel(opts: RosterPanelOpts): Container {
     roster.some((c) => c.id === id),
   );
 
+  // The memorial is titled with the keyed candle emblem; the clowder is not,
+  // because a shrine mark over a list of living cats would be a lie.
+  const mark = opts.memorial ? memorialMark(MARK_H) : null;
+  if (mark) {
+    mark.position.set(SPACE.lg + MARK_H / 2, SPACE.md + 28);
+    card.addChild(mark);
+  }
+  const textX = SPACE.lg + (mark ? MARK_H + SPACE.md : 0);
+
   const title = heading(opts.memorial ? "THE MEMORIAL" : "THE CLOWDER", 2, {
     fill: PAL.gold,
   });
-  title.position.set(SPACE.lg, SPACE.md);
+  title.position.set(textX, SPACE.md);
   card.addChild(title);
 
   const note = label(
     opts.memorial
       ? "Everyone who went down there and did not come back."
       : rosterNote(picked.length, opts.capacity),
-    { dim: true, size: TYPE.small, wrap: ROSTER_W - SPACE.lg * 2 - 260 },
+    { dim: true, size: TYPE.small, wrap: ROSTER_W - textX - SPACE.lg - 260 },
   );
-  note.position.set(SPACE.lg, SPACE.md + 34);
+  note.position.set(textX, SPACE.md + 34);
   card.addChild(note);
 
   const tally = label(
@@ -423,12 +545,34 @@ function buildMemorial(
   fallen: readonly MemorialEntry[],
 ): void {
   if (fallen.length === 0) {
+    // An empty memorial is the best state in the game and it used to look
+    // like a failed fetch: one grey sentence on a slab of purple. It gets the
+    // emblem and a place to stand instead — over the QUIET third of the
+    // painting (the shrine itself is weighted right), on a plate, because a
+    // line of type laid straight onto candlelit stone cannot be read.
+    const cx = ROSTER_W * 0.29;
+    const mid = ROSTER_H / 2 + 4;
+    const emblem = memorialMark(MARK_EMPTY);
+    if (emblem) {
+      emblem.position.set(cx, mid - 34);
+      card.addChild(emblem);
+    }
     const none = label("Nobody yet. Keep it that way.", {
-      dim: true,
-      size: TYPE.small,
+      size: TYPE.body,
+      center: true,
     });
-    none.position.set(SPACE.lg, GRID_TOP);
-    card.addChild(none);
+    const ny = mid + (emblem ? MARK_EMPTY / 2 + 6 : 0);
+    const plate = new Graphics()
+      .roundRect(
+        cx - none.width / 2 - SPACE.md,
+        ny - SPACE.xs,
+        none.width + SPACE.md * 2,
+        none.height + SPACE.sm,
+        RADIUS.button,
+      )
+      .fill({ color: PAL.panel, alpha: 0.72 });
+    none.position.set(cx, ny);
+    card.addChild(plate, none);
     return;
   }
   const w = ROSTER_W - SPACE.lg * 2;
@@ -440,11 +584,15 @@ function buildMemorial(
     const m = fallen[i];
     const row = new Container();
     row.position.set(SPACE.lg, GRID_TOP + i * MEM_ROW_H);
+    // A plate per name, not a bare hairline: the card is painted now, and a
+    // name has to read over candlelight without the row dissolving into it.
     row.addChild(
       new Graphics()
-        .moveTo(0, MEM_ROW_H - 1)
-        .lineTo(w, MEM_ROW_H - 1)
-        .stroke({ width: 1, color: PAL.border, alpha: 0.7 }),
+        .roundRect(-SPACE.sm, 0, w + SPACE.sm * 2, MEM_ROW_H - 4, RADIUS.button)
+        .fill({ color: PAL.panel, alpha: 0.66 })
+        .moveTo(0, MEM_ROW_H - 3)
+        .lineTo(w, MEM_ROW_H - 3)
+        .stroke({ width: 1, color: PAL.border, alpha: 0.55 }),
     );
     const face = avatar(m.classId, 26, { frame: false, dead: true });
     face.position.set(14, MEM_ROW_H / 2 - 2);

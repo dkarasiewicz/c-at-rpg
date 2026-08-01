@@ -58,6 +58,7 @@ import { hash, mulberry32 } from "../../core/rng.js";
 import { CLASSES } from "../../content/classes.js";
 import { CONSUMABLES } from "../../content/consumables.js";
 import { ENEMIES } from "../../content/enemies.js";
+import { EQUIP_DEFS } from "../../content/equipment.js";
 import { encounterFor, encounterIndexOf } from "../../core/map/encounter.js";
 import {
   advance,
@@ -75,6 +76,18 @@ import { maxHp } from "../../core/run/party.js";
 import { isStack, removeConsumable } from "../../core/loot/inventory.js";
 import { resolveOption } from "../../core/events/resolve.js";
 import { rollChest, type LootCtx } from "../../core/loot/roll.js";
+import {
+  pickDreamed,
+  type DreamedBackdrop,
+  type DreamedOrigin,
+} from "../../core/loot/dreamed.js";
+import {
+  dreamedBackdrops,
+  dreamedEnemies,
+  dreamedEquips,
+  noteDreamedUse,
+} from "../../services/pool.js";
+import { dreamChip, dreamLine, primeFloorDreams } from "./dreaming.js";
 import {
   didDescend,
   dramaticStateBeats,
@@ -422,6 +435,22 @@ export class RunMapScene implements Scene {
 
     const run = ctx.run;
     const floorNum = run.floorNum;
+
+    // THE DREAMING: warm the shared pool for this floor and the next one,
+    // fire and forget. Nothing below awaits it — a node stepped on before it
+    // lands simply rolls authored content (services/pool.ts, "async prime,
+    // synchronous consume").
+    //
+    // The one thing that IS re-read afterwards is the floor's dressing: the
+    // header is painted on the first frame, long before any fetch could land,
+    // and a floor entered straight from Continue (no descent beat in front of
+    // it) would otherwise never be able to show a dreamed name at all. The
+    // rail is rebuilt once, in place, if a dream turned up.
+    void primeFloorDreams(run).then(() => {
+      if (!this.mounted || this.dressing !== null) return;
+      this.dressing = undefined; // recompute now that the pool has landed
+      if (this.floorDressing()) this.buildHeader();
+    });
 
     this.bgC = new Container();
     this.worldC = new Container();
@@ -1033,6 +1062,36 @@ export class RunMapScene implements Scene {
     return this.nodeViews.find((n) => n.node.id === id) ?? null;
   }
 
+  /* ------------------------------ dreaming ------------------------------ */
+
+  /**
+   * The dreamed dressing for this floor, or null for the authored one.
+   *
+   * Seeded from `hash(runSeed, 'backdrop', floor)` — its own stream, so which
+   * world the party walks into is a property of the RUN and never depends on
+   * how many chests were opened first. Memoised for the scene's lifetime so a
+   * refresh cannot rename the floor mid-visit.
+   */
+  private dressing: { name: string; origin: DreamedOrigin } | null | undefined;
+  /** Kept so the rail can be rebuilt when the pool lands after the mount. */
+  private headerRail: Container | null = null;
+
+  private floorDressing(): { name: string; origin: DreamedOrigin } | null {
+    if (this.dressing !== undefined) return this.dressing;
+    const run = this.run;
+    const dream = pickDreamed<DreamedBackdrop>(
+      mulberry32(hash(run.runSeed, "backdrop", run.floorNum)),
+      dreamedBackdrops(run.floorNum),
+    );
+    this.dressing = dream
+      ? { name: dream.value.name, origin: dream.origin }
+      : null;
+    if (dream) {
+      noteDreamedUse("backgrounds", dream.origin, "floor", dream.value.id);
+    }
+    return this.dressing;
+  }
+
   /* -------------------------------- HUD -------------------------------- */
 
   private buildHeader(): void {
@@ -1045,21 +1104,33 @@ export class RunMapScene implements Scene {
     const dot = new Graphics().circle(8, 15, 5).fill(th.accent);
     rail.addChild(dot);
 
+    // A dreamed BACKDROP dresses the floor: it renames it. Cosmetic by
+    // construction (services/pool.ts validates nothing else off the row), so
+    // the map, the packs and the boss are untouched — the party is simply
+    // somewhere somebody else named.
+    const dressed = this.floorDressing();
     const name = heading(
-      `FLOOR ${run.floorNum} · ${cfg.name.toUpperCase()}`,
+      `FLOOR ${run.floorNum} · ${(dressed?.name ?? cfg.name).toUpperCase()}`,
       3,
       { fill: PAL.text },
     );
     name.position.set(22, 8);
     rail.addChild(name);
+    let railX = 22 + Math.ceil(name.width) + SPACE.lg;
 
     const seed = label(`seed ${run.runSeed}`, {
       mono: true,
       dim: true,
       size: TYPE.tiny,
     });
-    seed.position.set(22 + Math.ceil(name.width) + SPACE.lg, 11);
+    seed.position.set(railX, 11);
     rail.addChild(seed);
+    railX += Math.ceil(seed.width) + SPACE.lg;
+    if (dressed) {
+      const chip = dreamChip(dressed.origin);
+      chip.position.set(railX, 9);
+      rail.addChild(chip);
+    }
 
     const hint = label(
       isTouch()
@@ -1074,6 +1145,8 @@ export class RunMapScene implements Scene {
     hint.position.set(rw(RM.header), 11);
     rail.addChild(hint);
 
+    this.headerRail?.destroy({ children: true });
+    this.headerRail = rail;
     this.hudC.addChild(rail);
   }
 
@@ -1562,7 +1635,18 @@ export class RunMapScene implements Scene {
   private startFight(node: MapNode): void {
     const run = this.run;
     const cfg = floorConfig(run.floorNum);
-    const enemies = encounterFor(node, cfg);
+    // A dreamed body may join the pack (never a boss's — see encounterFor).
+    // The species id is handed to the battle so the enemy wears the mark.
+    const dreamedSpecies: string[] = [];
+    const enemies = encounterFor(
+      node,
+      cfg,
+      dreamedEnemies(run.floorNum),
+      (id, origin) => {
+        dreamedSpecies.push(id);
+        noteDreamedUse("enemies", origin, "pack", id);
+      },
+    );
     if (!enemies || enemies.length === 0) {
       // authored content gave this node nothing to fight — never strand the
       // player on a dead node; treat it as walked-through.
@@ -1576,6 +1660,7 @@ export class RunMapScene implements Scene {
       isBoss: node.type === "boss",
       isElite: node.type === "elite",
       nodeId: node.id,
+      dreamedSpecies,
     };
     this.ctx.scenes.goto("battle", params);
   }
@@ -1583,17 +1668,33 @@ export class RunMapScene implements Scene {
   /** Treasure: one fresh stream per node seed (ARCHITECTURE.md §4). */
   private openTreasure(node: MapNode): void {
     const run = this.run;
+    const dreamedUids = new Map<number, DreamedOrigin>();
     const lctx: LootCtx = {
       floor: run.floorNum,
       livingClasses: run.cats.filter((c) => c.lives > 0).map((c) => c.classId),
       uniquesDropped: run.uniquesDropped,
       nextUid: run.inventory.nextUid,
       currentShinies: run.inventory.shinies,
+      // A chest can give up somebody else's item. The def is already
+      // registered by the arrival gate, so it equips, sells and saves exactly
+      // like a shipped one.
+      dreamed: dreamedEquips(run.floorNum),
+      onDreamed: (uid, origin) => {
+        dreamedUids.set(uid, origin);
+      },
     };
     const grant = rollChest(mulberry32(node.seed), lctx);
+    const extraLines = grant.equips
+      .filter((e) => dreamedUids.has(e.uid))
+      .map((e) => {
+        const origin = dreamedUids.get(e.uid)!;
+        noteDreamedUse("items", origin, "chest", e.defId);
+        return dreamLine(origin, EQUIP_DEFS[e.defId]?.name ?? e.defId);
+      });
     const params: LootOverlayParams = {
       variant: "chest",
       grant,
+      extraLines,
       onClosed: () => {
         if (!this.mounted) return;
         this.refresh();

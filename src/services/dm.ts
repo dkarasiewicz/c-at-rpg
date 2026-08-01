@@ -427,6 +427,44 @@ export function wantsVerdict(schema: Record<string, unknown>): boolean {
  * here is re-linted by the caller (`validateEncounterVerdict`), so a wrong
  * guess costs precisely what a dropped turn costs — nothing extra.
  */
+/**
+ * Translate the COMBAT effect union into the EVENTS one.
+ *
+ * These are two different vocabularies and conflating them is why a typed
+ * action at an event could produce a good reply and change nothing. Out of
+ * combat the DM still reaches for `apply_effect`, whose schema mirrors the
+ * engine's `EffectSpec` — `damage/heal/status/move/energy/cleanse`, sized in
+ * PERCENT. An event verdict accepts `heal/damage/buff/shinies/giveItem/…`,
+ * sized in ABSOLUTE points, and `validateEncounterVerdict` rejects the WHOLE
+ * verdict if a single member is outside its union. So one `status` effect —
+ * perfectly legal in combat — silently threw away the damage beside it and the
+ * player saw narration with no consequence.
+ *
+ * Only faithful mappings survive. `damage`/`heal` carry across as a percentage
+ * of a floor-1 cat's health, which is the honest reading of "pct" with no
+ * attacker in the picture; everything with no event equivalent is dropped
+ * rather than guessed at. Dropping beats inventing: the caller re-lints and
+ * clamps whatever comes through, and an effect we cannot translate faithfully
+ * is one the DM should not have authored out of combat anyway.
+ */
+function toEventEffects(raw: unknown[], room: number): unknown[] {
+  /** A floor-1 cat is ~28 HP; pct → points against that, then clamped. */
+  const PCT_BASE = 28;
+  const out: unknown[] = [];
+  for (const e of raw) {
+    if (out.length >= room) break;
+    if (!isRecord(e)) continue;
+    const pct = typeof e.pct === "number" ? e.pct : null;
+    if ((e.kind === "damage" || e.kind === "heal") && pct !== null) {
+      const amount = Math.max(1, Math.round((pct / 100) * PCT_BASE));
+      out.push({ kind: e.kind, target: "party", amount });
+    }
+    // status / move / energy / cleanse have no out-of-combat equivalent:
+    // there is no battlefield to move on and no round for a status to tick.
+  }
+  return out;
+}
+
 export function verdictFromToolCalls(
   calls: readonly DmToolCall[],
   text: string,
@@ -443,14 +481,23 @@ export function verdictFromToolCalls(
   for (const call of calls) {
     if (effects.length >= 3) break;
     if (call.name === "apply_effect" && Array.isArray(call.input.effects)) {
-      // Already the engine's improvised-effect shape; the caller re-lints.
-      effects.push(...call.input.effects.slice(0, 3 - effects.length));
+      effects.push(...toEventEffects(call.input.effects, 3 - effects.length));
     } else if (call.name === "adjust_shinies") {
       const amount = call.input.amount;
       // Only gains: the verdict's `shinies` member is non-negative, and a
       // silently-dropped loss is safer than a sign flip that pays the player.
       if (typeof amount === "number" && amount > 0) {
         effects.push({ kind: "shinies", amount: Math.round(amount) });
+      }
+    } else if (call.name === "grant_item") {
+      const item = call.input.item;
+      if (typeof item === "string" && item !== "") {
+        const count = call.input.count;
+        effects.push({
+          kind: "giveItem",
+          item,
+          count: typeof count === "number" ? Math.max(1, count) : 1,
+        });
       }
     }
   }

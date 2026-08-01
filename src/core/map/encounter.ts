@@ -12,8 +12,13 @@
  * `content/floors.ts`: the species `pool`, the per-pack threat budget
  * (`budgetLo`/`budgetHi`), and — new — the node-type mix.
  */
-import type { EnemyId, FloorConfig, MapNode, Rng } from "../types.js";
+import type { EnemyDef, EnemyId, FloorConfig, MapNode, Rng } from "../types.js";
 import { mulberry32 } from "../rng.js";
+import {
+  pickDreamed,
+  type DreamedChoice,
+  type DreamedOrigin,
+} from "../loot/dreamed.js";
 import { ENEMIES } from "../../content/enemies.js";
 
 /** Combat's enemy rank cap (combat.md §1). */
@@ -62,18 +67,50 @@ export function rollPack(
 export function encounterFor(
   node: MapNode,
   cfg: FloorConfig,
+  /**
+   * THE DREAMING: enemies other people's runs put in the shared pool, already
+   * validated and registered by `services/pool.ts` and already narrowed to
+   * this floor's band. Omitted or empty ⇒ this function is byte-identical to
+   * the authored one, down to the rng stream position.
+   *
+   * A BOSS NODE NEVER DREAMS. The boss is the floor's authored destination and
+   * the whole difficulty curve is tuned against it.
+   */
+  dreamed?: DreamedChoice<EnemyDef>,
+  /** Observer: which species joined from the pool, and which row it was. */
+  onDreamed?: (id: EnemyId, origin: DreamedOrigin) => void,
 ): EnemyId[] | null {
   if (node.type === "boss") {
     return cfg.boss ? cfg.boss.encounter.slice() : null;
   }
   if (node.type !== "fight" && node.type !== "elite") return null;
   const bonus = node.type === "elite" ? ELITE_BUDGET_BONUS : 0;
-  return rollPack(
-    mulberry32(node.seed),
+  const rng = mulberry32(node.seed);
+  const pack = rollPack(
+    rng,
     cfg.pool,
     cfg.budgetLo + bonus,
     cfg.budgetHi + bonus,
   );
+  // A dream JOINS the pack rather than replacing it wholesale: one body in
+  // five is a stranger, so the floor still reads as its own floor. It takes a
+  // free slot when the pack is under the rank cap and otherwise displaces the
+  // LAST pick — never the first, because the front rank is what the party's
+  // opening turn is aimed at.
+  const dream = pickDreamed(rng, dreamed);
+  if (dream) {
+    const id = dream.value.id;
+    if (pack.length < MAX_PACK) pack.push(id);
+    else pack[pack.length - 1] = id;
+    onDreamed?.(id, dream.origin);
+    // Re-apply the §7.3 formation rule so a dreamed front-row body does not
+    // end up standing behind the pack it joined.
+    return [
+      ...pack.filter((p) => ENEMIES[p]?.row === "front"),
+      ...pack.filter((p) => ENEMIES[p]?.row !== "front"),
+    ];
+  }
+  return pack;
 }
 
 /**

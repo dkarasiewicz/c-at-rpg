@@ -80,8 +80,19 @@ create table if not exists catrpg.interactions (
   created_at      timestamptz not null default now()
 );
 
--- Keyed art for things that are not pool rows (shipped sprites, generated
--- icons), so a style-version bump can find and requeue stale pictures.
+-- Keyed art: every picture the game has, whether or not it is also a pool row.
+-- Keyed by the MANIFEST ASSET ID (`cat:bruno`, `scene:map:3`, `item:sardineTin`)
+-- so a redraw updates a row instead of duplicating it.
+--
+-- `url` MUST be an absolute, publicly-fetchable URL — a `catrpg-art` bucket
+-- URL. Not an origin-relative path like `/assets/gen/cat-bruno.png` (that only
+-- resolves for a browser already on the game's own deployment) and never a
+-- generator's URL (which is not a durable host). A row whose picture 404s in a
+-- month has not persisted the thing, it has remembered it wrong.
+--
+-- `style_version` is what makes a style bump tractable: `where style_version <
+-- N` is the regeneration queue (`ContentPool.staleArt`, `scripts/seed-art.ts
+-- --stale`). Indexed below for exactly that query.
 create table if not exists catrpg.art (
   key            text primary key,
   url            text not null,
@@ -89,6 +100,38 @@ create table if not exists catrpg.art (
   style_version  integer not null default 1,
   created_at     timestamptz not null default now()
 );
+
+create index if not exists art_style_idx on catrpg.art (style_version);
+
+-- THE BUCKET THE `art.url`s POINT INTO.
+--
+-- It was created by hand before this file existed, which meant a fresh
+-- database came up with a schema and nowhere to put a picture. Declared here
+-- so the whole store is one command.
+--
+-- PUBLIC on purpose: everything in it is CONTENT with no player identity, and
+-- a public object is one plain GET rather than a signed request per frame. The
+-- mime allowlist is the game's three formats and the size cap is well above
+-- the largest shipped asset (3.2 MB, `title-hero.png`); `agent/lib/art.ts`
+-- refuses anything the bucket would reject rather than discovering it on
+-- upload.
+insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
+values (
+  'catrpg-art', 'catrpg-art', true, 10485760,
+  array['image/png','image/webp','image/jpeg']
+)
+on conflict (id) do update
+  set public             = excluded.public,
+      file_size_limit    = excluded.file_size_limit,
+      allowed_mime_types = excluded.allowed_mime_types;
+
+-- Layout inside the bucket:
+--   gen/**      generation zero — every file under public/assets/gen,
+--               uploaded by `scripts/seed-art.ts`, path-for-path
+--   dreamed/**  what the DM has drawn since, `<kind>_<ref>-v<style>.png`
+--               (`agent/lib/art.ts`). The style version is IN THE PATH so a
+--               redraw under a new contract cannot overwrite the bytes older
+--               rows still point at.
 
 -- RLS on everything. The grants are split deliberately and the split is the
 -- whole security model: the service role (the DM agent, and only the DM agent)

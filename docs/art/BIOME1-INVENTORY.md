@@ -331,3 +331,85 @@ centres, which is the intended result.
   `boss` and `shop` at 128 px and 64 px.
 - Manifests re-validated programmatically after the edit: every entry resolves to a file, every
   file is listed, no orphans in any of the four directories.
+
+---
+
+# The Camp, the Boot Screen and the Memorial (added 2026-08-01)
+
+The gaps `npm run audit` was naming (`scene:camp`, `scene:boot`) plus an art pass for the
+three newest screens — the camp, the roster and the memorial, none of which had ever had one.
+Five assets, all `gemini-3-pro-image-preview` at 16:9 (1:1 for the medallion), every prompt
+composed by `src/services/artPrompt.ts` from `ART_STYLE` (`basePrompt` + `framing.scene` /
+`framing.icon` + `Avoid: …`), anchored on `docs/art/style-anchor-bruno.png`.
+
+Contact sheet: [`contact-camp-memorial.png`](contact-camp-memorial.png).
+Before/after: [`camp-before-after.png`](camp-before-after.png),
+[`roster-before-after.png`](roster-before-after.png),
+[`memorial-before-after.png`](memorial-before-after.png),
+[`boot-before-after.png`](boot-before-after.png).
+
+| id | file | px | what it is |
+|---|---|---|---|
+| `scene:camp` | scenes/camp.webp | 1600×900 | Three strays around one small fire on a cellar floor — asleep, on watch, warming its paws over a kettle. The fire is the only light and sits low centre; the whole upper half and left third fall away into unlit dark. |
+| `scene:boot` | scenes/boot.webp | 1600×900 | The way down: a stone stair descending into black, one lantern far below, a dropped bell collar on a step. Almost no incident on purpose — it is shown blurred behind the crest. |
+| `scene:memorial` | scenes/memorial.webp | 1600×900 | A shrine alcove: nine guttering candle stubs on a stone ledge, empty collars and **blank** tags on the boards above, dried flowers, a chipped saucer. Nothing alive in frame. Weighted right, calm dark left. |
+| `scene:roster` | scenes/roster.webp | 1600×900 | The clowder waiting to be picked: five strays on crates, a fence rail and a stoop in a moonlit alley, one of them with its Stand up. |
+| `prop:memorialMark` | env/prop-memorialMark.png | 192² | The keyed memorial emblem — a candle in a coiled collar, struck like a dark bronze coin. Alpha-keyed with the node-medallion recipe (radial disc scan + circular clip, `scripts/key-node-medallions.mjs`). |
+
+## Where each one is used
+
+- `scene:camp` — `ui/scenes/camp.ts`, full-bleed at `dim 0.3` + vignette, **plus a hem**: an
+  eased wash from y=420 down to 0.82 α, because this painting puts its fire exactly where the
+  five action buttons and the hint line land. Without it the buttons sit on burning wood.
+- `scene:boot` — `ui/scenes/boot.ts`, blurred, at `dim 0.44`. The `title:hero` stand-in keeps
+  its old `dim 0.66`: it is a bright cast poster and it has to be knocked further back than a
+  painting that was made for this screen.
+- `scene:memorial` / `scene:roster` — `ui/overlays/rosterPanel.ts`, twice each: full-bleed
+  behind the modal (`dim 0.52` + vignette, scrim dropped 0.72 → 0.34) and again INSIDE the
+  card, cover-fitted, masked to the card's rounded corners and washed downward so rows and
+  buttons keep their contrast. That second use is the point: a town with two cats in it left
+  two thirds of the card as flat purple, and the memorial's emptiness is its subject.
+- `prop:memorialMark` — the memorial's title ornament, and the whole middle of the card in the
+  "Nobody yet. Keep it that way." empty state.
+
+## Deliberate non-delivery: `scene:title`
+
+`scene:title` stays an undeclared, fail-soft miss and the audit will keep naming it. The title
+screen paints `sceneBackdrop("scene:title", …)` as the wash UNDER `title:hero`, which is then
+cover-fitted full-bleed over the entire screen — so art published under that id would be
+invisible whenever the pack is present, and would fight the procedural night sky (stars, moon,
+rooftop, four cats) whenever it is not. The title already works; the id is a hook, not a hole.
+
+## Rejections and retries (every render looked at full size)
+
+- **Memorial v1 — rejected: anchor bleed + text.** Same trap as the first enemy batch: with
+  `style-anchor-bruno.png` as `--ref`, the model painted **a full Stand figure** looming over
+  the shrine, and wrote `NAME` on two of the hanging tags. Re-prompted with "NOTHING ALIVE IN
+  FRAME: no cat, no person, no figure, no ghost, no spirit" and "small BLANK metal tags with no
+  writing on them at all".
+- **Memorial v2 (two variants) — one kept, one rejected.** Both were figure-free and text-free;
+  the accepted one is warm candlelight on violet stone with the shrine weighted right, the
+  rejected one had a hard-edged pure-black slab filling its left third, which would have shown
+  as a seam at full bleed. A third pair was rolled adding "FILLS THE WHOLE 16:9 FRAME edge to
+  edge, no black bars, no letterbox" — that render is the one that shipped.
+- **Baked letterbox on two renders.** `boot` and `memorial` came back with pure-black bars
+  despite `frame, border` in the negative. Trimmed in post (scan for near-black edge rows and
+  columns, then centre-crop to 16:9, then progressive-halving resample to 1600×900 webp at
+  q0.92 — the `scripts/downscale-assets.mjs` recipe). `boot` lost its two cat-eye glints to the
+  crop; the screen is quieter for it.
+- **Camp and roster — accepted first render.** No retries.
+
+## Verification
+
+- Every render viewed at full size and every screen viewed at its real rendered size (1440×810
+  screenshots through `window.__scene`/`__hits`): no text, no letters, no watermark, no
+  characters in `scene:memorial`, no letterbox left anywhere.
+- Two tuning passes were driven by those screenshots, not by taste at full size: the camp hem
+  (buttons were sitting on the fire) and the card wash (a 14-band alpha ramp read as scan lines
+  across the card; it is 40 eased bands now).
+- **Zero-asset invariant re-checked**: with `**/assets/gen/**` aborted and the service worker
+  blocked, boot, title, town, the clowder, the memorial and the camp all render procedurally,
+  the memorial's header does not shift, and the run reaches the camp with zero page errors and
+  zero off-site requests.
+- `npm run audit` clean on all eight checks; the only ids it still names are the three
+  deliberate fail-soft misses (`cat:bruiser`, `cat:trickster`, `scene:title`).

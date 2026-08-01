@@ -26,10 +26,14 @@
  *  3. **Stamped.** Every row carries `styleVersion` (the visual-v2 style
  *     contract it was authored against), a floor band, and `provenance`
  *     (`dm:<reason>`), so a later style bump can find and retire it.
- *  4. **Art is RE-HOSTED.** An `artUrl` from a generator is downloaded and put
- *     in the public `catrpg-art` bucket before the row is written. Pointing a
- *     row at a generator URL is not persistence — that picture 404s in a month
- *     and the dream is then remembered wrong.
+ *  4. **The picture is MADE AND KEPT.** Given an `artUrl` from a generator it
+ *     is downloaded and put in the public `catrpg-art` bucket; given only an
+ *     `artPrompt` (the usual case — the DM's one-shots return subjects, not
+ *     images) the picture is GENERATED here, through `agent/lib/art.ts`, and
+ *     then stored the same way. Either road ends at a public bucket URL on the
+ *     row, because pointing a row at a generator URL is not persistence — that
+ *     picture 404s in a month and the dream is then remembered wrong. Both are
+ *     best-effort: no picture never blocks the contribution.
  *
  * A refusal is RETURNED, never thrown: `{ published: false, problems: [...] }`,
  * and the DM narrates what actually happened. A pool that is unreachable is
@@ -44,7 +48,8 @@ import {
 } from "../../src/services/powerLint.js";
 import { BUDGET_CAPS } from "../../src/core/combat/powers.js";
 import { getPool, type ContentRow, type PoolKind } from "../lib/pool.js";
-import { ART_STYLE } from "../../src/content/artStyle.js";
+import { dreamArt, type DreamedArt } from "../lib/art.js";
+import { ART_STYLE, type ArtCategory } from "../../src/content/artStyle.js";
 import type { GameEvent, Rarity } from "../../src/core/types.js";
 import type {
   GeneratedEquip,
@@ -92,6 +97,24 @@ const KIND_TO_POOL: Record<ContribKind, PoolKind> = {
   cat: "cats",
   power: "powers",
   background: "backgrounds",
+};
+
+/**
+ * Which framing paragraph a contributed thing is drawn with
+ * (`ART_STYLE.framing`), so a dreamed item reads as an item icon and a dreamed
+ * event reads as a wide event illustration — the same categories the shipped
+ * batches used.
+ */
+const ART_CATEGORY: Record<ContribKind, ArtCategory> = {
+  item: "icon",
+  power: "icon",
+  event: "scene",
+  encounter: "scene",
+  background: "scene",
+  stand: "battleSprite",
+  cat: "battleSprite",
+  enemy: "battleSprite",
+  flavour: "battleSprite",
 };
 
 /** Shape check for the kinds with no shipped validator of their own. */
@@ -290,15 +313,35 @@ export default defineTool({
       return { kind: "contribution" as const, published: false, problems };
     }
 
-    // ---- art: re-host before the row is written -------------------------
+    // ---- art: make it ours before the row is written ---------------------
     const pool = getPool();
     const provenance = `dm:${reason}`.slice(0, 240);
+    const artKey = `${kind === "flavour" ? "enemy" : kind}:${ref}`;
+    // A subject-only description to draw from. `artPrompt` is what the DM
+    // passes deliberately; `iconPrompt` / `visualPrompt` are what the shipped
+    // one-shot schemas already produce, so an item authored by
+    // `agent/skills/item.ts` gets a picture without the DM doing anything new.
+    const subject =
+      artPrompt ??
+      (typeof obj.iconPrompt === "string" ? obj.iconPrompt : undefined) ??
+      (typeof obj.visualPrompt === "string" ? obj.visualPrompt : undefined);
+
     let hostedArt: string | null = null;
+    let generated: DreamedArt | null = null;
     if (artUrl) {
       hostedArt = await pool.rehostArt(
         `${poolKind}/${ref.replace(/[^\w.-]+/g, "_")}-v${ART_STYLE.version}.png`,
         artUrl,
       );
+    } else if (subject) {
+      // No image was handed over, only words. Draw it — otherwise this row
+      // lands with `art_url = null` forever and the dream has no face.
+      generated = await dreamArt(pool, {
+        key: artKey,
+        category: ART_CATEGORY[kind],
+        subject,
+      });
+      hostedArt = generated?.url ?? null;
     }
 
     // ---- stamp and store ------------------------------------------------
@@ -312,7 +355,9 @@ export default defineTool({
         floor,
       },
       artUrl: hostedArt,
-      artPrompt: artPrompt ?? null,
+      // The FULL composed prompt when we drew it ourselves (that is what would
+      // redraw it), the DM's subject line otherwise.
+      artPrompt: generated?.prompt ?? subject ?? null,
       styleVersion: ART_STYLE.version,
       floorMin: bandMin,
       floorMax: bandMax,
@@ -344,6 +389,7 @@ export default defineTool({
       floors: [bandMin, bandMax] as [number, number],
       artUrl: hostedArt,
       artRehosted: Boolean(artUrl) && hostedArt !== null,
+      artGenerated: generated !== null,
       durable: pool.durable,
       styleVersion: ART_STYLE.version,
       provenance,

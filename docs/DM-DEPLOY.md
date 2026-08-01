@@ -98,7 +98,9 @@ pulls `VERCEL_OIDC_TOKEN`) or set `AI_GATEWAY_API_KEY` in `.env.local`.
 | `SUPABASE_URL` | **agent deployment only** | no | the Dreaming's Postgres + Storage origin. Unset ⇒ the pool falls back to in-memory and nothing is kept. |
 | `SUPABASE_SERVICE_ROLE_KEY` | **agent deployment only** | no | bypasses RLS. **This key must never appear beside a `VITE_` prefix**: Vite bakes those into the shipped browser bundle. The agent is the only thing in this repo that holds it. |
 | `SUPABASE_SCHEMA` | agent deployment | no | defaults to `catrpg`. Sent per request as `Accept-Profile` / `Content-Profile`. |
-| `SUPABASE_ART_BUCKET` | agent deployment | no | defaults to `catrpg-art`. Public bucket; dreamed art is re-hosted there. |
+| `SUPABASE_ART_BUCKET` | agent deployment | no | defaults to `catrpg-art`. Public bucket; every picture — shipped or dreamed — lives there. |
+| `DM_ART_MODEL` | agent deployment | no | AI Gateway image slug used by `agent/lib/art.ts`. Defaults to `openai/gpt-image-2` (= `ART_STYLE.model` on the gateway). Set to `off` to make the DM prompt-only again without touching code. |
+| `DM_ART_TIMEOUT_MS` | agent deployment | no | ceiling on one generation, default `60000`. Measured: `openai/gpt-image-2` returns a 1024² PNG in **~23–27 s**. If this deployment's function budget is tighter than that, set `DM_ART_MODEL=openai/gpt-image-1-mini` or `off` rather than letting a turn die. |
 | `POSTGRES_URL_NON_POOLING` | local / ops | no | direct connection for `psql -f supabase/001_init.sql`. Not read by any code. |
 | `VITE_SUPABASE_URL` | game build | no | same origin, for the browser's READ-ONLY path (`src/services/pool.ts`). |
 | `VITE_SUPABASE_ANON_KEY` | game build | no | publishable. RLS grants it `SELECT` and refuses `INSERT` with `42501`, which is what makes it safe to bake into the bundle. |
@@ -108,11 +110,22 @@ pulls `VERCEL_OIDC_TOKEN`) or set `AI_GATEWAY_API_KEY` in `.env.local`.
 never set in production, which is why nothing the DM authored had ever
 persisted for anybody (roster-and-persistence.md §6).
 
-> **Reading these back.** The Supabase variables are stored SENSITIVE on the
-> Vercel project, so `vercel env pull` writes them as `""` — that is the
-> platform refusing to decrypt, not a misconfiguration. Anything that needs the
-> service-role key locally (notably `scripts/seed-pool.ts`) has to be given it
-> out of band, from the Supabase dashboard.
+> **Reading these back.** `vercel env pull --environment=production` writes the
+> Supabase variables as `""`. That is the platform refusing to decrypt a
+> *production* secret, not a misconfiguration — and it is not the whole story:
+>
+> ```bash
+> # from a scratch directory, so the repo's .vercel is never touched
+> VERCEL_ORG_ID=team_9KiLesnAXfGIBO4WjViEx8wR \
+> VERCEL_PROJECT_ID=prj_bCITLjNF7JCcXGPEqVjBD0YONQTP \
+>   vercel env pull ./.env.dm --environment=development --yes
+> ```
+>
+> The **development** environment returns the real values, which is how
+> `scripts/seed-pool.ts` and `scripts/seed-art.ts` get run locally without
+> anyone copying a service-role key out of the Supabase dashboard by hand. Keep
+> the pulled file outside the repo (or under `.env*`, which is gitignored) and
+> delete it when you are done.
 
 ## The Dreaming
 
@@ -124,17 +137,17 @@ the world genuinely grows with play (docs/design/roster-and-persistence.md §5,
 |---|---|
 | `catrpg.content` | every dreamed thing — `stand` / `item` / `event` / `enemy` / `encounter` / `background` / `cat` / `power` — with its payload, art URL, `style_version`, floor band (`floor_min`/`floor_max`), tier and provenance |
 | `catrpg.interactions` | compiled Stand-pair verdicts, keyed by the ordered pair key. **A null `rule` is a row, not an absence**: "these two do not resonate" is the common, correct answer and the one nobody should ever pay to reach twice |
-| `catrpg.art` | keyed asset rows (shipped sprites, generated icons) so a style-version bump can find the pictures that went stale |
-| `catrpg-art` (Storage) | the bytes. Public bucket, so a dreamed thing keeps its picture without a signed request per frame |
+| `catrpg.art` | keyed asset rows — every shipped sprite plus every runtime-generated picture — keyed by the manifest asset id (`cat:bruno`, `scene:map:3`), each recording `url`, `prompt` and `style_version` |
+| `catrpg-art` (Storage) | the bytes. Public bucket, so a picture resolves for a player who has never met the machine that made it, with no signed request per frame. `gen/**` is generation zero, `dreamed/**` is what the DM has drawn since |
 
 **Two halves, one direction.**
 
 - **Writes go through the agent, always.** `agent/lib/pool.ts` holds the
   service-role key. `contribute_content` validates with the game's own
-  validators, budget-lints, stamps `styleVersion` + provenance, **downloads the
-  generator's image and re-hosts it in the bucket**, and only then writes the
-  row. Pointing a row at a generator URL is not persistence: that picture 404s
-  in a month and the dream is then remembered wrong.
+  validators, budget-lints, stamps `styleVersion` + provenance, **gets a
+  picture and makes the bytes ours**, and only then writes the row. Pointing a
+  row at a generator URL is not persistence: that picture 404s in a month and
+  the dream is then remembered wrong.
 - **Reads may skip the agent.** `src/services/pool.ts` talks to PostgREST with
   the publishable anon key, so the game can show the dreamed world even when
   the DM is cold or down. It cannot write; RLS refuses `anon` `INSERT` with
@@ -170,6 +183,110 @@ there.
 
 One upsert per kind, not one per row: `addContentBatch` sends an array, which
 is the difference between six requests and two hundred and fifty.
+
+### Seeding the pictures
+
+`seed-pool.ts` seeds the WORDS. The pictures are a second script, because they
+are bytes on a disk rather than rows to compute:
+
+```bash
+SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… npx tsx scripts/seed-art.ts
+```
+
+It uploads every asset under `public/assets/gen/**` into `catrpg-art` under
+`gen/`, preserving the directory structure, and writes one `catrpg.art` row per
+asset keyed by its **manifest asset id** — so an asset that gets redrawn keeps
+its key and updates its row instead of duplicating it.
+
+Idempotent and cheap to re-run: an object already in the bucket at the same
+byte length is not re-uploaded (`--force` overrides), and the rows go up as one
+merge-duplicates upsert. Run it after every art batch. Flags: `--stale`
+(below), `--limit=N`, `--force`.
+
+**Why this exists at all.** `catrpg.art` had **0 rows** and the bucket held
+nothing, and `seed-pool.ts` used to write art rows with `url:
+"/assets/gen/…"` — an *origin-relative path*, which is not a durable location:
+it only resolves for a browser already on the game's own deployment. That is
+precisely the "remembered wrong" failure the table exists to prevent, so the
+art rows now carry absolute public bucket URLs and the bytes are actually in
+the bucket.
+
+**Offline-first is untouched.** The game still loads `public/assets/gen` from
+its own origin and still plays with the bucket unreachable. The bucket copy is
+the *pool's* copy — enrichment, and a durable home for pictures that otherwise
+existed in exactly one place.
+
+### The runtime art loop
+
+Before `agent/lib/art.ts` the DM could only ever hand back a *prompt*
+(`iconPrompt` on a generated item, `visualPrompt` on a Stand). Nothing in the
+deployed agent turned a prompt into bytes, so `contribute_content`'s re-host
+path had no URL to re-host and **every dreamed row landed with `art_url =
+null`**. A later player saw the words and no picture.
+
+The loop now closes inside the tool call:
+
+```
+subject ──composeArtPrompt──▶ prompt ──AI Gateway──▶ PNG bytes
+        ──pool.putArt──▶ public catrpg-art URL ──▶ content.art_url + catrpg.art row
+```
+
+- The subject comes from the tool's `artPrompt` argument, or from the
+  `iconPrompt` / `visualPrompt` the shipped one-shot schemas already produce —
+  so an item authored by `agent/skills/item.ts` gets a picture without the DM
+  learning a new argument.
+- The prompt is composed by `composeArtPrompt` from the **same `ART_STYLE`
+  contract** the batch pipelines use, and both rows record `ART_STYLE.version`,
+  so runtime art is indistinguishable from shipped art and a style bump can
+  find it again.
+- **No credential to manage.** The model id is a gateway slug and the
+  deployment authenticates with its own OIDC token, exactly like the DM's
+  language model.
+- If an `artUrl` *is* supplied, the old re-host path runs instead: downloaded,
+  re-uploaded, public URL stored. Either road ends in the bucket.
+- Every failure — no gateway credential, model refusal, timeout, unreachable
+  bucket — returns `null`, and the contribution still lands with its prompt
+  recorded. Nothing here is on a path the game needs.
+
+The tool's result now reports `artGenerated` alongside `artRehosted`, so "the
+picture was drawn here" and "the picture was handed to us" stay distinguishable
+in a transcript.
+
+**Cost and latency are real.** One generation is ~23–27 s and one image's worth
+of gateway spend, inside a turn a player is waiting on. `DM_ART_MODEL=off`
+restores the old prompt-only behaviour without a code change.
+
+### Style versioning, and the question it exists to answer
+
+`style_version` is only worth a column if something asks it a question. Two
+methods on `ContentPool` do, and both are on `MemoryPool` too:
+
+| Method | Answers |
+|---|---|
+| `staleArt(version, limit)` | keyed pictures drawn against an older style contract, oldest first |
+| `staleContentArt(version, limit)` | content rows carrying their own picture from an older contract |
+
+```bash
+# what is behind ART_STYLE.version right now
+npx tsx scripts/seed-art.ts --stale
+
+# what a bump to v2 WOULD put in the queue — ask before you bump
+npx tsx scripts/seed-art.ts --stale --version=2
+```
+
+Bump `ART_STYLE.version`, and the first command's output is the regeneration
+queue.
+
+### Type-checking the scripts
+
+The root `tsconfig.json` includes only `src/`, and `agent/tsconfig.json` only
+`agent/**` — so `scripts/**` was checked by nothing, despite being the code
+that holds the write credential for the shared pool. `scripts/tsconfig.json`
+closes that:
+
+```bash
+npx tsc -p scripts/tsconfig.json
+```
 
 ## Deploy
 

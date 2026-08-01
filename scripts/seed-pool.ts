@@ -10,18 +10,24 @@
  * an empty table.
  *
  * The ROWS are built by `agent/lib/generationZero.ts` — pure, deterministic,
- * one home — so this script is only the runner: it adds the keyed `art` table,
- * which needs the on-disk manifests, and it reports.
+ * one home — so this script is only the runner and the report.
  *
  * What lands, all idempotent upserts (safe to re-run after every batch):
  *
  *  - `content` — the authored `GameEvent`s (each in its own floor band), every
  *    `EquipDef` and `ConsumableDef`, every `EnemyDef` (floor-banded by the
  *    floors that actually field it), one background per floor, and the shipped
- *    Power Scripts (budget-linted first);
- *  - `art`     — the keyed generation-zero asset rows from the
- *    `public/assets/gen` manifests, styleVersion-stamped, so a style bump can
- *    find the pictures that went stale.
+ *    Power Scripts (budget-linted first).
+ *
+ * THE PICTURES ARE A SEPARATE SCRIPT. `scripts/seed-art.ts` uploads every
+ * shipped asset under `public/assets/gen/**` into the `catrpg-art` bucket and
+ * writes the `catrpg.art` rows. This script used to write those rows itself
+ * with `url: "/assets/gen/…"` — an ORIGIN-RELATIVE PATH, which is not a
+ * durable location at all: it only resolves for a browser already on the
+ * game's own deployment, and it is exactly the "remembered wrong" failure the
+ * `art` table exists to prevent. Run both:
+ *
+ *   npx tsx scripts/seed-pool.ts && npx tsx scripts/seed-art.ts
  *
  * Everything goes through the `ContentPool` interface in `agent/lib/pool.ts`,
  * so this script does not know or care that the store is Supabase.
@@ -36,39 +42,9 @@
  * Without them it DRY-RUNS against the in-memory pool and reports the same
  * shapes, which is how you check a change without touching the shared world.
  */
-import { readFile } from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
 import { getPool, type PoolKind } from "../agent/lib/pool.js";
-import {
-  buildGenerationZero,
-  GENERATION_ZERO_PROVENANCE,
-} from "../agent/lib/generationZero.js";
+import { buildGenerationZero } from "../agent/lib/generationZero.js";
 import { ART_STYLE } from "../src/content/artStyle.js";
-
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-
-interface Manifest {
-  version?: number;
-  sprites?: Record<string, { file?: string; w?: number; h?: number }>;
-}
-
-const MANIFESTS: { dir: string; file: string }[] = [
-  { dir: "", file: "public/assets/gen/manifest.json" },
-  { dir: "env/", file: "public/assets/gen/env/manifest.json" },
-  { dir: "items/", file: "public/assets/gen/items/manifest.json" },
-  { dir: "scenes/", file: "public/assets/gen/scenes/manifest.json" },
-];
-
-async function readManifest(file: string): Promise<Manifest | null> {
-  try {
-    return JSON.parse(
-      await readFile(path.join(ROOT, file), "utf8"),
-    ) as Manifest;
-  } catch {
-    return null; // absent or mid-generation — tolerated
-  }
-}
 
 async function main(): Promise<void> {
   const pool = getPool();
@@ -86,34 +62,6 @@ async function main(): Promise<void> {
     written[kind] = await pool.addContentBatch(list);
   }
 
-  // ── art: keyed rows from the on-disk manifests ─────────────────────────
-  let artRows = 0;
-  let manifestsSeen = 0;
-  for (const { dir, file } of MANIFESTS) {
-    const manifest = await readManifest(file);
-    if (!manifest?.sprites) continue;
-    manifestsSeen++;
-    for (const [assetId, meta] of Object.entries(manifest.sprites)) {
-      if (typeof meta?.file !== "string") continue;
-      await pool.setEntry(
-        "art",
-        assetId,
-        JSON.stringify({
-          assetId,
-          // Shipped art is served from the game's own origin; only DREAMED art
-          // is uploaded to the bucket (`SupabasePool.rehostArt`).
-          url: `/assets/gen/${dir}${meta.file}`,
-          w: meta.w,
-          h: meta.h,
-          styleVersion: ART_STYLE.version,
-          prompt: null,
-          provenance: GENERATION_ZERO_PROVENANCE,
-        }),
-      );
-      artRows++;
-    }
-  }
-
   // ── report ─────────────────────────────────────────────────────────────
   console.log(
     `seed-pool → ${
@@ -129,10 +77,7 @@ async function main(): Promise<void> {
       } upserted`,
     );
   }
-  console.log(
-    `  ${"art".padEnd(12)} ${String(artRows).padStart(4)} keyed rows ` +
-      `(${manifestsSeen} manifests)`,
-  );
+  console.log("  art          → scripts/seed-art.ts (bucket + catrpg.art)");
   for (const r of powerRejects) console.log(`  REJECTED ${r.id}: ${r.problem}`);
   console.log(`  styleVersion ${ART_STYLE.version}`);
 

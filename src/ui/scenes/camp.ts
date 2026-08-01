@@ -124,6 +124,37 @@ const EMBER_R = 7;
 /** The fire panel never shrinks below this, however little was said. */
 const MIN_FIRE_H = 190;
 
+/** Where the hem under the fire starts, and how dark it gets at the floor. */
+const HEM_TOP = 420;
+const HEM_ALPHA = 0.82;
+
+/**
+ * A soft dark hem across the bottom of the painted camp, eased so it has no
+ * visible edge. Overdrawn well past the design box on both sides because a
+ * phone shows real screen out there (ui/layout.ts bleed) and a wash that
+ * stopped at x=0 would draw its own vertical seam down the art.
+ */
+function footWash(): Graphics {
+  const g = new Graphics();
+  const over = 400;
+  const steps = 40;
+  const band = (DESIGN_H - HEM_TOP) / steps;
+  for (let i = 0; i < steps; i++) {
+    const t = i / (steps - 1);
+    g.rect(-over, HEM_TOP + i * band, DESIGN_W + over * 2, band + 1).fill({
+      color: PAL.bgDeep,
+      alpha: HEM_ALPHA * Math.pow(t, 1.3),
+    });
+  }
+  // and the floor itself, so the very bottom of a tall screen stays calm
+  g.rect(-over, DESIGN_H, DESIGN_W + over * 2, 400).fill({
+    color: PAL.bgDeep,
+    alpha: HEM_ALPHA,
+  });
+  g.eventMode = "none";
+  return g;
+}
+
 /* ---------------------------------------------------------------------- */
 /* the scene                                                               */
 /* ---------------------------------------------------------------------- */
@@ -211,6 +242,12 @@ export class CampScene implements Scene {
       this.bgC.addChild(
         sceneBackdrop(art, DESIGN_W, DESIGN_H, { dim: 0.3 }),
         vignette(DESIGN_W, DESIGN_H, 0.9),
+        // `scene:camp` puts its fire low and centre — exactly where the five
+        // action buttons and the hint line land. The hem is the price of that
+        // composition: without it the buttons sit on burning wood and the
+        // hint under them is unreadable. Drawn in the BACKGROUND layer, so it
+        // darkens the painting and never the UI on top of it.
+        footWash(),
       );
     } else {
       this.bgC.addChild(

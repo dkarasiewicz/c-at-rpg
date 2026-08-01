@@ -1,0 +1,29 @@
+{
+  // The repo's root tsconfig includes only `src/`, and `agent/tsconfig.json`
+  // only `agent/**` — so the TypeScript in `scripts/` (seed-pool, seed-art,
+  // sim) was never type-checked by anything. These scripts hold the write
+  // credential for the shared pool; they are the last place a type error
+  // should be found at runtime.
+  //
+  //   npx tsc -p scripts/tsconfig.json
+  //
+  // Same settings as the agent's, since these scripts import both `agent/**`
+  // and `src/**` and are run by `tsx` on Node.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "moduleResolution": "bundler",
+    "isolatedModules": true,
+    "moduleDetection": "force",
+    "noEmit": true,
+    "strict": true,
+    "skipLibCheck": true,
+    "esModuleInterop": true,
+    "resolveJsonModule": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noFallthroughCasesInSwitch": true
+  },
+  "include": ["**/*.ts"]
+}

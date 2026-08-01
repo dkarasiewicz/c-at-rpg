@@ -35,6 +35,9 @@ import {
   type FightRequest,
 } from "../../core/events/resolve.js";
 import { selectEvent } from "../../core/events/select.js";
+import type { DreamedOrigin } from "../../core/loot/dreamed.js";
+import { dreamedEvents, noteDreamedUse } from "../../services/pool.js";
+import { dreamChip, primeFloorDreams } from "./dreaming.js";
 import { addShinies } from "../../core/loot/inventory.js";
 import { mulberry32 } from "../../core/rng.js";
 import { PAL } from "../palette.js";
@@ -206,6 +209,8 @@ export class EventScene implements Scene {
   private ctx: GameCtx | null = null;
   private rng: Rng | null = null;
   private event: GameEvent | null = null;
+  /** Set when the card came out of the shared pool — drives the mark. */
+  private dreamedOrigin: DreamedOrigin | null = null;
   private eventEntityId = 0;
   private state: State = "prompt";
   private fight: FightRequest | null = null;
@@ -227,6 +232,9 @@ export class EventScene implements Scene {
     this.eventEntityId = p.eventId;
     this.rng = mulberry32(p.eventSeed);
     const run = ctx.run!;
+    // Cheap and idempotent: an event node reached before the run-map's own
+    // prime finished still gets a chance at the pool. Never awaited.
+    primeFloorDreams(run);
 
     const view = new Container();
     this.view = view;
@@ -263,6 +271,11 @@ export class EventScene implements Scene {
       run.firedEventIds,
       run.floorFiredEventIds,
       this.rng,
+      // THE DREAMING: event cards other people's runs left in the pool, each
+      // re-linted on arrival with the SAME core/events/validate invariants the
+      // shipped ten pass. Empty when the pool is off, and then this call is
+      // the authored selection verbatim.
+      dreamedEvents(run.floorNum),
     );
     if (sel.kind === "fallback") {
       const inv = addShinies(run.inventory, sel.shinies);
@@ -282,6 +295,10 @@ export class EventScene implements Scene {
     }
 
     this.event = sel.event;
+    if (sel.dreamed) {
+      this.dreamedOrigin = sel.dreamed;
+      noteDreamedUse("events", sel.dreamed, "event", sel.event.id);
+    }
     this.setHeader(
       sel.event.title,
       EVENT_GLYPH[sel.event.id] ?? "strangeBox",
@@ -473,6 +490,14 @@ export class EventScene implements Scene {
     modal.addChild(eyebrow, titleText);
     // body copy starts one gutter under the title, however tall it wrapped
     this.bodyTop = titleText.y + Math.ceil(titleText.height) + SPACE.lg;
+    // A card that came out of the shared pool says so, right under its title:
+    // this beat was written during somebody else's run.
+    if (this.dreamedOrigin) {
+      const chip = dreamChip(this.dreamedOrigin);
+      chip.position.set(this.textX(), this.bodyTop);
+      modal.addChild(chip);
+      this.bodyTop += Math.ceil(chip.height) + SPACE.sm;
+    }
   }
 
   /** Left edge of the text column: past the glyph, or the panel padding. */

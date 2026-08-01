@@ -28,6 +28,9 @@ import { CLASSES } from "../../content/classes.js";
 import { CONSUMABLES } from "../../content/consumables.js";
 import { EQUIP_DEFS } from "../../content/equipment.js";
 import { hash, mulberry32 } from "../../core/rng.js";
+import type { DreamedOrigin } from "../../core/loot/dreamed.js";
+import { dreamedEquips, noteDreamedUse } from "../../services/pool.js";
+import { dreamChip, primeFloorDreams } from "./dreaming.js";
 import {
   buyStockItem,
   buyWarmLap,
@@ -150,6 +153,8 @@ export class LandingScene implements Scene {
   /** Peddler-node mode: no catnap, no descend, back to the map when done. */
   private shopNode: LandingParams["shop"] = undefined;
   private stock: ShopStock | null = null;
+  /** EquipInstance uid → the pool row it came from, for the stall's mark. */
+  private dreamedStock = new Map<number, DreamedOrigin>();
   private stockLayer: Container | null = null;
   private cards: CatCard[] = [];
   /** run.cats index → card top Y inside the clowder panel (heal floaters). */
@@ -197,14 +202,26 @@ export class LandingScene implements Scene {
     // Stairwell: `hash(runSeed, 'shop', floorJustCleared)` (§4 stream table).
     // Shop node: the node's own payload seed, so what the Peddler is holding
     // never depends on the order the party took its routes in.
+    primeFloorDreams(run);
     const shopRng = mulberry32(shop ? shop.seed : hash(run.runSeed, "shop", n));
     const stock = rollShopStock(shopRng, {
       floor: n,
       livingClasses: run.cats.filter((c) => c.lives > 0).map((c) => c.classId),
       uniquesDropped: run.uniquesDropped,
       nextUid: run.inventory.nextUid,
+      // The Peddler deals in the shared world too: his gear and collar slots
+      // can be somebody else's design.
+      dreamed: dreamedEquips(n),
+      onDreamed: (uid, origin) => {
+        this.dreamedStock.set(uid, origin);
+      },
     });
     this.stock = stock;
+    for (const slot of stock.slots) {
+      if (slot.kind !== "equip") continue;
+      const origin = this.dreamedStock.get(slot.item.uid);
+      if (origin) noteDreamedUse("items", origin, "peddler", slot.item.defId);
+    }
     // a stocked Mewthical counts as dropped this run (loot.md §5)
     for (const slot of stock.slots) {
       if (slot.kind === "equip" && slot.item.hook) {
@@ -748,6 +765,12 @@ export class LandingScene implements Scene {
         });
         stats.position.set(textX, 26);
         row.addChild(stats);
+        const origin = this.dreamedStock.get(slot.item.uid);
+        if (origin) {
+          const chip = dreamChip(origin);
+          chip.position.set(textX + Math.ceil(stats.width) + SPACE.md, 24);
+          row.addChild(chip);
+        }
       }
 
       if (slot.sold) {

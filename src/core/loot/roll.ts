@@ -13,6 +13,7 @@
  */
 import type {
   ClassId,
+  EquipDef,
   EquipInstance,
   EquipSlot,
   ItemId,
@@ -23,6 +24,12 @@ import type {
   StatKey,
 } from "../types.js";
 import { pickWeighted, roundHalfUp } from "../util.js";
+import {
+  filterDreamed,
+  pickDreamed,
+  type DreamedChoice,
+  type DreamedOrigin,
+} from "./dreamed.js";
 import { EQUIP_DEFS, RARITY_TABLE } from "../../content/equipment.js";
 import {
   BOSS_CONSUMABLE_ROLLS,
@@ -77,6 +84,22 @@ export interface LootCtx {
   nextUid: number;
   /** Current wallet — required for the TITHE bundle's `min(current, …)`. */
   currentShinies?: number;
+  /**
+   * THE DREAMING (core/loot/dreamed.ts): equipment other people's runs put in
+   * the shared pool, already validated by `services/pool.ts` and narrowed to
+   * this floor, plus the pool size that sets `p = min(0.7, size/200)`.
+   *
+   * OMITTED IS THE OFFLINE GAME. Absent or empty, step ⑥ below is exactly the
+   * roll it has always been and not one extra draw is taken from the stream.
+   */
+  dreamed?: DreamedChoice<EquipDef>;
+  /**
+   * Called once for every drop that came out of the pool instead of the
+   * shipped tables, with the uid it was granted under. An observer only —
+   * it cannot influence a roll — so the scene can tag the drop on screen
+   * ("dreamed by another stray") and a smoke can quote the row id.
+   */
+  onDreamed?: (uid: number, origin: DreamedOrigin) => void;
 }
 
 /* ------------------------------------------------------------------ */
@@ -146,8 +169,15 @@ export function makeEquipInstance(
   itemLevel: number,
   rarity: Rarity,
   sleekSecondary?: StatKey,
+  /**
+   * The def to price against, for a DREAMED drop whose def is registered by
+   * `services/pool.ts` rather than shipped. Omitted = the shipped table, which
+   * is every authored path. Passing it means a dream can never depend on
+   * registration having already happened.
+   */
+  dreamedDef?: EquipDef,
 ): EquipInstance {
-  const def = EQUIP_DEFS[defId];
+  const def = dreamedDef ?? EQUIP_DEFS[defId];
   const stats: Partial<Record<StatKey, number>> = {
     [def.primary]: primaryValue(def.primary, itemLevel, rarity, def.slot),
   };
@@ -200,6 +230,8 @@ function rollEquipInternal(
   dropped: Set<MewHookId>,
   uid: number,
   opts: EquipRollOpts = {},
+  dreamed?: DreamedChoice<EquipDef>,
+  onDreamed?: (uid: number, origin: DreamedOrigin) => void,
 ): EquipInstance {
   // ④ rarity (one d100 against cumulative weights, §3 table order)
   let rarity = pickWeighted(rng, RARITY_ORDER, (r) => rarityWeights[r]);
@@ -209,14 +241,32 @@ function rollEquipInternal(
     pickWeighted(rng, opts.slotWeights ?? EQUIP_SLOT_WEIGHTS, (s) => s.weight)
       .slot;
   if (slot === "weapon" && livingClasses.length === 0) slot = "trinket"; // degenerate guard
-  // ⑥ def pick: weapon uniform over LIVING classes; trinket/collar uniform
-  // over their pool
+  // ⑥ def pick, POOL-FIRST. The dreamed candidates are narrowed to the slot
+  // that was just rolled — and, for a weapon, to a class that is still alive,
+  // because the §5 rule that a dead class's weapon never drops again applies
+  // to somebody else's weapon exactly as it does to ours. Nothing left after
+  // that narrowing means no gate roll at all (dreamed.ts draw contract), so
+  // the shipped pick below keeps its stream position.
+  const dream = pickDreamed(
+    rng,
+    filterDreamed(
+      dreamed,
+      (d) =>
+        d.slot === slot &&
+        (slot !== "weapon" ||
+          (d.classId !== undefined && livingClasses.includes(d.classId))),
+    ),
+  );
+  // Shipped fallback: weapon uniform over LIVING classes; trinket/collar
+  // uniform over their pool.
   const def =
-    slot === "weapon"
+    dream?.value ??
+    (slot === "weapon"
       ? WEAPON_BY_CLASS.get(
           livingClasses[rng.int(0, livingClasses.length - 1)],
         )!
-      : poolFor(slot)[rng.int(0, poolFor(slot).length - 1)];
+      : poolFor(slot)[rng.int(0, poolFor(slot).length - 1)]);
+  if (dream) onDreamed?.(uid, dream.origin);
   // Mewthical rule: the drop IS the def's unique — or downgrades to Pedigree
   // if the unique already dropped this run / the def has no unique (§5).
   if (rarity === "mewthical") {
@@ -230,7 +280,7 @@ function rollEquipInternal(
   // rarities take none/both — no roll (skipped, not burned).
   const sleekSecondary =
     rarity === "sleek" ? def.secondaryPool[rng.int(0, 1)] : undefined;
-  return makeEquipInstance(uid, def.id, L, rarity, sleekSecondary);
+  return makeEquipInstance(uid, def.id, L, rarity, sleekSecondary, def);
 }
 
 /**
@@ -252,6 +302,8 @@ export function rollOneEquip(
     new Set(ctx.uniquesDropped),
     ctx.nextUid,
     opts,
+    ctx.dreamed,
+    ctx.onDreamed,
   );
 }
 
@@ -308,6 +360,9 @@ export function rollChest(rng: Rng, ctx: LootCtx): LootGrant {
           ctx.livingClasses,
           dropped,
           uid++,
+          {},
+          ctx.dreamed,
+          ctx.onDreamed,
         ),
       );
     } else {
@@ -342,6 +397,9 @@ export function rollVictory(rng: Rng, ctx: LootCtx): LootGrant {
         ctx.livingClasses,
         new Set(ctx.uniquesDropped),
         ctx.nextUid,
+        {},
+        ctx.dreamed,
+        ctx.onDreamed,
       ),
     );
   }
@@ -368,6 +426,9 @@ export function rollBossLoot(rng: Rng, ctx: LootCtx): LootGrant {
       ctx.livingClasses,
       new Set(ctx.uniquesDropped),
       ctx.nextUid,
+      {},
+      ctx.dreamed,
+      ctx.onDreamed,
     ),
   );
   for (let i = 0; i < BOSS_CONSUMABLE_ROLLS; i++) {
@@ -413,6 +474,9 @@ export function rollBundle(
           ctx.livingClasses,
           new Set(ctx.uniquesDropped),
           ctx.nextUid,
+          {},
+          ctx.dreamed,
+          ctx.onDreamed,
         ),
       );
       break;
