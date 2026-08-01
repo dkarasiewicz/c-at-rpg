@@ -325,9 +325,12 @@ describe("applyBattleResult", () => {
       ),
     });
     const out = applyBattleResult(run, result);
-    expect(out.died).toEqual(["medic"]);
+    // `died` carries the INSTANCES, not class ids — perma-death needs the
+    // whole cat (name, Stand, level) to write a memorial line
+    expect(out.died.map((c) => c.id)).toEqual(["medic"]);
+    expect(out.died[0].name).toBe("Baguette");
     expect(out.run.marchingOrder).toEqual(["bruiser", "trickster", "hexer"]);
-    // the medic slot stays in cats[] (fixed order) but is stripped of gear
+    // the medic stays in cats[] with 0 Lives but is stripped of gear
     const medic = out.run.cats[3];
     expect(medic.lives).toBe(0);
     expect(medic.weapon).toBeNull();

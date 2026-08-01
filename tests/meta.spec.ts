@@ -38,6 +38,10 @@ import {
   unlocksAt,
   unlockState,
   VICTORY_BONUS,
+  buryCat,
+  livingRoster,
+  rosterCat,
+  setDescending,
   type MetaProfile,
   type RunSummary,
   type UnlockDef,
@@ -53,13 +57,10 @@ import {
 import {
   benchedCats,
   canRecruit,
-  descend,
   fieldedCats,
-  generateCurrentFloorMap,
   newRun,
   PARTY_ORDER,
-  recruitCat,
-  rosterClasses,
+  type CustomCatKit,
 } from "../src/core/run/runState.js";
 import type { ClassId } from "../src/core/types.js";
 
@@ -481,78 +482,81 @@ describe("startRun", () => {
 });
 
 /* ------------------------------------------------------------------ */
-/* the roster gate: the mid-run recruit obeys the stoop                */
+/* the roster seam: who descends is CHOSEN, not drawn                  */
 /* ------------------------------------------------------------------ */
 //
-// `recruitCat` used to take whoever was next in slot order, so a fresh
-// profile's floor-3 recruit handed over Mora or Baguette for free — the two
-// cats the stoop sells for 90 ✦ each. `startRun` now stamps the town's class
-// pool onto the run and `benchedCats` reads it.
+// `recruitCat` had zero call sites (roster-and-persistence.md §0): a
+// `class:*` unlock widened a pool no screen could reach. It now buys a CAT,
+// standing in the town, that the roster screen can field.
 
-describe("recruitCat is gated by the town's class pool", () => {
-  it("a fresh town has nobody to recruit — the stoop is empty", () => {
-    const run = startRun("MEOW-1987", applyUnlocks(emptyProfile()));
-    expect(run.eligibleClasses).toEqual(["bruiser", "trickster"]);
+describe("the town roster drives the descent", () => {
+  it("a fresh town houses exactly the base clowder", () => {
+    const meta = emptyProfile();
+    expect(livingRoster(meta).map((c) => c.id)).toEqual([
+      "bruiser",
+      "trickster",
+    ]);
+    expect(livingRoster(meta).map((c) => c.name)).toEqual(["Bruno", "Pixel"]);
+    expect(meta.memorial).toEqual([]);
+  });
+
+  it("buying Mora's Corner MOVES MORA IN — the reported bug", () => {
+    const meta = { ...emptyProfile(), shinies: 1000 };
+    expect(livingRoster(meta).some((c) => c.classId === "hexer")).toBe(false);
+    const bought = purchase(meta, "class:hexer").meta;
+    const mora = livingRoster(bought).find((c) => c.classId === "hexer");
+    expect(mora).toBeDefined();
+    expect(mora!.name).toBe("Mora");
+    // …and she can be FIELDED, which is the half that never existed
+    const run = startRun("MEOW-1987", applyUnlocks(bought), {
+      meta: setDescending(bought, ["bruiser", mora!.id]),
+    });
+    expect(run.marchingOrder).toEqual(["bruiser", "hexer"]);
+    expect(run.cats.map((c) => c.id)).toEqual(["bruiser", "hexer"]);
+  });
+
+  it("the descent is exactly the pick, clamped to capacity", () => {
+    let meta = { ...emptyProfile(), shinies: 1000 };
+    meta = purchase(meta, "class:hexer").meta;
+    meta = purchase(meta, "class:medic").meta;
+    meta = setDescending(meta, ["medic", "hexer", "trickster", "bruiser"]);
+    const overlay = applyUnlocks(meta);
+    const run = startRun("MEOW-1987", overlay, { meta });
+    expect(overlay.partyCapacity).toBe(BASE_PARTY_CAPACITY);
+    expect(run.marchingOrder).toEqual(["medic", "hexer", "trickster"]);
+    // everyone who descended is FIELDED — there is no bench any more
     expect(benchedCats(run)).toEqual([]);
+    expect(fieldedCats(run)).toHaveLength(3);
     expect(canRecruit(run)).toBe(false);
-    expect(recruitCat(run).recruited).toBeNull();
   });
 
-  it("buying Mora's Corner opens a third chair — and only that one", () => {
-    const meta: MetaProfile = {
-      ...emptyProfile(),
-      unlocked: ["class:hexer"],
-    };
-    const run = startRun("MEOW-1987", applyUnlocks(meta));
-    expect(run.eligibleClasses).toEqual(["bruiser", "trickster", "hexer"]);
-    // the bench is exactly the town's pool minus whoever is already marching
-    const bench = benchedCats(run).map((c) => c.classId);
-    expect(bench).toEqual(
-      ["bruiser", "trickster", "hexer"].filter(
-        (c) => !run.marchingOrder.includes(c as ClassId),
-      ),
-    );
-    expect(bench).not.toContain("medic");
-    expect(canRecruit(run)).toBe(true);
-    // …and the cat the town has NOT bought is never handed over
-    expect(recruitCat(run, "medic").recruited).toBeNull();
+  it("no pick at all still descends (the first cats in the roster)", () => {
+    const meta = emptyProfile();
+    const run = startRun("MEOW-1987", applyUnlocks(meta), { meta });
+    expect(run.marchingOrder).toEqual(["bruiser", "trickster"]);
   });
 
-  it("floor 3's automatic recruit obeys the same gate", () => {
-    const closed = startRun("MEOW-1987", applyUnlocks(emptyProfile()));
-    let run = generateCurrentFloorMap(closed);
-    run = descend(run);
-    run = descend(run); // now on RECRUIT_FLOOR
-    expect(run.marchingOrder).toHaveLength(STARTING_PARTY_SIZE);
-
-    const open = startRun(
-      "MEOW-1987",
-      applyUnlocks({ ...emptyProfile(), unlocked: ["class:medic"] }),
-    );
-    let bought = generateCurrentFloorMap(open);
-    bought = descend(bought);
-    bought = descend(bought);
-    expect(bought.marchingOrder).toContain("medic");
+  it("a dead cat can never be sent down again", () => {
+    let meta = { ...emptyProfile(), shinies: 1000 };
+    meta = purchase(meta, "class:hexer").meta;
+    meta = setDescending(meta, ["bruiser", "hexer"]);
+    const mora = rosterCat(meta, "hexer")!;
+    meta = buryCat(meta, mora, {
+      floor: 3,
+      cause: "the Vacuum King",
+      seed: "S",
+    });
+    expect(meta.descending).toEqual(["bruiser"]);
+    const run = startRun("MEOW-1987", applyUnlocks(meta), { meta });
+    expect(run.marchingOrder).not.toContain("hexer");
   });
 
-  it("a run with no stamp (a bare newRun, an old save) gates nothing", () => {
-    const run = newRun("MEOW-1987");
-    expect(run.eligibleClasses).toBeUndefined();
+  it("without a profile it is the pre-roster engine, unchanged", () => {
+    const run = startRun("MEOW-1987", applyUnlocks(emptyProfile()));
+    expect(run.cats).toHaveLength(4);
+    expect(run.marchingOrder).toEqual(["bruiser", "trickster"]);
     expect(benchedCats(run)).toHaveLength(2);
     expect(canRecruit(run)).toBe(true);
-  });
-
-  it("a cat already marching stays legal even if the pool loses it", () => {
-    const run = {
-      ...newRun("MEOW-1987"),
-      marchingOrder: ["bruiser", "medic"] as ClassId[],
-      eligibleClasses: ["bruiser"] as ClassId[],
-    };
-    expect(rosterClasses(run)).toEqual(["bruiser", "medic"]);
-    expect(fieldedCats(run).map((c) => c.classId)).toEqual([
-      "bruiser",
-      "medic",
-    ]);
   });
 
   it("a custom (party-creator) party is exempt — the kits ARE the party", () => {
@@ -572,10 +576,14 @@ describe("recruitCat is gated by the town's class pool", () => {
         power: { id: "p", name: "P", effects: [] },
         flavor: { bio: "", barks: {} },
       },
-    ] as unknown as Parameters<typeof startRun>[2];
-    const run = startRun("MEOW-1987", applyUnlocks(emptyProfile()), kits);
+    ] as unknown as CustomCatKit[];
+    const meta = emptyProfile();
+    const run = startRun("MEOW-1987", applyUnlocks(meta), {
+      meta,
+      customParty: kits,
+    });
     expect(run.eligibleClasses).toEqual(PARTY_ORDER);
-    expect(canRecruit(run)).toBe(true);
+    expect(run.cats).toHaveLength(4);
   });
 });
 

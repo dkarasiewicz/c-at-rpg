@@ -250,8 +250,12 @@ describe("SceneManager FSM", () => {
       "battle",
       "event",
       "landing",
+      "camp",
       "results",
     ]);
+    // a camp is a state of its own (roster-and-persistence.md §4) and its
+    // only way out is back onto the route (or an abandon)
+    expect(TRANSITIONS.camp).toEqual(["runMap", "results"]);
     expect(TRANSITIONS.landing).toContain("floorgen"); // Descend
     expect(TRANSITIONS.landing).toContain("runMap"); // a shop NODE returns
     expect(TRANSITIONS.results).toEqual(["catTown", "floorgen", "title"]);
@@ -260,7 +264,7 @@ describe("SceneManager FSM", () => {
     expect(TRANSITIONS.title).toContain("partyCreator");
     expect(TRANSITIONS.partyCreator).toEqual(["floorgen", "title"]);
     // LOOT/PAUSE are overlays, not states:
-    expect(Object.keys(TRANSITIONS)).toHaveLength(10);
+    expect(Object.keys(TRANSITIONS)).toHaveLength(11);
   });
 });
 

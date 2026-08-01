@@ -2599,8 +2599,8 @@ export function createBattleScene(): Scene {
       levelBefore,
       livesLost,
       eventWin: params.eventWin,
-      extraLines: out.died.map((id) => ({
-        text: `${CLASSES[id].catName} is out of Lives — gone for good.`,
+      extraLines: out.died.map((cat) => ({
+        text: `${cat.name} is out of Lives — gone for good.`,
         tone: "loss" as const,
       })),
       onClosed: after,
@@ -2614,9 +2614,10 @@ export function createBattleScene(): Scene {
     if (!ctx?.run || !params) return null;
     const run = ctx.run;
     const cats: BattleSetup["cats"] = [];
-    for (const classId of run.marchingOrder) {
-      const cat = run.cats.find((c) => c.classId === classId);
+    for (const catId of run.marchingOrder) {
+      const cat = run.cats.find((c) => c.id === catId);
       if (!cat || cat.lives <= 0) continue;
+      const classId = cat.classId;
       const stats = effectiveStats(cat, run.level);
       const cls = CLASSES[classId];
       const tier = traitTier(classId, run.level);
@@ -2626,8 +2627,9 @@ export function createBattleScene(): Scene {
         if (item?.hook && !item.hookSpent) hooks.push(item.hook);
       }
       cats.push({
+        catId,
         classId,
-        name: cls.catName,
+        name: cat.name,
         stats,
         hp: Math.min(cat.hp, stats.hp),
         lives: cat.lives,
@@ -2645,7 +2647,7 @@ export function createBattleScene(): Scene {
     const powers: Record<string, PowerScript> = {};
     for (const cat of cats) {
       const p = CAT_POWERS[cat.classId];
-      if (p) powers[`cat:${cat.classId}`] = p;
+      if (p) powers[`cat:${cat.catId ?? cat.classId}`] = p;
     }
     params.enemies.forEach((enemyId, i) => {
       const p = ENEMY_POWERS[enemyId];

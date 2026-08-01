@@ -121,8 +121,10 @@ export function effectiveMaxHp(run: RunState, catIndex: number): number {
 /** Cat indices of living cats (lives > 0), front→back marching order. */
 function livingCatIndices(run: RunState): number[] {
   const out: number[] = [];
-  for (const classId of run.marchingOrder) {
-    const i = run.cats.findIndex((c) => c.classId === classId);
+  for (const catId of run.marchingOrder) {
+    // by INSTANCE id (roster-and-persistence.md §1) — two cats can share a
+    // class, so matching on classId here would target the wrong one
+    const i = run.cats.findIndex((c) => c.id === catId);
     if (i >= 0 && run.cats[i].lives > 0 && !out.includes(i)) out.push(i);
   }
   return out;
@@ -195,7 +197,8 @@ function itemName(id: ItemId): string {
 }
 
 function catName(run: RunState, catIndex: number): string {
-  return CLASSES[run.cats[catIndex].classId].catName;
+  // the cat's OWN name — a dreamed cat is not called after its class
+  return run.cats[catIndex].name;
 }
 
 const STAT_LABEL: Record<BuffStat, string> = {

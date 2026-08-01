@@ -15,9 +15,17 @@
  *   │ └───────────────────┘ └────────────────────────────────────────┘ │
  *   └───────────────────────────────────────────────────────────────────┘
  *
- * Hosts: `scenes/landing.ts` (action bar, hotkey P) and `overlays/pause.ts`
- * (menu row 2, hotkey P). The level-up flourish (`makeLevelUpCard`) is hosted
- * by the loot overlay, where `applyBattleResult`'s output is displayed.
+ * Hosts: `scenes/catTown.ts` (THE DEN as a town building — the clowder you
+ * OWN, each cat's own level, the town stash), `scenes/landing.ts` (action
+ * bar, hotkey P) and `overlays/pause.ts` (menu row 2, hotkey P). The
+ * level-up flourish (`makeLevelUpCard`) is hosted by the loot overlay, where
+ * `applyBattleResult`'s output is displayed.
+ *
+ * What it is LOOKING at is a `DenBook` (below the pixi divider), not a
+ * `RunState`: roster-and-persistence.md §4 moves levelling and gear into
+ * town, between descents, so the same panel has to be able to read the run's
+ * party and the town's roster. `runBook` is the mid-run book; the town's
+ * lives in `overlays/townDen.ts`.
  *
  * EVERY mutation goes through a core API and is written back with `setRun`;
  * this file computes no gameplay numbers. All chrome comes from the shared
@@ -32,6 +40,7 @@ import type {
   ClassId,
   EquipInstance,
   EquipSlot,
+  Inventory,
   MewHookId,
   RunState,
   SkillId,
@@ -84,6 +93,7 @@ import {
   panel,
 } from "../widgets.js";
 import {
+  CAMP_TITLE,
   campAvatar,
   campReason,
   campSection,
@@ -422,6 +432,57 @@ export function buildGearRows(cat: CatRunState): GearRow[] {
   return EQUIP_SLOTS.map((slot) => ({ slot, item: cat[slot] ?? null }));
 }
 
+/**
+ * One piece of gear in the SHARED POOL the Den equips from, with the handle
+ * its book uses to find it again — an inventory slot index during a run, a
+ * stash index in town (see `DenBook`).
+ */
+export interface DenPoolItem {
+  item: EquipInstance;
+  ref: number;
+}
+
+export interface PoolRow {
+  /** The book's handle for this piece. */
+  ref: number;
+  item: EquipInstance;
+  slot: EquipSlot;
+  /** vs whatever this cat wears in that slot right now. */
+  delta: string;
+}
+
+/** Every equipment piece in an inventory, with its slot index as the handle. */
+export function inventoryPool(inv: Inventory): DenPoolItem[] {
+  const out: DenPoolItem[] = [];
+  inv.slots.forEach((slot, ref) => {
+    if (slot !== null && isEquip(slot)) out.push({ item: slot, ref });
+  });
+  return out;
+}
+
+/**
+ * Everything in `entries` this cat may actually wear, each with the stat
+ * delta against the slot it would take (weapons are class-locked).
+ */
+export function buildPoolRows(
+  cat: CatRunState | undefined,
+  entries: readonly DenPoolItem[],
+): PoolRow[] {
+  if (!cat || cat.lives <= 0) return [];
+  const out: PoolRow[] = [];
+  for (const { item, ref } of entries) {
+    if (!canEquip(cat, item)) continue;
+    const s = EQUIP_DEFS[item.defId].slot;
+    out.push({
+      ref,
+      item,
+      slot: s,
+      delta: statDeltaText(item, cat[s] ?? null),
+    });
+  }
+  return out;
+}
+
 export interface BackpackRow {
   /** Index into `run.inventory.slots`. */
   index: number;
@@ -431,26 +492,14 @@ export interface BackpackRow {
   delta: string;
 }
 
-/** Backpack equipment this cat may actually wear (weapons are class-locked). */
+/** Backpack equipment this cat may actually wear (the run book's pool). */
 export function buildBackpackRows(
   run: RunState,
   catIndex: number,
 ): BackpackRow[] {
-  const cat = run.cats[catIndex];
-  if (!cat || cat.lives <= 0) return [];
-  const out: BackpackRow[] = [];
-  run.inventory.slots.forEach((slot, index) => {
-    if (slot === null || !isEquip(slot)) return;
-    if (!canEquip(cat, slot)) return;
-    const s = EQUIP_DEFS[slot.defId].slot;
-    out.push({
-      index,
-      item: slot,
-      slot: s,
-      delta: statDeltaText(slot, cat[s] ?? null),
-    });
-  });
-  return out;
+  return buildPoolRows(run.cats[catIndex], inventoryPool(run.inventory)).map(
+    (r) => ({ index: r.ref, item: r.item, slot: r.slot, delta: r.delta }),
+  );
 }
 
 /* ---- focus model (keyboard navigation) --------------------------------- */
@@ -631,11 +680,68 @@ export function makePointBadgeAt(
   return holder;
 }
 
-export interface ProgressPanelOpts {
-  getRun(): RunState;
-  setRun(run: RunState): void;
-  /** Fired after every successful mutation (HUD counters, autosave, …). */
-  onChanged?(): void;
+/* ---------------------------------------------------------------------- */
+/* THE BOOK — what the Den is looking at                                   */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * The Den used to read a `RunState` directly, which made it a MID-RUN panel
+ * by construction: the cats it could show were the cats that had already
+ * descended, and the gear it could offer came out of the backpack they were
+ * carrying. roster-and-persistence.md §1 moves both of those decisions into
+ * town — you level and kit the cats you OWN, between descents — so the panel
+ * needs to be able to look at either.
+ *
+ * `DenBook` is that indirection, and it is deliberately tiny: a list of cats,
+ * the level and xp each one is on, a way to write one back, and a shared pool
+ * of gear it can equip from. `runBook` is the old behaviour expressed through
+ * it (party, party level, the backpack); `overlays/townDen.ts` supplies the
+ * town's (the clowder, each cat's own level, the town stash).
+ *
+ * Nothing here computes a gameplay number — every mutation still goes through
+ * a core API and comes back as a new `CatRunState`.
+ */
+export interface DenPoolItem {
+  item: EquipInstance;
+  /** The book's own handle for this piece (inventory slot / stash index). */
+  ref: number;
+}
+
+export interface DenBook {
+  /** Small caps line over the title. */
+  eyebrow: string;
+  /** The panel's name — "THE DEN" either way. */
+  title: string;
+  /** Tab order. Index into THIS list is the panel's `catIndex`. */
+  cats(): readonly CatRunState[];
+  /**
+   * null = this cat is right here. Otherwise WHERE it is instead, said twice:
+   * `tab` is the two-word version a narrow tab can hold, `sheet` is the full
+   * line (with the reason) the portrait card has room for.
+   */
+  away(index: number): DenAway | null;
+  levelOf(index: number): number;
+  xpOf(index: number): number;
+  /** Write a mutated cat back (points, loadout). */
+  writeCat(index: number, next: CatRunState): void;
+  /** Section head over the shared gear list. */
+  poolTitle: string;
+  /** What that list says when this cat can wear none of it. */
+  poolEmpty: string;
+  pool(): readonly DenPoolItem[];
+  equipFromPool(index: number, ref: number): void;
+  unequip(index: number, slot: EquipSlot): void;
+}
+
+/** Where a cat is when it is not here — see `DenBook.away`. */
+export interface DenAway {
+  /** "in Cat Town" / "stays home" — fits a 100 px tab. */
+  tab: string;
+  /** "BACK IN CAT TOWN · no room in the party" — the portrait card's line. */
+  sheet: string;
+}
+
+export interface DenPanelOpts {
   /** Esc / the Close button. */
   onClose?(): void;
   toast?(text: string): void;
@@ -643,6 +749,13 @@ export interface ProgressPanelOpts {
   catIndex?: number;
   width?: number;
   height?: number;
+}
+
+export interface ProgressPanelOpts extends DenPanelOpts {
+  getRun(): RunState;
+  setRun(run: RunState): void;
+  /** Fired after every successful mutation (HUD counters, autosave, …). */
+  onChanged?(): void;
 }
 
 export interface ProgressPanelApi {
@@ -654,12 +767,89 @@ export interface ProgressPanelApi {
 }
 
 /**
- * Build the Den. Keyboard: Tab / ← → switch cat, ↑ ↓ move the row cursor,
- * Q E switch section, Enter act, number keys are the section's quick action
- * (spend stat N · assign the focused skill to battle slot N · act on row N).
- * Everything is equally clickable.
+ * THE RUN'S BOOK — the Den exactly as it behaved before the town had one:
+ * the cats that descended, the run's shared level and xp, the backpack.
  */
-export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
+export function runBook(opts: ProgressPanelOpts): DenBook {
+  const at = (i: number): CatRunState | undefined => opts.getRun().cats[i];
+  return {
+    eyebrow: "PARTY · POINTS · SKILLS · GEAR",
+    title: "THE DEN",
+    cats: () => opts.getRun().cats,
+    away(i) {
+      const run = opts.getRun();
+      const cat = run.cats[i];
+      if (!cat || !isAtCamp(catStanding(run, cat))) return null;
+      return {
+        tab: "in Cat Town",
+        sheet: `${CAMP_TITLE} · ${campReason(run, cat)}`,
+      };
+    },
+    levelOf: () => opts.getRun().level,
+    xpOf: () => opts.getRun().xp,
+    writeCat(i, next) {
+      const run = opts.getRun();
+      const cats = run.cats.slice();
+      cats[i] = next;
+      opts.setRun({ ...run, cats });
+      opts.onChanged?.();
+    },
+    poolTitle: "IN THE BACKPACK",
+    poolEmpty:
+      "Nothing in the backpack fits this cat. Weapons are class-locked; " +
+      "trinkets and collars are universal.",
+    pool: () => inventoryPool(opts.getRun().inventory),
+    equipFromPool(i, ref) {
+      const run = opts.getRun();
+      const cat = run.cats[i];
+      const item = run.inventory.slots[ref];
+      if (!cat || item === null || !isEquip(item)) return;
+      if (cat.lives <= 0 || !canEquip(cat, item)) return;
+      const { inv } = removeSlot(run.inventory, ref);
+      const r = equipItem(cat, item);
+      let inv2 = inv;
+      if (r.replaced) inv2 = addEquip(inv2, r.replaced).inv; // freed slot takes it
+      const cats = run.cats.slice();
+      cats[i] = r.cat;
+      opts.setRun({ ...run, cats, inventory: inv2 });
+      opts.onChanged?.();
+    },
+    unequip(i, slot) {
+      const run = opts.getRun();
+      const cat = at(i);
+      if (!cat?.[slot]) return;
+      if (!run.inventory.slots.includes(null)) {
+        opts.toast?.("Backpack full — no room to take that off.");
+        return;
+      }
+      const r = unequipItem(cat, slot);
+      if (!r.removed) return;
+      const cats = run.cats.slice();
+      cats[i] = r.cat;
+      opts.setRun({
+        ...run,
+        cats,
+        inventory: addEquip(run.inventory, r.removed).inv,
+      });
+      opts.onChanged?.();
+    },
+  };
+}
+
+/* ---------------------------------------------------------------------- */
+/* The panel                                                               */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * Build the Den over a `DenBook`. Keyboard: Tab / ← → switch cat, ↑ ↓ move
+ * the row cursor, Q E switch section, Enter act, number keys are the
+ * section's quick action (spend stat N · assign the focused skill to battle
+ * slot N · act on row N). Everything is equally clickable.
+ */
+export function makeDenPanel(
+  book: DenBook,
+  opts: DenPanelOpts = {},
+): ProgressPanelApi {
   const W = opts.width ?? PROGRESS_PANEL_W;
   const H = opts.height ?? PROGRESS_PANEL_H;
   const RIGHT_W = W - PAD - RIGHT_X;
@@ -669,8 +859,16 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
   const view = new Container();
   view.addChild(panel(W, H, { variant: "raised", accent: PAL.gold }));
 
-  const run0 = opts.getRun();
-  let catIndex = opts.catIndex ?? catsNeedingPoints(run0)[0] ?? 0;
+  const firstNeedy = (): number => {
+    const cats = book.cats();
+    for (let i = 0; i < cats.length; i++) {
+      if (cats[i].lives > 0 && unspentPoints(cats[i], book.levelOf(i)) > 0) {
+        return i;
+      }
+    }
+    return 0;
+  };
+  let catIndex = opts.catIndex ?? firstNeedy();
   let focus: DenFocus = { section: "points", index: 0 };
   /** Skill selected by click, waiting for a slot (the click-click flow). */
   let pickedSkill: SkillId | null = null;
@@ -679,9 +877,9 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
   let destroyed = false;
 
   /* ---- static chrome --------------------------------------------------- */
-  const eyebrow = heading("PARTY · POINTS · SKILLS · GEAR", 3);
+  const eyebrow = heading(book.eyebrow, 3);
   eyebrow.position.set(PAD, SPACE.md);
-  const title = heading("THE DEN", 2, { fill: PAL.gold });
+  const title = heading(book.title, 2, { fill: PAL.gold });
   title.position.set(PAD, SPACE.md + 18);
   view.addChild(eyebrow, title);
 
@@ -733,13 +931,16 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
   /* ---- helpers --------------------------------------------------------- */
 
+  const catAt = (i: number): CatRunState | undefined => book.cats()[i];
+  const levelAt = (i: number): number => book.levelOf(i);
+
   const sectionCounts = (): Record<DenSection, number> => {
-    const run = opts.getRun();
-    const cat = run.cats[catIndex];
+    const cat = catAt(catIndex);
+    if (!cat) return { points: 0, skills: 0, gear: 0 };
     return {
       points: POINT_MENU.length,
-      skills: buildSkillRows(cat, run.level).length,
-      gear: EQUIP_SLOTS.length + buildBackpackRows(run, catIndex).length,
+      skills: buildSkillRows(cat, levelAt(catIndex)).length,
+      gear: EQUIP_SLOTS.length + buildPoolRows(cat, book.pool()).length,
     };
   };
 
@@ -756,108 +957,85 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
   /* ---- mutations (all through core APIs) -------------------------------- */
 
-  const writeCat = (next: CatRunState): boolean => {
-    const run = opts.getRun();
-    const cur = run.cats[catIndex];
-    if (next === cur) return false; // engine rejected it — fire and forget
-    const cats = run.cats.slice();
-    cats[catIndex] = next;
-    opts.setRun({ ...run, cats });
-    opts.onChanged?.();
+  // `prev` is passed in rather than re-read: a book may PROJECT its cats
+  // (the town's are built fresh out of the profile on every call), so
+  // identity-comparing against a second read would never match and an
+  // engine-rejected edit would repaint as though it had landed.
+  const writeCat = (prev: CatRunState, next: CatRunState): boolean => {
+    if (next === prev) return false; // engine rejected it — fire and forget
+    book.writeCat(catIndex, next);
     return true;
   };
 
   const doSpend = (stat: StatKey): void => {
-    const run = opts.getRun();
-    const cat = run.cats[catIndex];
-    if (cat.lives <= 0) return;
-    if (writeCat(spendPoint(cat, stat, run.level))) {
+    const cat = catAt(catIndex);
+    if (!cat || cat.lives <= 0) return;
+    if (writeCat(cat, spendPoint(cat, stat, levelAt(catIndex)))) {
       flashStat = stat;
       refresh();
     }
   };
 
   const doAssign = (slotIndex: number, skillId: SkillId): void => {
-    const run = opts.getRun();
-    const cat = run.cats[catIndex];
-    if (!canEditLoadout(cat, run.level)) {
+    const cat = catAt(catIndex);
+    if (!cat) return;
+    const level = levelAt(catIndex);
+    if (!canEditLoadout(cat, level)) {
       opts.toast?.("Not enough skills known to rearrange yet.");
       return;
     }
-    if (writeCat(assignToSlot(cat, run.level, slotIndex, skillId))) {
+    if (writeCat(cat, assignToSlot(cat, level, slotIndex, skillId))) {
       pickedSkill = null;
       refresh();
     }
   };
 
   const doUnequip = (slot: EquipSlot): void => {
-    const run = opts.getRun();
-    const cat = run.cats[catIndex];
-    if (!cat[slot]) return;
-    if (!run.inventory.slots.includes(null)) {
-      opts.toast?.("Backpack full — no room to take that off.");
-      return;
-    }
-    const r = unequipItem(cat, slot);
-    if (!r.removed) return;
-    const cats = run.cats.slice();
-    cats[catIndex] = r.cat;
-    opts.setRun({
-      ...run,
-      cats,
-      inventory: addEquip(run.inventory, r.removed).inv,
-    });
-    opts.onChanged?.();
+    const cat = catAt(catIndex);
+    if (!cat?.[slot]) return;
+    book.unequip(catIndex, slot);
     refresh();
   };
 
-  const doEquip = (invIndex: number): void => {
-    const run = opts.getRun();
-    const cat = run.cats[catIndex];
-    const item = run.inventory.slots[invIndex];
-    if (item === null || !isEquip(item)) return;
-    if (cat.lives <= 0 || !canEquip(cat, item)) return;
-    const { inv } = removeSlot(run.inventory, invIndex);
-    const r = equipItem(cat, item);
-    let inv2 = inv;
-    if (r.replaced) inv2 = addEquip(inv2, r.replaced).inv; // freed slot takes it
-    const cats = run.cats.slice();
-    cats[catIndex] = r.cat;
-    opts.setRun({ ...run, cats, inventory: inv2 });
-    opts.onChanged?.();
+  const doEquip = (ref: number): void => {
+    book.equipFromPool(catIndex, ref);
     refresh();
   };
 
   /* ---- cat tabs --------------------------------------------------------- */
 
   /**
-   * The cat tabs, SPLIT (roster.ts): the party this run fields on the left
-   * at full width, then a gap, then the cats who are back in Cat Town as
-   * narrow, greyed tabs saying so. Four identical tabs made the Den look
-   * like a four-cat party sheet — the same lie the party bar was telling.
-   * They stay tappable: a camp cat still levels with the run, and the
-   * player is allowed to look at it.
+   * The cat tabs, SPLIT: whoever is HERE on the left at full width, then a
+   * gap, then the cats who are somewhere else as narrow, greyed tabs saying
+   * so. Four identical tabs made the Den look like a four-cat party sheet —
+   * the same lie the party bar was telling. They stay tappable: a cat that
+   * stayed home still levels and still gets kitted, and the player is allowed
+   * to look at it.
    */
-  function paintTabs(run: RunState): void {
+  function paintTabs(): void {
     for (const c of tabLayer.removeChildren()) c.destroy({ children: true });
-    const { party, camp } = splitRoster(run);
-    const order = [...party, ...camp];
-    if (order.length === 0) return;
-    /** A camp tab is a NOTE, not a card: about two-thirds of a party tab. */
+    const cats = book.cats();
+    if (cats.length === 0) return;
+    const order = cats
+      .map((cat, i) => ({ cat, i, awayNote: book.away(i) }))
+      .sort(
+        (a, b) => Number(a.awayNote !== null) - Number(b.awayNote !== null),
+      );
+    const here = order.filter((o) => o.awayNote === null).length;
+    const gone = order.length - here;
+    /** An away tab is a NOTE, not a card: about two-thirds of a party tab. */
     const CAMP_SHARE = 0.62;
-    const groupGap = camp.length > 0 && party.length > 0 ? SPACE.xl : 0;
+    const groupGap = gone > 0 && here > 0 ? SPACE.xl : 0;
     const gaps = TAB_GAP * Math.max(0, order.length - 1) + groupGap;
-    const unit =
-      (W - PAD * 2 - gaps) / (party.length + camp.length * CAMP_SHARE);
+    const unit = (W - PAD * 2 - gaps) / (here + gone * CAMP_SHARE);
 
     let x = 0;
-    order.forEach((cat, slot) => {
-      const i = run.cats.indexOf(cat);
-      const atCamp = slot >= party.length;
+    order.forEach(({ cat, i, awayNote }, slot) => {
+      const atCamp = awayNote !== null;
       const tabW = atCamp ? unit * CAMP_SHARE : unit;
       const dead = cat.lives <= 0;
       const selected = i === catIndex;
-      if (atCamp && slot === party.length) x += groupGap;
+      if (atCamp && slot === here) x += groupGap;
 
       const tab = new Container();
       tab.position.set(x, 0);
@@ -878,7 +1056,7 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
       face.position.set(SPACE.md + (atCamp ? 15 : 20), TAB_H / 2);
       tab.addChild(face);
       const textX = SPACE.md + (atCamp ? 36 : 48);
-      const name = label(CLASSES[cat.classId].catName, {
+      const name = label(cat.name, {
         bold: true,
         size: atCamp ? TYPE.small : TYPE.body,
         fill: dead || atCamp ? PAL.textDim : catNameColor(cat.classId),
@@ -888,15 +1066,15 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
         dead
           ? "gone for good"
           : atCamp
-            ? "in Cat Town"
-            : `${CLASSES[cat.classId].className} · Lv ${run.level}`,
+            ? awayNote.tab
+            : `${CLASSES[cat.classId].className} · Lv ${levelAt(i)}`,
         { dim: true, size: TYPE.tiny },
       );
-      sub.position.set(textX, atCamp ? 34 : 34);
+      sub.position.set(textX, 34);
       tab.addChild(name, sub);
 
       const badge = makePointBadgeAt(
-        dead ? 0 : unspentPoints(cat, run.level),
+        dead ? 0 : unspentPoints(cat, levelAt(i)),
         tabW - 46,
         8,
       );
@@ -918,9 +1096,11 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
   /* ---- left column: portrait + XP + stat breakdown ---------------------- */
 
-  function paintLeft(run: RunState): void {
+  function paintLeft(): void {
     for (const c of leftLayer.removeChildren()) c.destroy({ children: true });
-    const cat = run.cats[catIndex];
+    const cat = catAt(catIndex);
+    if (!cat) return;
+    const level = levelAt(catIndex);
     const cls = CLASSES[cat.classId];
     const dead = cat.lives <= 0;
     const card = panel(LEFT_W, BODY_H, { variant: "glass" });
@@ -930,16 +1110,19 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     face.position.set(SPACE.lg + 38, 68);
     card.addChild(face);
 
-    const name = heading(cls.catName, 2, {
+    // The cat's OWN name, not the class's: a town roster has instances in it
+    // (roster-and-persistence.md §1), and two Bruisers must not both be
+    // labelled "Bruno" on the sheet where you spend their points.
+    const name = heading(cat.name, 2, {
       fill: dead ? PAL.textDim : catNameColor(cat.classId),
     });
     name.position.set(110, 32);
-    const cls2 = label(`${cls.className} · Level ${run.level}`, {
+    const cls2 = label(`${cls.className} · Level ${level}`, {
       dim: true,
       size: TYPE.small,
     });
     cls2.position.set(110, 62);
-    const stand = label(`«${standName(cat.classId)}»`, {
+    const stand = label(`«${cat.standName ?? standName(cat.classId)}»`, {
       size: TYPE.tiny,
       fill: PAL.gold,
       bold: true,
@@ -951,7 +1134,7 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     paws.view.position.set(110, 102);
     card.addChild(paws.view);
 
-    const hpNow = label(`${cat.hp}/${maxHp(cat, run.level)} HP`, {
+    const hpNow = label(`${cat.hp}/${maxHp(cat, level)} HP`, {
       mono: true,
       size: TYPE.tiny,
       dim: true,
@@ -962,8 +1145,9 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
     // A cat that is not on this descent says so HERE, where the player is
     // reading its sheet — the narrow tab alone can't carry the reason.
-    if (isAtCamp(catStanding(run, cat))) {
-      const away = label(`BACK IN CAT TOWN · ${campReason(run, cat)}`, {
+    const awayNote = book.away(catIndex);
+    if (awayNote !== null) {
+      const away = label(awayNote.sheet, {
         size: TYPE.tiny,
         bold: true,
         dim: true,
@@ -974,13 +1158,13 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     }
 
     // XP band
-    const xp = xpProgress(run.xp, run.level);
+    const xp = xpProgress(book.xpOf(catIndex), level);
     const xpLabel = label("XP", { mono: true, size: TYPE.tiny, dim: true });
     xpLabel.position.set(SPACE.lg, 126);
     const xpNums = label(
       xp.capped
         ? "level cap"
-        : `${xp.inLevel}/${xp.span}  ·  ${xp.toNext} to Lv ${run.level + 1}`,
+        : `${xp.inLevel}/${xp.span}  ·  ${xp.toNext} to Lv ${level + 1}`,
       { mono: true, size: TYPE.tiny, dim: true },
     );
     xpNums.anchor.set(1, 0);
@@ -1024,7 +1208,7 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
         .stroke({ width: 1, color: PAL.border, alpha: 0.8 }),
     );
 
-    const rows = buildStatRows(cat, run.level);
+    const rows = buildStatRows(cat, level);
     rows.forEach((row, i) => {
       const y = hy + 26 + i * 28;
       const name2 = label(row.label, {
@@ -1087,15 +1271,16 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
   /* ---- section tab strip ------------------------------------------------ */
 
-  function paintSectionTabs(run: RunState): void {
+  function paintSectionTabs(): void {
     for (const c of sectionTabLayer.removeChildren()) {
       c.destroy({ children: true });
     }
-    const cat = run.cats[catIndex];
+    const cat = catAt(catIndex);
     const w = (RIGHT_W - SPACE.sm * 2) / DEN_SECTIONS.length;
     DEN_SECTIONS.forEach((section, i) => {
       const on = focus.section === section;
-      const left = section === "points" ? unspentPoints(cat, run.level) : 0;
+      const left =
+        section === "points" && cat ? unspentPoints(cat, levelAt(catIndex)) : 0;
       const b = button(
         left > 0
           ? `${SECTION_TITLE[section]}  (${left})`
@@ -1156,13 +1341,13 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
   /* ---- section: WHISKER POINTS ------------------------------------------ */
 
-  function paintPoints(host: Container, run: RunState): void {
-    const cat = run.cats[catIndex];
-    const left = unspentPoints(cat, run.level);
+  function paintPoints(host: Container, cat: CatRunState): void {
+    const level = levelAt(catIndex);
+    const left = unspentPoints(cat, level);
     const head = heading("SPEND A WHISKER POINT", 3);
     head.position.set(SPACE.md, SPACE.md);
     // "all spent" is a lie at level 1, where no point has ever been earned
-    const earned = Math.max(0, run.level - 1);
+    const earned = Math.max(0, level - 1);
     const count = label(
       left > 0
         ? `${left} UNSPENT`
@@ -1185,7 +1370,7 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     sub.position.set(SPACE.md, SPACE.md + 20);
     host.addChild(head, count, sub);
 
-    const rows = buildPointRows(cat, run.level);
+    const rows = buildPointRows(cat, level);
     const w = RIGHT_W - SPACE.md * 2;
     const rh = 50;
     rows.forEach((r, i) => {
@@ -1246,9 +1431,9 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
   /* ---- section: SKILLS --------------------------------------------------- */
 
-  function paintSkills(host: Container, run: RunState): void {
-    const cat = run.cats[catIndex];
-    const editable = canEditLoadout(cat, run.level);
+  function paintSkills(host: Container, cat: CatRunState): void {
+    const level = levelAt(catIndex);
+    const editable = canEditLoadout(cat, level);
     const head = heading("BATTLE LOADOUT — 4 GO TO WAR", 3);
     head.position.set(SPACE.md, SPACE.md - 2);
     const tip = label(
@@ -1261,7 +1446,7 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     tip.position.set(RIGHT_W - SPACE.md, SPACE.md);
     host.addChild(head, tip);
 
-    const slots = loadoutSlots(cat, run.level);
+    const slots = loadoutSlots(cat, level);
     const sw = (RIGHT_W - SPACE.md * 2 - SPACE.md * 3) / LOADOUT_SIZE;
     slots.forEach((skillId, i) => {
       const locked = i === 0;
@@ -1355,7 +1540,7 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     listHead.position.set(SPACE.md, 102);
     host.addChild(listHead);
 
-    const rows = buildSkillRows(cat, run.level);
+    const rows = buildSkillRows(cat, level);
     const w = RIGHT_W - SPACE.md * 2;
     const rh = 34;
     rows.forEach((r, i) => {
@@ -1464,22 +1649,32 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
   /* ---- section: GEAR ----------------------------------------------------- */
 
-  function paintGear(host: Container, run: RunState): void {
-    const cat = run.cats[catIndex];
+  function paintGear(host: Container, cat: CatRunState): void {
     const worn = buildGearRows(cat);
     const cw = (RIGHT_W - SPACE.md * 2 - SPACE.md * 2) / worn.length;
 
     worn.forEach((g, i) => {
       const focused = focus.section === "gear" && focus.index === i;
+      const worn0 = g.item;
       const card = rowShell(
         cw,
         98,
         focused,
-        g.item ? RARITY_COLOR[g.item.rarity] : null,
+        worn0 ? RARITY_COLOR[worn0.rarity] : null,
         () => {
           focus = { section: "gear", index: i };
-          if (g.item) doUnequip(g.slot);
+          if (worn0) doUnequip(g.slot);
         },
+        // WHAT IT IS WORTH, before it comes off (roster-and-persistence.md §4:
+        // "stat deltas visible on hover/tap so a swap is an informed choice").
+        worn0
+          ? () =>
+              showTip(
+                gearTipText(worn0, null, "Take it off and this goes"),
+                RIGHT_X + SPACE.md + i * (cw + SPACE.md),
+                BODY_Y + SECTION_TAB_H + 118,
+              )
+          : undefined,
       );
       card.position.set(SPACE.md + i * (cw + SPACE.md), SPACE.sm);
       const slotName = heading(g.slot.toUpperCase(), 3);
@@ -1531,7 +1726,7 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
           hook.position.set(SPACE.sm, 74);
           card.addChild(hook);
         }
-        const off = label("click / Enter to take off", {
+        const off = label(isTouch() ? "tap to take off" : "click to take off", {
           dim: true,
           size: TYPE.tiny,
         });
@@ -1542,20 +1737,20 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
       host.addChild(card);
     });
 
-    const listHead = heading("IN THE BACKPACK", 3);
+    const listHead = heading(book.poolTitle, 3);
     listHead.position.set(SPACE.md, 116);
     host.addChild(listHead);
 
-    const rows = buildBackpackRows(run, catIndex);
+    const rows = buildPoolRows(cat, book.pool());
     const w = RIGHT_W - SPACE.md * 2;
     const rh = 40;
     const VISIBLE = 5;
     if (rows.length === 0) {
-      const empty = label(
-        "Nothing in the backpack fits this cat. Weapons are class-locked; " +
-          "trinkets and collars are universal.",
-        { dim: true, size: TYPE.tiny, wrap: w },
-      );
+      const empty = label(book.poolEmpty, {
+        dim: true,
+        size: TYPE.tiny,
+        wrap: w,
+      });
       empty.position.set(SPACE.md, 142);
       host.addChild(empty);
       return;
@@ -1576,8 +1771,16 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
         RARITY_COLOR[r.item.rarity],
         () => {
           focus = { section: "gear", index: EQUIP_SLOTS.length + i };
-          doEquip(r.index);
+          doEquip(r.ref);
         },
+        // The whole point of curating gear between runs: what this swap
+        // actually costs and buys, against what the cat is wearing NOW.
+        () =>
+          showTip(
+            gearTipText(r.item, cat[r.slot] ?? null, "Against what it wears"),
+            RIGHT_X + SPACE.md + 40,
+            BODY_Y + SECTION_TAB_H + 150 + k * rh,
+          ),
       );
       row.position.set(SPACE.md, 138 + k * rh);
       const art = makeSpriteIcon(itemSpriteId(r.item), 26);
@@ -1631,44 +1834,48 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
   function refresh(): void {
     if (destroyed) return;
-    const run = opts.getRun();
-    if (catIndex >= run.cats.length) catIndex = 0;
+    const cats = book.cats();
+    if (catIndex >= cats.length) catIndex = 0;
     clearTips();
     const counts = sectionCounts();
     if (focus.index >= counts[focus.section]) {
       focus = { section: focus.section, index: 0 };
     }
-    const total = totalUnspentPoints(run);
+    const total = cats.reduce(
+      (n, c, i) => n + (c.lives > 0 ? unspentPoints(c, book.levelOf(i)) : 0),
+      0,
+    );
+    const topLevel = cats.reduce((n, _c, i) => Math.max(n, book.levelOf(i)), 1);
     unspentText.text =
       total > 0
         ? `${total} WHISKER POINT${total === 1 ? "" : "S"} UNSPENT`
-        : run.level > 1
+        : topLevel > 1
           ? "every point spent"
           : "whisker points arrive at level 2";
     unspentText.style.fill = total > 0 ? PAL.gold : PAL.textDim;
 
-    paintTabs(run);
-    paintLeft(run);
-    paintSectionTabs(run);
+    paintTabs();
+    paintLeft();
+    paintSectionTabs();
 
     for (const c of sectionLayer.removeChildren())
       c.destroy({ children: true });
     const body = panel(RIGHT_W, SECTION_H, { variant: "glass" });
     sectionLayer.addChild(body);
-    const dead = run.cats[catIndex].lives <= 0;
-    if (dead) {
+    const cat = cats[catIndex];
+    if (!cat) return;
+    if (cat.lives <= 0) {
       const gone = label(
-        `${CLASSES[run.cats[catIndex].classId].catName} is out of Lives — ` +
-          "nothing left to plan.",
+        `${cat.name} is out of Lives — nothing left to plan.`,
         { dim: true, size: TYPE.body, wrap: RIGHT_W - SPACE.lg * 2 },
       );
       gone.position.set(SPACE.lg, SPACE.lg);
       body.addChild(gone);
       return;
     }
-    if (focus.section === "points") paintPoints(body, run);
-    else if (focus.section === "skills") paintSkills(body, run);
-    else paintGear(body, run);
+    if (focus.section === "points") paintPoints(body, cat);
+    else if (focus.section === "skills") paintSkills(body, cat);
+    else paintGear(body, cat);
   }
 
   refresh();
@@ -1676,8 +1883,8 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
   /* ---- keys --------------------------------------------------------------- */
 
   const selectCat = (delta: number): void => {
-    const run = opts.getRun();
-    const n = run.cats.length;
+    const n = book.cats().length;
+    if (n === 0) return;
     catIndex = (((catIndex + delta) % n) + n) % n;
     pickedSkill = null;
     focus = { section: focus.section, index: 0 };
@@ -1685,16 +1892,16 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
   };
 
   const activateFocused = (): void => {
-    const run = opts.getRun();
-    const cat = run.cats[catIndex];
-    if (cat.lives <= 0) return;
+    const cat = catAt(catIndex);
+    if (!cat || cat.lives <= 0) return;
+    const level = levelAt(catIndex);
     if (focus.section === "points") {
-      const row = buildPointRows(cat, run.level)[focus.index];
+      const row = buildPointRows(cat, level)[focus.index];
       if (row) doSpend(row.stat);
       return;
     }
     if (focus.section === "skills") {
-      const row = buildSkillRows(cat, run.level)[focus.index];
+      const row = buildSkillRows(cat, level)[focus.index];
       if (row) onSkillActivate(row);
       return;
     }
@@ -1703,23 +1910,21 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
       if (g?.item) doUnequip(g.slot);
       return;
     }
-    const b = buildBackpackRows(run, catIndex)[
-      focus.index - EQUIP_SLOTS.length
-    ];
-    if (b) doEquip(b.index);
+    const b = buildPoolRows(cat, book.pool())[focus.index - EQUIP_SLOTS.length];
+    if (b) doEquip(b.ref);
   };
 
   const quickKey = (n: number): void => {
-    const run = opts.getRun();
-    const cat = run.cats[catIndex];
-    if (cat.lives <= 0) return;
+    const cat = catAt(catIndex);
+    if (!cat || cat.lives <= 0) return;
+    const level = levelAt(catIndex);
     if (focus.section === "points") {
-      const row = buildPointRows(cat, run.level)[n - 1];
+      const row = buildPointRows(cat, level)[n - 1];
       if (row) doSpend(row.stat);
       return;
     }
     if (focus.section === "skills") {
-      const rows = buildSkillRows(cat, run.level);
+      const rows = buildSkillRows(cat, level);
       const source = pickedSkill ?? rows[focus.index]?.skillId ?? null;
       if (n === 1) {
         opts.toast?.("Claw Swipe never leaves slot 1.");
@@ -1782,6 +1987,39 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
       view.destroy({ children: true });
     },
   };
+}
+
+/**
+ * The tooltip behind every gear decision: what the piece is, what it does,
+ * and — the part that makes a swap a CHOICE — the signed delta against
+ * whatever is in that slot right now.
+ */
+export function gearTipText(
+  item: EquipInstance,
+  against: EquipInstance | null,
+  lead: string,
+): string {
+  const lines = [
+    `${equipName(item)} — ${item.rarity} L${item.itemLevel}`,
+    equipStatsText(item) === "" ? "no stat lines" : equipStatsText(item),
+  ];
+  if (item.hook) {
+    lines.push(
+      `✦ ${HOOK_TEXT[item.hook]}${item.hookSpent === true ? " (spent)" : ""}`,
+    );
+  }
+  lines.push(
+    against
+      ? `${lead}: ${statDeltaText(item, against)}  (replaces ${equipName(against)})`
+      : `${lead}: ${statDeltaText(item, null)}`,
+  );
+  return lines.join("\n");
+}
+
+/** The run's Den — the party, the run's level, the backpack. */
+export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
+  const book = runBook(opts);
+  return makeDenPanel(book, opts);
 }
 
 /* ---------------------------------------------------------------------- */
@@ -1976,12 +2214,16 @@ export function makeLevelUpCard(
 /* ---------------------------------------------------------------------- */
 
 /**
- * The Den centered on screen with its own panel geometry — used by both
- * hosts (landing scene, pause overlay) so the screen looks identical from
- * either entry point. The caller supplies the scrim.
+ * The Den centered on screen with its own panel geometry — used by every
+ * host (landing scene, pause overlay, Cat Town) so the screen looks identical
+ * from any entry point. The caller supplies the scrim.
  */
 export function makeDenBox(opts: ProgressPanelOpts): ProgressPanelApi {
-  const api = makeProgressPanel(opts);
+  return placeDenBox(makeProgressPanel(opts));
+}
+
+/** Park any Den panel where every host parks it. */
+export function placeDenBox(api: ProgressPanelApi): ProgressPanelApi {
   api.view.position.set((DESIGN_W - PROGRESS_PANEL_W) / 2, 46);
   return api;
 }

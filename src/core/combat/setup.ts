@@ -20,10 +20,15 @@ export function createBattle(setup: BattleSetup): BattleState {
 
   setup.cats.forEach((cat, i) => {
     const startBase = cat.hooks.includes("startEnergy6") ? 6 : 4;
+    // The combatant id is the cat INSTANCE (roster-and-persistence.md §1).
+    // A setup with no `catId` predates instances and keeps keying on the
+    // class — and carries NO `catId` through to the Combatant or the
+    // BattleResult either, so the combat.md §13 fixture is byte-exact.
     combatants.push({
-      id: `cat:${cat.classId}`,
+      id: `cat:${cat.catId ?? cat.classId}`,
       name: cat.name,
       side: "cat",
+      ...(cat.catId !== undefined ? { catId: cat.catId } : {}),
       classId: cat.classId,
       rank: i + 1,
       stats: { ...cat.stats },

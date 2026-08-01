@@ -20,8 +20,9 @@
  */
 import type { ClassId, EquipInstance, RunState } from "../types.js";
 import type { CustomCatKit } from "../run/runState.js";
-import type { RunOverlay } from "./types.js";
+import type { MetaProfile, RunOverlay } from "./types.js";
 import { newRun, PARTY_ORDER } from "../run/runState.js";
+import { descendingCats, runCats } from "./roster.js";
 import { applyGrant } from "../loot/inventory.js";
 import { makeEquipInstance } from "../loot/roll.js";
 import { EQUIP_DEFS } from "../../content/equipment.js";
@@ -59,33 +60,73 @@ export function applyOverlayToRun(
 }
 
 /**
+ * How `startRun` is told who is going down (roster-and-persistence.md §3).
+ * `meta` is the whole point: the party is READ from the town roster, in the
+ * order the roster screen put it, rather than drawn at the door.
+ */
+export interface StartRunOpts {
+  /** A party-creator run: the kits ARE the party. */
+  customParty?: CustomCatKit[];
+  /** The town profile. Absent ⇒ the legacy four-Strays draw. */
+  meta?: MetaProfile;
+}
+
+/**
  * Begin a descent from Cat Town: a fresh run for `seed`, with everything the
- * town has unlocked already folded in. Deterministic — same seed + same
- * overlay ⇒ the same run, every time.
+ * town has unlocked already folded in, carrying the cats the player chose.
+ * Deterministic — same seed + same overlay + same roster ⇒ the same run.
+ *
+ * WHO GOES: `descendingCats(meta, capacity)` — the roster screen's pick,
+ * repaired against the living roster and clamped to the run's capacity. They
+ * descend as themselves, at the level the most experienced of them has
+ * reached (`runCats`), and the whole party is fielded: there is no bench,
+ * because the choosing already happened where the player could see it.
+ *
+ * WITHOUT a `meta` (tests, the party creator, the `?smoke=` direct starts)
+ * this is the pre-roster behaviour exactly: four Strays in `cats`, Bruno plus
+ * one drawn from the seed in the formation.
  */
 export function startRun(
   seed: string,
   overlay: RunOverlay,
-  customParty?: CustomCatKit[],
+  opts?: StartRunOpts | CustomCatKit[],
 ): RunState {
-  // ROSTER GATE: the town's class pool is stamped onto the run so the mid-run
-  // recruit (`recruitCat`, floor 3) can only ever hand over a cat Cat Town
-  // actually houses — otherwise the stoop's `class:*` unlocks buy nothing.
-  //
-  // A custom (party-creator) run is exempt on both counts: the kits ARE the
-  // party, so the formation is the engine's own draw and every slot stays
-  // recruitable rather than being benched against a catalog the player never
-  // described their cats into.
+  const o: StartRunOpts = Array.isArray(opts)
+    ? { customParty: opts }
+    : (opts ?? {});
+  const customParty = o.customParty;
   const custom = (customParty?.length ?? 0) > 0;
+
+  // The town's class pool is stamped onto the run as a record of what the
+  // player COULD have fielded (see RunState.eligibleClasses). A custom
+  // (party-creator) run is exempt: the kits are the party, and they were
+  // never described into the town's catalog.
   const allowed = custom
     ? PARTY_ORDER
     : (eligibleClasses(overlay).filter((c): c is ClassId =>
         (PARTY_ORDER as readonly string[]).includes(c),
       ) as ClassId[]);
-  const run = newRun(seed, customParty, {
-    partyCapacity: overlay.partyCapacity,
-    ...(custom ? {} : { roster: startingRoster(seed, overlay) as ClassId[] }),
-    eligibleClasses: allowed,
-  });
+
+  const chosen =
+    !custom && o.meta
+      ? descendingCats(o.meta, overlay.partyCapacity)
+      : undefined;
+
+  let run: RunState;
+  if (chosen && chosen.length > 0) {
+    const party = runCats(chosen);
+    run = newRun(seed, customParty, {
+      partyCapacity: overlay.partyCapacity,
+      cats: party.cats,
+      eligibleClasses: allowed,
+    });
+    run = { ...run, xp: party.xp, level: party.level };
+  } else {
+    run = newRun(seed, customParty, {
+      partyCapacity: overlay.partyCapacity,
+      ...(custom ? {} : { roster: startingRoster(seed, overlay) as ClassId[] }),
+      eligibleClasses: allowed,
+    });
+  }
   return applyOverlayToRun(run, overlay);
 }

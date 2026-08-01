@@ -54,6 +54,7 @@ import {
   MIN_COLUMNS,
   MIN_ROWS,
   REPLACEABLE_TYPES,
+  SAFE_TYPES,
 } from "./types.js";
 
 /** The stream tag for `hash(runSeed, floor, …)` — see the table in §4. */
@@ -175,14 +176,22 @@ function weightedTypes(
   return out;
 }
 
-/** Two rests joined by an edge are never allowed (run-map-and-dm.md §2). */
-function restBlocked(
+/**
+ * Two SAFE nodes joined by an edge are never allowed (run-map-and-dm.md §2's
+ * rest rule, widened to the camp — see `SAFE_TYPES`).
+ */
+function safeBlocked(
   id: number,
   types: (NodeType | null)[],
   neighbours: number[][],
 ): boolean {
-  return neighbours[id].some((n) => types[n] === "rest");
+  return neighbours[id].some((n) => {
+    const t = types[n];
+    return t !== null && SAFE_TYPES.includes(t);
+  });
 }
+
+const isSafe = (t: NodeType): boolean => SAFE_TYPES.includes(t);
 
 /* ------------------------------------------------------------------ */
 /* the generator                                                       */
@@ -261,7 +270,7 @@ export function generateFloorMap(
         : "fight";
     // constraint fixups — no redraws, they degrade to a plain fight
     if (t === "elite" && floorNum < ELITE_MIN_FLOOR) t = "fight";
-    if (t === "rest" && restBlocked(id, types, neighbours)) t = "fight";
+    if (isSafe(t) && safeBlocked(id, types, neighbours)) t = "fight";
     types[id] = t;
   }
 
@@ -269,7 +278,7 @@ export function generateFloorMap(
   for (const want of budget.guaranteed) {
     if (types.includes(want)) continue;
     const ok = (id: number): boolean =>
-      want !== "rest" || !restBlocked(id, types, neighbours);
+      !isSafe(want) || !safeBlocked(id, types, neighbours);
     let cands = intermediates.filter(
       (id) => REPLACEABLE_TYPES.includes(types[id] as NodeType) && ok(id),
     );
@@ -279,8 +288,8 @@ export function generateFloorMap(
       );
     }
     // last resort: any intermediate slot the constraint still allows. If even
-    // that is empty the type must be a rest AND every slot already touches
-    // one — i.e. the guarantee is already met and skipping is correct.
+    // that is empty the type must be a SAFE one AND every slot already
+    // touches one — i.e. the guarantee is already met and skipping is right.
     if (cands.length === 0) cands = intermediates.filter(ok);
     if (cands.length === 0) continue;
     types[cands[rng.int(0, cands.length - 1)]] = want;
@@ -434,11 +443,10 @@ export function validateFloorMap(map: FloorMap): string[] {
 
   // authored content rules
   for (const e of map.edges) {
-    if (
-      map.nodes[e.from]?.type === "rest" &&
-      map.nodes[e.to]?.type === "rest"
-    ) {
-      bad.push(`rests ${e.from} and ${e.to} are adjacent`);
+    const from = map.nodes[e.from]?.type;
+    const to = map.nodes[e.to]?.type;
+    if (from && to && SAFE_TYPES.includes(from) && SAFE_TYPES.includes(to)) {
+      bad.push(`safe nodes ${e.from} (${from}) and ${e.to} (${to}) adjoin`);
     }
   }
   if (

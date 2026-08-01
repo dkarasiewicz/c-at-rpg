@@ -46,6 +46,9 @@ function makeRun(
   catOver: Partial<CatRunState>[] = [],
 ): RunState {
   const cats: CatRunState[] = ORDER.map((classId, i) => ({
+    // the seeded Strays keep their class name as their instance id
+    id: classId,
+    name: CLASSES[classId].catName,
     classId,
     hp: CLASSES[classId].base.hp,
     lives: 9,

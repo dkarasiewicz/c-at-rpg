@@ -204,7 +204,12 @@ export function battleResult(
   }
   const cats = state.combatants
     .filter((c) => c.side === "cat")
-    .map((c) => ({ classId: c.classId!, hp: c.hp, lives: c.lives ?? 0 }));
+    .map((c) => ({
+      ...(c.catId !== undefined ? { catId: c.catId } : {}),
+      classId: c.classId!,
+      hp: c.hp,
+      lives: c.lives ?? 0,
+    }));
   const deadEnemies = state.combatants.filter(
     (c) => c.side === "enemy" && c.ko,
   );

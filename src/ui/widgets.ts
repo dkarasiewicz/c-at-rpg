@@ -1352,6 +1352,68 @@ export function button(
 }
 
 /* ---------------------------------------------------------------------- */
+/* chip — the small coloured count pill                                    */
+/* ---------------------------------------------------------------------- */
+
+export interface Chip {
+  view: Container;
+  /** Measured width, so a caller can centre or right-align it. */
+  width: number;
+}
+
+/**
+ * THE count pill: a filled, rounded plate with one short MONO line on it —
+ * "3 ready", "2/5", "✓". Cat Town's place markers wear one, and anything
+ * else that wants to stamp a small state onto a bigger thing should too,
+ * rather than hand-rolling another `roundRect().fill()`.
+ *
+ * `fill` carries the meaning (gold = ready, heal = done, textDim = idle), so
+ * the text sits in `PAL.textDark` on top of it by default.
+ */
+export function chip(
+  text: string,
+  opts: { fill?: number; textFill?: number; height?: number } = {},
+): Chip {
+  const h = opts.height ?? 18;
+  const fill = opts.fill ?? PAL.gold;
+  const view = new Container();
+  const t = new Text({
+    text,
+    style: mono(TYPE.tiny, { fill: opts.textFill ?? PAL.textDark }),
+  });
+  const w = Math.max(22, Math.ceil(t.width) + 12);
+  t.position.set((w - t.width) / 2, (h - t.height) / 2);
+  view.addChild(
+    new Graphics()
+      .roundRect(0, 0, w, h, RADIUS.chip)
+      .fill({ color: fill, alpha: 0.95 })
+      .stroke({ width: 1, color: PAL.void, alpha: 0.6 }),
+    t,
+  );
+  return { view, width: w };
+}
+
+/* ---------------------------------------------------------------------- */
+/* toast — one line, said once                                             */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * A transient line of chrome: the shared panel look, one wrapped label, sized
+ * to its own text and anchored at the TOP-LEFT so the caller can place it
+ * anywhere. It does not schedule its own removal — the host owns the fade,
+ * because only the host knows what else is on screen.
+ */
+export function toastCard(text: string): Container {
+  const view = new Container();
+  const t = label(text, { size: TYPE.small, wrap: WRAP.tooltip });
+  const w = Math.ceil(t.width) + SPACE.lg * 2;
+  const h = Math.ceil(t.height) + SPACE.md * 2;
+  view.addChild(panel(w, h, { variant: "raised", accent: PAL.gold }), t);
+  t.position.set(SPACE.lg, SPACE.md);
+  return view;
+}
+
+/* ---------------------------------------------------------------------- */
 /* Brand: the wordmark and the emblem                                      */
 /* ---------------------------------------------------------------------- */
 

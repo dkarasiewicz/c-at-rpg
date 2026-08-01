@@ -1,36 +1,50 @@
 /**
- * seed-pool — upsert GENERATION-ZERO rows into the shared GM content pool.
+ * seed-pool — write GENERATION ZERO of the Dreaming into the shared pool.
  *
- * Reads:
- *  - public/assets/gen/manifest.json + the env/items/scenes sub-manifests
- *    (any may be absent while a batch is mid-generation — tolerated), and
- *  - src/content/powers.ts stock Power Scripts (module may not exist yet —
- *    tolerated; it is being built in a parallel workstream), plus the
- *    hand-authored STOCK_POWERS in src/services/powerLint.ts.
+ * The pool-first read (`agent/tools/recall_content.ts`) rolls
+ * `p = min(0.7, size/200)`, so an empty pool reuses nothing and the world only
+ * starts growing after somebody has played for a very long time. This script
+ * fixes that on day one: everything the game already ships is written into
+ * `catrpg.content` with provenance `generation-zero`, so the very first run has
+ * a world to draw from and every later dream lands beside peers instead of in
+ * an empty table.
  *
- * Writes through the PoolStore interface (agent/lib/pool.ts):
- *  - keyed `art` rows   { assetId, file, w, h, styleVersion, provenance }
- *  - keyed `powers` rows{ id, version, json, budget, flavor, provenance }
- * Keyed writes are idempotent upserts — safe to re-run after every batch.
+ * The ROWS are built by `agent/lib/generationZero.ts` — pure, deterministic,
+ * one home — so this script is only the runner: it adds the keyed `art` table,
+ * which needs the on-disk manifests, and it reports.
  *
- * Run (documented in docs/GM-DEPLOY.md — `npx tsx` is the runner; plain
- * node's type-stripping cannot resolve the repo's extensionless imports):
- *   npx tsx scripts/seed-pool.ts
- * With UPSTASH_REDIS_REST_URL/TOKEN set it seeds the shared Redis pool;
- * without them it dry-runs against the in-memory pool and reports counts.
+ * What lands, all idempotent upserts (safe to re-run after every batch):
+ *
+ *  - `content` — the authored `GameEvent`s (each in its own floor band), every
+ *    `EquipDef` and `ConsumableDef`, every `EnemyDef` (floor-banded by the
+ *    floors that actually field it), one background per floor, and the shipped
+ *    Power Scripts (budget-linted first);
+ *  - `art`     — the keyed generation-zero asset rows from the
+ *    `public/assets/gen` manifests, styleVersion-stamped, so a style bump can
+ *    find the pictures that went stale.
+ *
+ * Everything goes through the `ContentPool` interface in `agent/lib/pool.ts`,
+ * so this script does not know or care that the store is Supabase.
+ *
+ * Run (docs/DM-DEPLOY.md — `npx tsx` is the runner; plain node's type-stripping
+ * cannot resolve the repo's extensionless imports):
+ *
+ *   SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… npx tsx scripts/seed-pool.ts
+ *
+ * With those two set it seeds the shared Supabase pool and then READS THE
+ * COUNTS BACK, so the number it prints is the number that is actually there.
+ * Without them it DRY-RUNS against the in-memory pool and reports the same
+ * shapes, which is how you check a change without touching the shared world.
  */
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { getPool } from "../agent/lib/pool.js";
+import { getPool, type PoolKind } from "../agent/lib/pool.js";
 import {
-  BUDGET_CAPS,
-  lintPowerScript,
-  normalizePower,
-  STOCK_POWERS,
-} from "../src/services/powerLint.js";
+  buildGenerationZero,
+  GENERATION_ZERO_PROVENANCE,
+} from "../agent/lib/generationZero.js";
 import { ART_STYLE } from "../src/content/artStyle.js";
-import type { PowerScript } from "../src/services/gmTypes.js";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -56,44 +70,23 @@ async function readManifest(file: string): Promise<Manifest | null> {
   }
 }
 
-function looksLikePower(v: unknown): v is PowerScript {
-  return (
-    typeof v === "object" &&
-    v !== null &&
-    typeof (v as PowerScript).id === "string" &&
-    (v as PowerScript).id.startsWith("power:") &&
-    typeof (v as PowerScript).trigger === "string" &&
-    Array.isArray((v as PowerScript).effects)
-  );
-}
-
-/** src/content/powers.ts may not exist yet; probe its exports tolerantly. */
-async function loadContentPowers(): Promise<PowerScript[]> {
-  let mod: Record<string, unknown>;
-  try {
-    mod = (await import("../src/content/powers.ts")) as Record<string, unknown>;
-  } catch {
-    return [];
-  }
-  const found: PowerScript[] = [];
-  for (const value of Object.values(mod)) {
-    const candidates = Array.isArray(value)
-      ? value
-      : typeof value === "object" && value !== null
-        ? Object.values(value)
-        : [];
-    for (const c of candidates) if (looksLikePower(c)) found.push(c);
-  }
-  return found;
-}
-
 async function main(): Promise<void> {
   const pool = getPool();
-  const shared = Boolean(
-    process.env.UPSTASH_REDIS_REST_URL && process.env.UPSTASH_REDIS_REST_TOKEN,
-  );
+  const { rows, powerRejects } = buildGenerationZero();
 
-  // ── art: generation-zero asset rows, styleVersion-stamped ──────────────
+  // ── content: one upsert per kind — six requests, not two hundred ───────
+  const written: Partial<Record<PoolKind, number>> = {};
+  const seeded: PoolKind[] = [];
+  for (const [kind, list] of Object.entries(rows) as [
+    PoolKind,
+    (typeof rows)[PoolKind],
+  ][]) {
+    if (list.length === 0) continue;
+    seeded.push(kind);
+    written[kind] = await pool.addContentBatch(list);
+  }
+
+  // ── art: keyed rows from the on-disk manifests ─────────────────────────
   let artRows = 0;
   let manifestsSeen = 0;
   for (const { dir, file } of MANIFESTS) {
@@ -107,65 +100,52 @@ async function main(): Promise<void> {
         assetId,
         JSON.stringify({
           assetId,
-          file: `/assets/gen/${dir}${meta.file}`,
+          // Shipped art is served from the game's own origin; only DREAMED art
+          // is uploaded to the bucket (`SupabasePool.rehostArt`).
+          url: `/assets/gen/${dir}${meta.file}`,
           w: meta.w,
           h: meta.h,
           styleVersion: ART_STYLE.version,
-          provenance: "generation-zero",
+          prompt: null,
+          provenance: GENERATION_ZERO_PROVENANCE,
         }),
       );
       artRows++;
     }
   }
 
-  // ── powers: stock scripts. src/content/powers.ts is probed dynamically
-  // (tolerated absent while the parallel workstream lands); the api-side
-  // STOCK_POWERS fallbacks are seeded too and de-duped by the keyed upsert.
-  const contentPowers = await loadContentPowers();
-  const candidates: { power: PowerScript; provenance: string }[] = [
-    ...Object.values(STOCK_POWERS).map((power) => ({
-      power,
-      provenance: "stock:api",
-    })),
-    ...contentPowers.map((power) => ({
-      power,
-      provenance: "stock:content",
-    })),
-  ];
-  let powerRows = 0;
-  let powerRejects = 0;
-  const seedCap = Math.max(BUDGET_CAPS.cat, BUDGET_CAPS.enemyByTier[3]);
-  for (const { power, provenance } of candidates) {
-    const normalized = normalizePower(power);
-    const errors = lintPowerScript(normalized, seedCap);
-    if (errors.length > 0) {
-      powerRejects++;
-      console.warn(`skip ${normalized.id}: ${errors[0]}`);
-      continue;
-    }
-    await pool.setEntry(
-      "powers",
-      normalized.id,
-      JSON.stringify({
-        id: normalized.id,
-        version: normalized.version,
-        json: normalized,
-        budget: normalized.budget,
-        flavor: normalized.flavor,
-        provenance,
-      }),
-    );
-    powerRows++;
-  }
-
+  // ── report ─────────────────────────────────────────────────────────────
   console.log(
-    `seed-pool: ${artRows} art rows (${manifestsSeen} manifests), ` +
-      `${powerRows} power rows (${powerRejects} rejected by lint), ` +
-      `styleVersion ${ART_STYLE.version}, target: ` +
-      (shared
-        ? "Upstash (shared)"
-        : "in-memory pool — DRY RUN, set UPSTASH_REDIS_REST_URL/TOKEN to seed the shared pool"),
+    `seed-pool → ${
+      pool.durable
+        ? "Supabase (shared)"
+        : "in-memory — DRY RUN, set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY"
+    }`,
   );
+  for (const kind of seeded) {
+    console.log(
+      `  ${kind.padEnd(12)} ${String(written[kind] ?? 0).padStart(4)} / ${
+        rows[kind].length
+      } upserted`,
+    );
+  }
+  console.log(
+    `  ${"art".padEnd(12)} ${String(artRows).padStart(4)} keyed rows ` +
+      `(${manifestsSeen} manifests)`,
+  );
+  for (const r of powerRejects) console.log(`  REJECTED ${r.id}: ${r.problem}`);
+  console.log(`  styleVersion ${ART_STYLE.version}`);
+
+  // Read the pool back, so the number reported is the number that is THERE and
+  // not the number we thought we sent.
+  if (pool.durable) {
+    console.log("  verified by reading Supabase back:");
+    for (const kind of seeded) {
+      console.log(
+        `    ${kind.padEnd(12)} ${String(await pool.size(kind)).padStart(4)} rows`,
+      );
+    }
+  }
 }
 
 main().catch((err: unknown) => {

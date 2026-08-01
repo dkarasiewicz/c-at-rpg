@@ -18,4 +18,5 @@ export * from "./unlocks.js";
 export * from "./payout.js";
 export * from "./profile.js";
 export * from "./overlay.js";
+export * from "./roster.js";
 export * from "./startRun.js";

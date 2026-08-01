@@ -96,17 +96,17 @@ export function discoveriesOf(run: RunState): Discoveries {
  * (roster.ts `splitRoster`; a cat that fell is still in the party list with
  * 0 Lives, so it contributes nothing either way).
  *
- * `RunState.cats` always carries all four class slots whether or not the run
- * fielded them (runState.ts `fieldedCats`), so summing THAT paid 25 points
- * per Life of a cat who never left Cat Town. A benched cat was worth a free
- * 225 — benching scored higher than fighting — and the results screen printed
- * "3 went down · 1 stayed in town" directly above a count of 36 Lives over
- * three rows of nine. This is the number the panel draws.
+ * `RunState.cats` used to carry all four class slots whether or not the run
+ * fielded them, so summing THAT paid 25 points per Life of a cat who never
+ * left Cat Town — a benched cat was worth a free 225, and benching scored
+ * higher than fighting. Since roster-and-persistence.md §1 `cats` IS the
+ * descent, so the two agree; walking the marching order keeps it honest
+ * anyway, because a cat that fell is still in `cats` with 0 Lives.
  */
 export function survivingLives(run: RunState): number {
   let lives = 0;
-  for (const classId of run.marchingOrder) {
-    const cat = run.cats.find((c) => c.classId === classId);
+  for (const id of run.marchingOrder) {
+    const cat = run.cats.find((c) => c.id === id);
     if (cat) lives += Math.max(0, cat.lives);
   }
   return lives;

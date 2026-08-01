@@ -23,7 +23,7 @@
  * `drawCat` recipe kept only as the assetless fallback.
  */
 import { Container, Graphics, Text } from "pixi.js";
-import type { ClassId, RunState } from "../../core/types.js";
+import type { RunState } from "../../core/types.js";
 import { CLASSES } from "../../content/classes.js";
 import { CONSUMABLES } from "../../content/consumables.js";
 import { EQUIP_DEFS } from "../../content/equipment.js";
@@ -867,7 +867,10 @@ export class LandingScene implements Scene {
     const chipW = 68;
     const chipH = 78;
     const gap = SPACE.sm;
-    run.marchingOrder.forEach((classId, i) => {
+    run.marchingOrder.forEach((catId, i) => {
+      const cat = run.cats.find((c) => c.id === catId);
+      if (!cat) return;
+      const classId = cat.classId;
       const selected = this.marchSelected === i;
       const chip = new Container();
       chip.position.set(i * (chipW + gap), 0);
@@ -890,7 +893,7 @@ export class LandingScene implements Scene {
       });
       rank.position.set(SPACE.xs, 2);
       chip.addChild(rank);
-      const nm = label(CLASSES[classId].catName, {
+      const nm = label(cat.name, {
         size: TYPE.tiny,
         center: true,
         fill: catNameColor(classId),
@@ -921,7 +924,7 @@ export class LandingScene implements Scene {
       const tmp = order[this.marchSelected];
       order[this.marchSelected] = order[i];
       order[i] = tmp;
-      ctx.run = { ...run, marchingOrder: order as ClassId[] };
+      ctx.run = { ...run, marchingOrder: order };
       this.marchSelected = null;
     }
     this.refreshMarch();

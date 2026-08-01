@@ -39,6 +39,29 @@ and it runs offline after one visit. See `docs/design/mobile.md`.
 
 ## The game
 
+- **The clowder** — Cat Town houses **individual cats**, not four class slots. A
+  cat is an instance: a name, a class, a Stand, a level, its own gear, its own
+  scars. A fresh town has **two** — Bruno and Pixel — and the clowder grows by
+  unlocking, by recruiting, and by being *dreamed*. **The Roster** (`R` in town)
+  is where you pick who descends and in what order; tap to send, tap again to
+  move forward, shift-tap to bench. Levelling and gear happen in town, on cats
+  you actually field.
+- **Death is permanent** — Nine Lives is the *run*-scale buffer, and burning the
+  last one is the end of that cat, from the profile, for good. **The Memorial**
+  (`M`) keeps the name, the level, the floor they fell on and what did it. Their
+  gear comes home to the town stash; the cat does not. A town can never be left
+  empty — wipe the whole clowder and a free stray turns up at the gate.
+- **The Camp** — a node on floors 4-6 where the party stops and the cats talk to
+  *each other*. Three embers buy three of: eat, bandage, tend a scar, talk, keep
+  watch. The exchange between two named cats is authored (41 of them, filtered
+  by what is actually true at this fire) and the DM, when it is reachable,
+  appends its own beat under it — so a slow or absent DM costs one paragraph and
+  never a rule.
+- **What a cat carries between runs** — **hunger** rises every descent and is
+  bought off in town in shinies, so it competes with unlocks for the same tin;
+  **scars** are permanent and only come from burning a Life; **quirks**, good and
+  bad, are earned from what actually happened. All of it is on the roster card,
+  because state you cannot see is state you cannot plan around.
 - **The party** — Bruno the Bruiser and «THE DUMPSTER KING» (tank, shove offense),
   Pixel the Trickster and «BOX AMBUSH» (crit striker), Mora the Hexer and
   «STRING THEORY» (pulls, hexes, stuns), Baguette the Medic and «PURR ENGINE»
@@ -87,7 +110,8 @@ and it runs offline after one visit. See `docs/design/mobile.md`.
   reaches a run without an engine change.
 - **The run map** — each of the 6 floors is a small directed graph: entry on the
   left, boss or stairs on the right, 2–3 outgoing routes from wherever you stand.
-  Nodes are `fight` / `elite` / `event` / `shop` / `rest` / `treasure` / `boss`, each
+  Nodes are `fight` / `elite` / `event` / `shop` / `rest` / `camp` / `treasure` /
+  `boss`, each
   labelled before you walk into it, so a route is a legible gamble — the short path
   past two elites, or the long safe one with a Peddler. Branches you didn't take
   close visibly behind you; the regret is the point. Bosses on floors 3 and 6.
@@ -132,11 +156,19 @@ and it runs offline after one visit. See `docs/design/mobile.md`.
 
 | | |
 |---|---|
-| ![Cat Town](docs/screenshots/cattown.png) | ![The run map](docs/screenshots/runmap.png) |
-| ![Battle — every enemy telegraphs its next move](docs/screenshots/battle.png) | ![Inspect — what you know, and what you don't](docs/screenshots/inspect.png) |
-| ![The Bestiary](docs/screenshots/bestiary.png) | ![A boss](docs/screenshots/boss.png) |
-| ![Coming home](docs/screenshots/progress.png) | ![Event](docs/screenshots/event.png) |
+| ![Cat Town — the clowder lives here between descents](docs/screenshots/shot-desktop-cattown.png) | ![The Clowder — you choose who goes down, and in what order](docs/screenshots/shot-desktop-roster.png) |
+| ![The Memorial — death is permanent, so the loss has an address](docs/screenshots/shot-desktop-memorial.png) | ![The Camp — three embers, and the cats talk to each other](docs/screenshots/shot-desktop-camp.png) |
+| ![Battle — every enemy telegraphs its next move](docs/screenshots/shot-desktop-battle.png) | ![The run map](docs/screenshots/runmap.png) |
+| ![Inspect — what you know, and what you don't](docs/screenshots/inspect.png) | ![The Bestiary](docs/screenshots/bestiary.png) |
+| ![A boss](docs/screenshots/boss.png) | ![Event](docs/screenshots/event.png) |
 | ![Say what you do](docs/screenshots/tabletop.png) | ![Results](docs/screenshots/results.png) |
+
+Every screen is built for a phone held sideways as well — same scenes, same taps,
+844×390:
+
+| | |
+|---|---|
+| ![Cat Town on a phone](docs/screenshots/shot-phone-cattown.png) | ![The Camp on a phone](docs/screenshots/shot-phone-camp.png) |
 
 ## Art & UI
 
@@ -193,6 +225,15 @@ and zod are deliberately never shipped to the browser.
   each other" (fire-and-forget, session-cached, so battle start never waits and a
   rule applies from the next fight featuring the pair); a discovered resonance
   attaches as an extra power script and announces itself once with a gold banner.
+- **The Dreaming** — everything the DM authors that is worth keeping is validated,
+  budget-linted, stamped with its style version and floor band, and written to a
+  shared **Supabase** pool: items, events, enemies, encounters, Stands, cats,
+  powers and floor backdrops, with their art re-hosted so the picture does not
+  404 in a month. Later runs — and other players — draw from that pool first, and
+  resonance verdicts (including the null ones) are memoised across everybody. The
+  pool is an *enrichment layer*: with no database configured nothing is written,
+  nothing is read, and the game plays exactly as it does now on authored content
+  and the local profile.
 
 **The DM authors content; it never computes outcomes.** Everything it emits is
 recombination of shipped mechanics, and it is priced three separate times: by the

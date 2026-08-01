@@ -2,13 +2,11 @@
  * THE ROSTER SPLIT — one vocabulary, one look, for "who is in the party" vs
  * "who is somewhere else entirely".
  *
- * `RunState.cats` ALWAYS carries all four class slots — every classId-keyed
- * system depends on that — but a run only FIELDS `marchingOrder`
- * (balance-and-meta.md §2), and Cat Town gates which classes a run may field
- * at all (`rosterClasses`). Drawing all four slots as equal cards with a
- * small grey tag is how a two-cat party reads as a four-cat party: same size,
- * same brightness, same prominence, four full HP bars, four rows of nine
- * paws. The tag loses that argument every time.
+ * `RunState.cats` is the cats that DESCENDED (roster-and-persistence.md §1),
+ * and a run FIELDS `marchingOrder`. Normally those are the same set — the
+ * player chose the party in town — so the camp strip is usually empty. It
+ * still exists for the one case that has a bench: a save written before cat
+ * instances, which carried all four class slots forward.
  *
  * So every screen that shows the roster splits it here:
  *
@@ -20,13 +18,12 @@
  *          each cat's HP and Lives out loud.
  *
  * Presentation only: nothing here decides anything, it reads run state
- * through core's own selectors (`rosterClasses` / `partyCapacity`).
+ * through core's own selectors (`partyCapacity`).
  */
 import { ColorMatrixFilter, Container, Graphics } from "pixi.js";
 import type { CatRunState, RunState } from "../core/types.js";
-import { CLASSES } from "../content/classes.js";
 import { maxHp } from "../core/run/party.js";
-import { partyCapacity, rosterClasses } from "../core/run/runState.js";
+import { partyCapacity } from "../core/run/runState.js";
 import { PAL } from "./palette.js";
 import { SPACE } from "./layout.js";
 import { TYPE } from "./textStyles.js";
@@ -40,22 +37,19 @@ import { avatar, label } from "./widgets.js";
  * Where a cat actually is.
  *   fielded  in the marching order, alive — this run's party
  *   fallen   out of Lives; it went down there and it did not come back
- *   reserve  alive, this run COULD still field it (the town houses the
- *            class) but there is no slot / no recruit yet
- *   away     the town does not house this class for this run — it is not on
- *            the descent in any sense, it just occupies a data slot
+ *   reserve  alive, came along, not in the formation. Only a migrated
+ *            pre-instance save produces one.
  */
-export type CatStanding = "fielded" | "fallen" | "reserve" | "away";
+export type CatStanding = "fielded" | "fallen" | "reserve";
 
 export function catStanding(run: RunState, cat: CatRunState): CatStanding {
   if (cat.lives <= 0) return "fallen";
-  if (run.marchingOrder.includes(cat.classId)) return "fielded";
-  return rosterClasses(run).includes(cat.classId) ? "reserve" : "away";
+  return run.marchingOrder.includes(cat.id) ? "fielded" : "reserve";
 }
 
-/** True for the two standings that belong in the compact camp strip. */
+/** True for the standing that belongs in the compact camp strip. */
 export function isAtCamp(standing: CatStanding): boolean {
-  return standing === "reserve" || standing === "away";
+  return standing === "reserve";
 }
 
 export interface RosterSplit {
@@ -137,7 +131,7 @@ export function campNotePast(run: RunState): string {
 
 /** The reason printed on one camp row. Short enough to sit under a name. */
 export function campReason(run: RunState, cat: CatRunState): string {
-  if (catStanding(run, cat) === "away") return "not on this run";
+  void cat;
   const { capacity, fielded } = splitRoster(run);
   return fielded < capacity
     ? "can still join, deeper down"
@@ -193,7 +187,7 @@ export function campRow(run: RunState, cat: CatRunState, w: number): Container {
   row.addChild(face);
 
   const textX = SPACE.sm + 28;
-  const name = label(CLASSES[cat.classId].catName, {
+  const name = label(cat.name, {
     size: TYPE.tiny,
     bold: true,
     dim: true,
@@ -247,7 +241,7 @@ export function campCard(
   // three tiny lines, centred as a block in whatever height it is given
   const top = Math.max(SPACE.sm, Math.round((h - 44) / 2) + 6);
   const textX = SPACE.sm + 30;
-  const name = label(CLASSES[cat.classId].catName, {
+  const name = label(cat.name, {
     size: TYPE.tiny,
     bold: true,
     dim: true,

@@ -230,7 +230,11 @@ describe("FLOORS — GDD §6 canonical 6-floor table exactly", () => {
       ]) {
         expect(gone in f).toBe(false);
       }
-      expect(f.map.guaranteed).toEqual(["shop", "rest"]);
+      // A shop, and one guaranteed safe node: a rest on floors 1-3, a camp
+      // on the long floors 4-6 (roster-and-persistence.md §4).
+      expect(f.map.guaranteed[0]).toBe("shop");
+      expect(["rest", "camp"]).toContain(f.map.guaranteed[1]);
+      expect(f.map.guaranteed).toHaveLength(2);
       expect(Object.keys(f.map.weights).length).toBeGreaterThan(3);
     }
     // elites are authored from floor 2 on, never on floor 1

@@ -26,6 +26,19 @@ export interface Rng {
 
 // ---- ids ----
 export type ClassId = "bruiser" | "trickster" | "hexer" | "medic";
+/**
+ * A CAT INSTANCE id (docs/design/roster-and-persistence.md §1) — the identity
+ * of one individual cat, stable for that cat's whole life across every run it
+ * survives. THIS, not `ClassId`, is what `RunState.marchingOrder`, the battle
+ * seam and the town roster key on; class is an ATTRIBUTE of the instance.
+ *
+ * The four seeded Strays carry their class name as their id (`'bruiser'`,
+ * `'trickster'`, …) because there is exactly one of each in a fresh town —
+ * which is also what makes a default run byte-identical to the pre-instance
+ * engine. Every cat minted afterwards (a recruit, a dreamed cat, a second
+ * bruiser) gets a counter id, `'cat-7'`, and the two never collide.
+ */
+export type CatId = string;
 /** camelCase, e.g. 'bodySlam' */
 export type SkillId = string;
 /** camelCase, e.g. 'ratThug', 'vacuumKing' */
@@ -159,6 +172,8 @@ export interface Combatant {
   id: string;
   name: string;
   side: "cat" | "enemy";
+  /** cats only — the instance this combatant IS (`id` is `cat:<catId>`) */
+  catId?: CatId;
   /** cats only */
   classId?: ClassId;
   /** enemies only */
@@ -297,6 +312,12 @@ export interface BattleState {
 export interface BattleSetup {
   /** in marching order, front→back */
   cats: {
+    /**
+     * The cat INSTANCE this slot fields. Absent ⇒ `classId` — the identity
+     * the engine used before instances existed, which is what keeps the
+     * combat.md §13 fixture (`cat:bruiser`, `cat:trickster`, …) byte-exact.
+     */
+    catId?: CatId;
     classId: ClassId;
     name: string;
     stats: Stats;
@@ -408,8 +429,8 @@ export type BattleEvent =
 
 export interface BattleResult {
   outcome: "victory" | "defeat" | "fled";
-  /** post-standup values */
-  cats: { classId: ClassId; hp: number; lives: number }[];
+  /** post-standup values (`catId` absent ⇒ the slot was keyed by class) */
+  cats: { catId?: CatId; classId: ClassId; hp: number; lives: number }[];
   /** Σ enemy xp, 0 on flee/defeat */
   xpGained: number;
   catPiles: number;
@@ -600,9 +621,14 @@ export interface LootGrant {
 /**
  * What an encounter node IS. Every node on a floor map is an encounter; the
  * type is what the medallion advertises (asset ids `node:<type>`).
+ *
+ * `camp` is the one node that is not about the dungeon at all
+ * (roster-and-persistence.md §4): the party stops and the cats interact with
+ * EACH OTHER. It resolves in its own scene, spends its own shared resource,
+ * and is the seam the §3 conditions are acted on from.
  */
 export type NodeType =
-  "fight" | "elite" | "event" | "shop" | "rest" | "treasure" | "boss";
+  "fight" | "elite" | "event" | "shop" | "rest" | "camp" | "treasure" | "boss";
 
 /**
  * One encounter on the floor's directed graph. `depth` is the column
@@ -761,7 +787,22 @@ export interface ResultLine {
 /* §2.9 Run state, save, score                                               */
 /* ------------------------------------------------------------------------ */
 
+/**
+ * ONE CAT ON THE DESCENT (roster-and-persistence.md §1).
+ *
+ * It is an INSTANCE, not a class slot: `id` is who it is, `classId` is what
+ * it is. The town's `MetaCat` is the same individual at rest — this shape is
+ * that one, projected into a run and carrying the run-scoped bits (current
+ * HP, temp mods, energy owed).
+ */
 export interface CatRunState {
+  /** WHO this cat is — stable for its whole life, across runs. */
+  id: CatId;
+  /** Display name. Dreamed cats get their own; a Stray gets the class's. */
+  name: string;
+  /** The Stand this cat carries (`CAT_POWERS[classId].name` for a Stray). */
+  standName?: string;
+  /** WHAT this cat is — an attribute of the instance, not its identity. */
   classId: ClassId;
   /** current; max derives from effectiveStats */
   hp: number;
@@ -809,10 +850,15 @@ export interface RunState {
   runSeed: string;
   /** 1..6 */
   floorNum: number;
-  /** FIXED order [bruiser, trickster, hexer, medic] */
+  /**
+   * THE CATS THAT DESCENDED — instances, in the order the town sent them
+   * (roster-and-persistence.md §1). Length is whatever the player fielded,
+   * never a fixed four; a cat that runs out of Lives STAYS here at 0 so the
+   * results roll-call and the memorial can still name it.
+   */
   cats: CatRunState[];
-  /** living cats only, front→back */
-  marchingOrder: ClassId[];
+  /** living cats only, front→back — INSTANCE ids, not class ids */
+  marchingOrder: CatId[];
   xp: number;
   /** 1..8 */
   level: number;
@@ -835,15 +881,16 @@ export interface RunState {
 
 // ---- persistence (core/run/save.ts) ----
 
-/** Save-file schema versions this build can read (save.ts SAVE_VERSION = 3). */
-export type SaveVersion = 1 | 2 | 3;
+/** Save-file schema versions this build can read (save.ts SAVE_VERSION = 4). */
+export type SaveVersion = 1 | 2 | 3 | 4;
 
 /**
  * localStorage 'catrpg.save.v1' (the KEY keeps its name so old saves are still
  * found; `version` is what gates them). v1 = pre-progression, v2 = pre-run-map
  * (both tile-dungeon saves, migrated forward on load by `migrateSave`);
- * v3 = current — the run map regenerates from the seed, so the whole floor is
- * `run.floorMap` + the two traversal fields and there is no delta to store.
+ * v3 = pre-instance (cats were four fixed ClassId slots); v4 = current —
+ * `run.cats` is the cats that descended and `marchingOrder` holds instance
+ * ids (roster-and-persistence.md §1).
  */
 export interface SaveFile {
   version: SaveVersion;
@@ -856,11 +903,13 @@ export interface SaveFile {
 }
 
 /**
- * Meta-file schema versions (core/meta/profile.ts META_VERSION = 3).
+ * Meta-file schema versions (core/meta/profile.ts META_VERSION = 4).
  * v1 = lifetime records only; v2 = Cat Town (wallet, unlocks, history);
- * v3 = the Bestiary (per-enemy earned knowledge, enemy-intel.md §4).
+ * v3 = the Bestiary (per-enemy earned knowledge, enemy-intel.md §4);
+ * v4 = THE ROSTER: cat instances, the memorial, the town stash
+ * (roster-and-persistence.md §1/§2).
  */
-export type MetaVersion = 1 | 2 | 3;
+export type MetaVersion = 1 | 2 | 3 | 4;
 
 /**
  * localStorage 'catrpg.meta.v1' — the lifetime record half. Cat Town's

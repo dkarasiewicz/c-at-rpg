@@ -25,9 +25,19 @@ export const NODE_TYPES: readonly NodeType[] = [
   "event",
   "shop",
   "rest",
+  "camp",
   "treasure",
   "boss",
 ];
+
+/**
+ * Nodes the party is SAFE on — a warm spot or a camp fire. Two of them joined
+ * by an edge is never allowed (the rest rule in run-map-and-dm.md §2, widened
+ * when the camp arrived): back-to-back safety turns a floor's attrition off,
+ * and the choice between "mend everyone a little" and "spend the fire on one
+ * of them" only means something if you cannot have both in a row.
+ */
+export const SAFE_TYPES: readonly NodeType[] = ["rest", "camp"];
 
 /* ------------------------------------------------------------------ */
 /* generator shape constants (run-map-and-dm.md §2)                    */

@@ -90,9 +90,10 @@ create table if not exists catrpg.art (
   created_at     timestamptz not null default now()
 );
 
--- The service role writes; nothing else may touch this schema. The browser
--- never talks to Postgres directly — it goes through the DM agent — so no
--- anon policy is granted here on purpose.
+-- RLS on everything. The grants are split deliberately and the split is the
+-- whole security model: the service role (the DM agent, and only the DM agent)
+-- WRITES; anon READS. The read policies are at the bottom of this file, with
+-- the argument for why content-with-no-identity is safe to publish.
 alter table catrpg.content      enable row level security;
 alter table catrpg.interactions enable row level security;
 alter table catrpg.art          enable row level security;

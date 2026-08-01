@@ -502,12 +502,12 @@ describe("collar slot (progression.md §4)", () => {
 /* §5 Save compatibility                                               */
 /* ================================================================== */
 
-describe("save v1 → v3 (progression.md §5 + run-map-and-dm.md §2)", () => {
+describe("save v1 → v4 (progression.md §5 + run-map-and-dm.md §2 + roster §1)", () => {
   const seededRun = () => generateCurrentFloorMap(newRun("MEOW-1987"));
 
-  it("SAVE_VERSION is 3 and serializeRun stamps it", () => {
-    expect(SAVE_VERSION).toBe(3);
-    expect(serializeRun(seededRun()).version).toBe(3);
+  it("SAVE_VERSION is 4 and serializeRun stamps it", () => {
+    expect(SAVE_VERSION).toBe(4);
+    expect(serializeRun(seededRun()).version).toBe(4);
   });
 
   it("migrates a v1 payload forward with no PROGRESSION loss", () => {
@@ -521,7 +521,7 @@ describe("save v1 → v3 (progression.md §5 + run-map-and-dm.md §2)", () => {
       delete c.loadout;
     }
     const migrated = migrateSave(v1)!;
-    expect(migrated.version).toBe(3);
+    expect(migrated.version).toBe(4);
     // the progression fields stay absent (= v1 behaviour); only the run-map
     // traversal fields are stamped on, and the party is put back at the entry
     expect(migrated.run.cats).toEqual(v1.run.cats);

@@ -21,10 +21,12 @@ import {
   FLOOR_COUNT,
   floorConfig,
   generateCurrentFloorMap,
+  fieldedCats,
   newRun,
 } from "../../src/core/run/runState.js";
 import type {
   BattleAction,
+  CatId,
   BattleEvent,
   BattleResult,
   BattleSetup,
@@ -38,6 +40,17 @@ import type {
   NodeType,
   RunState,
 } from "../../src/core/types.js";
+import {
+  CAMP_EMBERS,
+  canTakeCamp,
+  newCampSession,
+  takeCampAction,
+  type CampActionId,
+} from "../../src/core/run/camp.js";
+import {
+  withConditions,
+  type CatCondition,
+} from "../../src/core/run/conditions.js";
 import { hash, mulberry32 } from "../../src/core/rng.js";
 import { CLASSES } from "../../src/content/classes.js";
 import {
@@ -83,6 +96,7 @@ import {
 } from "../../src/core/events/resolve.js";
 import {
   effectiveStats,
+  maxHp,
   POINT_MENU,
   skillsForLevel,
   spendPoint,
@@ -101,9 +115,10 @@ export function buildSetup(
   isBoss: boolean,
 ): BattleSetup {
   const cats: BattleSetup["cats"] = [];
-  for (const classId of run.marchingOrder) {
-    const cat = run.cats.find((c) => c.classId === classId);
+  for (const catId of run.marchingOrder) {
+    const cat = run.cats.find((c) => c.id === catId);
     if (!cat || cat.lives <= 0) continue;
+    const classId = cat.classId;
     const stats = effectiveStats(cat, run.level);
     const cls = CLASSES[classId];
     const traits =
@@ -115,8 +130,9 @@ export function buildSetup(
       if (item?.hook && !item.hookSpent) hooks.push(item.hook);
     }
     cats.push({
+      catId,
       classId,
-      name: cls.catName,
+      name: cat.name,
       stats,
       hp: Math.min(cat.hp, stats.hp),
       lives: cat.lives,
@@ -266,6 +282,8 @@ export interface ScriptedOutcome {
   eventsResolved: number;
   /** Catnap nodes the party actually curled up on. */
   rests: number;
+  /** Camp fires the party sat down at (roster-and-persistence.md §4). */
+  camps: number;
   /** Floors the driver actually walked entry → terminal, in order. */
   floorsWalked: number[];
   /** Enemy ids the driver put down, deepest floor last. */
@@ -314,6 +332,14 @@ export function scriptedRun(
      * node so the event modal can be opened by hand.
      */
     stopBeforeType?: NodeType;
+    /**
+     * Conditions to hang on EVERY cat before the descent
+     * (roster-and-persistence.md §3). The driver builds its party with
+     * `newRun`, which has no town behind it and therefore no hunger and no
+     * scars — so this is how a balance probe asks "what does a clowder that
+     * nobody fed actually cost?" without inventing a second harness.
+     */
+    conditions?: readonly CatCondition[];
   } = {},
 ): ScriptedOutcome {
   const throughFloor = Math.max(
@@ -321,6 +347,16 @@ export function scriptedRun(
     Math.min(FLOOR_COUNT, opts.throughFloor ?? 1),
   );
   let run = generateCurrentFloorMap(newRun(seed));
+  if (opts.conditions && opts.conditions.length > 0) {
+    const carried = opts.conditions;
+    run = {
+      ...run,
+      cats: run.cats.map((c) => {
+        const cat = withConditions(c, carried);
+        return { ...cat, hp: maxHp(cat, run.level) };
+      }),
+    };
+  }
   const nodesVisited: NodeType[] = [];
   const floorsWalked: number[] = [];
   const bossesFelled: EnemyId[] = [];
@@ -329,6 +365,7 @@ export function scriptedRun(
   let treasures = 0;
   let eventsResolved = 0;
   let rests = 0;
+  let camps = 0;
   let stoppedBeforeRoute = 0;
   /** The floor the driver is on — re-read per node, never captured once. */
   const cfgNow = (): FloorConfig => floorConfig(run.floorNum);
@@ -474,6 +511,16 @@ export function scriptedRun(
         rests++;
         break;
       }
+      case "camp": {
+        // The camp scene, headless (roster-and-persistence.md §4). The policy
+        // is the dull-but-sensible one a player reaches for: patch up whoever
+        // is worst, feed whoever is hungriest, and put somebody on watch —
+        // taken through the REAL `takeCampAction`, so what the gate measures
+        // is the shipped camp and not an idealised one.
+        run = spendCamp(run);
+        camps++;
+        break;
+      }
       default:
         break; // shop — the Peddler is the landing scene's, and buying
       // nothing is a legal (and deterministic) player choice
@@ -543,9 +590,52 @@ export function scriptedRun(
     treasures,
     eventsResolved,
     rests,
+    camps,
     floorsWalked,
     bossesFelled,
     packs,
     stoppedBeforeRoute,
   };
+}
+
+/* ------------------------------------------------------------------ */
+/* the camp, headless (roster-and-persistence.md §4)                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Spend a camp fire the way a competent, unclever player does: the most
+ * wounded cat gets patched up, the hungriest gets fed, somebody takes the
+ * watch — first legal action in that order, until the embers are gone.
+ *
+ * It goes through the REAL `canTakeCamp` / `takeCampAction`, so the gate
+ * fixture pins the shipped camp: change what an ember buys and this run's
+ * recorded HP changes with it.
+ */
+export function spendCamp(start: RunState): RunState {
+  let run = start;
+  let session = newCampSession();
+  for (let i = 0; i < CAMP_EMBERS; i++) {
+    const party = fieldedCats(run);
+    if (party.length === 0) break;
+    const wounded = [...party].sort(
+      (a, b) =>
+        a.hp / maxHp(a, run.level) - b.hp / maxHp(b, run.level) ||
+        (a.id < b.id ? -1 : 1),
+    );
+    const tries: { id: CampActionId; who: CatId[] }[] = [
+      ...wounded.map((c) => ({ id: "bandage" as const, who: [c.id] })),
+      ...party.map((c) => ({ id: "eat" as const, who: [c.id] })),
+      ...party.map((c) => ({ id: "tend" as const, who: [c.id] })),
+      { id: "watch" as const, who: [party[0].id] },
+      ...(party.length >= 2
+        ? [{ id: "talk" as const, who: [party[0].id, party[1].id] }]
+        : []),
+    ];
+    const next = tries.find((t) => canTakeCamp(run, session, t.id, t.who).ok);
+    if (!next) break;
+    const out = takeCampAction(run, session, next.id, next.who);
+    run = out.run;
+    session = out.session;
+  }
+  return run;
 }

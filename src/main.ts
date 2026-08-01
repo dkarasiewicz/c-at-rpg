@@ -30,6 +30,7 @@ import { createFloorgenScene } from "./ui/scenes/floorgen.js";
 import { createResultsScene } from "./ui/scenes/results.js";
 import { createRunMapScene } from "./ui/scenes/runMap.js";
 import { createBattleScene } from "./ui/scenes/battle.js";
+import { createCampScene } from "./ui/scenes/camp.js";
 import { EventScene } from "./ui/scenes/event.js";
 import { LandingScene } from "./ui/scenes/landing.js";
 import { LootOverlay } from "./ui/overlays/loot.js";
@@ -44,6 +45,7 @@ const RUN_SCENES: readonly SceneId[] = [
   "battle",
   "event",
   "landing",
+  "camp",
 ];
 
 (async () => {
@@ -173,6 +175,7 @@ const RUN_SCENES: readonly SceneId[] = [
     floorgen: createFloorgenScene,
     runMap: createRunMapScene,
     battle: createBattleScene,
+    camp: createCampScene,
     event: () => new EventScene(),
     landing: () => new LandingScene(),
     results: createResultsScene,

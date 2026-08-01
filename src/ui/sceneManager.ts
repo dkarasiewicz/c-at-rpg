@@ -27,6 +27,7 @@ export type SceneId =
   | "runMap"
   | "battle"
   | "event"
+  | "camp"
   | "landing"
   | "results";
 
@@ -114,8 +115,10 @@ export function layer(root: Container, name: LayerName): Container {
  *    it builds its own run and does not consume the town's overlay yet.)
  *  - partyCreator → floorgen (accept / GM-offline fallback) | title (Esc)
  *  - runMap → battle (fight/elite/boss node) / event (event node) /
- *    landing (shop node, and the stairwell once the floor is cleared), or
- *    results (Abandon via pause, and the floor-6 exit)
+ *    landing (shop node, and the stairwell once the floor is cleared),
+ *    camp (a camp node — roster-and-persistence.md §4), or results (Abandon
+ *    via pause, and the floor-6 exit)
+ *  - camp → runMap (Break camp hands the route back) | results (abandon)
  *  - battle → runMap (victory-after-loot / flee) | results (defeat, floor-6
  *    win, abandon)
  *  - event → runMap | battle (ambush fight) | results (abandon)
@@ -125,7 +128,8 @@ export function layer(root: Container, name: LayerName): Container {
  *    primary) | floorgen (Again / New Seed, straight back down) | title
  * LOOT and PAUSE are overlays, not states. Rest and treasure nodes resolve
  * INSIDE runMap (an in-scene catnap panel / the loot overlay), so they are
- * not states either.
+ * not states either. A CAMP is: it owns a screen's worth of interaction
+ * between the cats and a DM turn of its own (roster-and-persistence.md §4).
  */
 export const TRANSITIONS: Record<SceneId, readonly SceneId[]> = {
   boot: ["title"],
@@ -133,7 +137,8 @@ export const TRANSITIONS: Record<SceneId, readonly SceneId[]> = {
   catTown: ["floorgen", "title"],
   partyCreator: ["floorgen", "title"],
   floorgen: ["runMap"],
-  runMap: ["battle", "event", "landing", "results"],
+  runMap: ["battle", "event", "landing", "camp", "results"],
+  camp: ["runMap", "results"],
   battle: ["runMap", "results"],
   event: ["runMap", "battle", "results"],
   landing: ["runMap", "floorgen", "results"],

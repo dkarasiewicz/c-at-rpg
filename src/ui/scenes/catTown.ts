@@ -1,30 +1,38 @@
 /**
- * CAT TOWN — the hub between runs (balance-and-meta.md §4).
+ * CAT TOWN — the hub between runs (balance-and-meta.md §4,
+ * roster-and-persistence.md §4).
  *
- * A PLACE, not a menu. The painted `scene:catTown` backdrop is the room; the
- * cats you have actually recruited stand on its floor and bob; the unlocks
- * are six LOCATIONS you walk to (the notice board, the bowls, the cart, the
- * stoop, the fence, the storm drain), each a marker sitting on the thing it
- * names in the art; the tin in the top-right says exactly what you have and
- * what you have ever earned; and the only way onward is "Begin the descent".
+ * A PLACE, not a menu, laid out in four honest regions so the screen answers
+ * four questions in the order a player asks them:
+ *
+ *   top-left      THE ARCHIVE — what you have met, who you have lost, and the
+ *                 way back out (Title · The Bestiary · The Memorial)
+ *   top-right     THE TIN — what you have, what you have ever had, and how
+ *                 much of the town is still unbuilt
+ *   bottom-left   THE CLOWDER — the cats who live here, who is setting out,
+ *                 and (a tap) the Den sheet for any of them
+ *   bottom-right  WHAT YOU DO — The Den · The Roster · Begin the descent
+ *
+ * Between them is the painting, and the unlocks are six LOCATIONS pinned to
+ * the thing they name in it (the notice board, the bowls, the cart, the
+ * stoop, the fence, the storm drain). Their name plates are ONE LINE now —
+ * the blurb moved to a hover tip and the panel — because six two-line plates
+ * on a 1280×720 room merged into an unreadable strip.
  *
  * Everything it knows about progression comes from core/meta — this file
  * computes no costs and grants no content. Buying is
- * `purchase()` → `saveMeta()`; starting a run is
- * `startRun(seed, applyUnlocks(meta))`, so the engine never learns that a
- * meta layer exists.
- *
- * Arriving from RESULTS (`CatTownParams`) it also shows the run's payout
- * receipt and pulses every marker whose place just came within reach.
+ * `purchase()` → `saveMeta()`; managing a cat is `overlays/townDen.ts` →
+ * `saveMeta()`; starting a run is `startRun(seed, applyUnlocks(meta), {meta})`,
+ * so the engine never learns that a meta layer exists.
  *
  * Chrome is the shared kit (widgets.ts) exactly as landing.ts uses it:
  * `sceneBackdrop`, `vignette`, `panel`, `avatar`, `bar`, `heading`, `label`,
- * `button`, `scrim`, `makeSpriteIcon`. FAIL-SOFT: with no generated art at
- * all the scene still renders — palette wash behind, glyph markers, and the
- * procedural cat recipe for the clowder.
+ * `button`, `chip`, `scrim`, `toastCard`, `makeSpriteIcon`. FAIL-SOFT: with
+ * no generated art at all the scene still renders — palette wash behind,
+ * glyph markers, and the procedural cat recipe for the clowder.
  */
 import { Container, Graphics, Sprite, Text } from "pixi.js";
-import type { ClassId, EnemyId } from "../../core/types.js";
+import type { CatId, ClassId, EnemyId } from "../../core/types.js";
 import type {
   PlaceDef,
   Payout,
@@ -40,9 +48,10 @@ import {
   PLACES,
   purchase,
   startRun,
-  eligibleClasses,
-  MAX_PARTY_CAPACITY,
-  STARTING_PARTY_SIZE,
+  descendingCats,
+  feedCat,
+  livingRoster,
+  setDescending,
   unlockCatalog,
   unlocksAt,
   unlockState,
@@ -60,23 +69,29 @@ import {
   avatar,
   bar,
   button,
+  chip,
   enemyAvatar,
   heading,
   label,
   makeSpriteIcon,
+  makeTooltip,
   panel,
   scrim,
   sceneBackdrop,
+  toastCard,
   UNKNOWN_SPRITE_ID,
   vignette,
 } from "../widgets.js";
-import { isTouch, padHit } from "../touch.js";
+import { isTouch, padHit, padHitBox } from "../touch.js";
 import { makeIntelBlock, makeLevelChip, makeTierPill } from "../draw/intel.js";
 import { drawCat } from "../draw/cats.js";
 import { catTexture, hasSprite } from "../sprites.js";
 import { tween } from "../tween.js";
 import { randomSeed } from "./title.js";
 import { applyPartyContent } from "./partyCreator.js";
+import { makeRosterPanel } from "../overlays/rosterPanel.js";
+import { makeTownDenBox } from "../overlays/townDen.js";
+import type { ProgressPanelApi } from "../overlays/progressPanel.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 
 /** Factory for main.ts's scene table. */
@@ -98,33 +113,58 @@ export interface CatTownParams {
 }
 
 /* ---- screen geometry (design px) ------------------------------------- */
-const EYEBROW_Y = 32;
-const BANNER_Y = 60;
-const SUB_Y = 104;
+const MARGIN = 40;
+
+const EYEBROW_Y = 30;
+const BANNER_Y = 58;
+const SUB_Y = 100;
+
+/** THE ARCHIVE — the reading room, top-left. */
+const NAV_Y = 26;
+const NAV_W = 150;
+const NAV_H = 38;
 
 const TIN_W = 300;
-const TIN_H = 92;
-const TIN_X = DESIGN_W - 40 - TIN_W;
+const TIN_H = 96;
+const TIN_X = DESIGN_W - MARGIN - TIN_W;
 const TIN_Y = 26;
 
 const RECEIPT_W = TIN_W;
 const RECEIPT_X = TIN_X;
 const RECEIPT_Y = TIN_Y + TIN_H + SPACE.md;
 
-/** Marker: painted art disc + name plate under it. */
+/** Marker: painted art disc + a ONE-LINE name plate under it. */
 const MARK_ART = 76;
 /** MINIMUM plate width — a long name widens it (see `makeMarker`). */
-const MARK_W = 168;
-const PLATE_H = 44;
+const MARK_W = 132;
+const PLATE_H = 26;
 
-/** The clowder stands on the town floor, left of the action bar. */
-const CLOWDER_FEET_Y = 686;
-const CLOWDER_X0 = 112;
-const CLOWDER_DX = 112;
-const CAT_H = 118;
+/**
+ * THE CLOWDER band — its own glass strip along the bottom-left.
+ *
+ * The cats used to stand free on the painted floor, which was charming right
+ * up until the roster screen made this row load-bearing: the caption ran into
+ * the place plates above it and the last cat ran into the action bar beside
+ * it. A band gives the region an edge, keeps it clear of both, and the glass
+ * is translucent enough that the cats still read as standing IN the room.
+ */
+const CLOWDER_X = MARGIN;
+const CLOWDER_Y = 536;
+const CLOWDER_W = 530;
+const CLOWDER_H = 164;
+const CLOWDER_PAD = SPACE.md;
+/** Feet on the band's floor line. */
+const CLOWDER_FEET_Y = CLOWDER_Y + 124;
+const CAT_H = 80;
+const CAT_PITCH_MAX = 104;
+/** More than this and the band would rather point at the Den. */
+const CLOWDER_MAX = 6;
 
-const BAR_Y = 648;
+const BAR_Y = 650;
 const BAR_H = 52;
+/** Action-bar button widths, right-to-left from the primary action. */
+const BTN_DESCEND = 300;
+const BTN_ACTION = 158;
 
 /* ---- the Bestiary (enemy-intel.md §4) --------------------------------- */
 /** Modal card, sized like the place panel's big brother. */
@@ -165,6 +205,11 @@ interface Marker {
   /** the name plate, so the layout pass below can move it off a neighbour */
   plate: Container;
   plateW: number;
+}
+
+/** "THE NOTICE BOARD" → "NOTICE BOARD": the article is not information. */
+export function plateName(name: string): string {
+  return name.replace(/^THE\s+/i, "");
 }
 
 /**
@@ -225,6 +270,15 @@ function bestiaryRoster(): EnemyId[] {
     .map((d) => d.id);
 }
 
+/** The clowder band's second line — what the town is, in one count. */
+export function clowderLine(
+  living: number,
+  going: number,
+  capacity: number,
+): string {
+  return `${living} live here · ${going} of ${capacity} set out`;
+}
+
 export class CatTownScene implements Scene {
   private view: Container | null = null;
   private ctx: GameCtx | null = null;
@@ -242,16 +296,24 @@ export class CatTownScene implements Scene {
   private markers: Marker[] = [];
   private cats: TownCat[] = [];
   private clowderLayer: Container | null = null;
+  private tipLayer: Container | null = null;
   private tinText: Text | null = null;
   private lifetimeText: Text | null = null;
   private townBar: { view: Container; set(v: number, m: number): void } | null =
     null;
-  private townBarText: Text | null = null;
+  private townBuiltText: Text | null = null;
+  private townLeftText: Text | null = null;
   private placeBox: Container | null = null;
   private openPlace: string | null = null;
   /** The Bestiary modal, and which species it has drilled into. */
   private bestiaryBox: Container | null = null;
   private bestiaryEntry: EnemyId | null = null;
+  /** The roster modal, and whether it is showing the memorial. */
+  private rosterBox: Container | null = null;
+  private rosterMemorial = false;
+  /** THE DEN, as a town building (roster-and-persistence.md §4). */
+  private denBox: Container | null = null;
+  private denApi: ProgressPanelApi | null = null;
   private t = 0;
 
   mount(root: Container, ctx: GameCtx, params?: unknown): void {
@@ -280,6 +342,24 @@ export class CatTownScene implements Scene {
     sub.position.set(DESIGN_W / 2, SUB_Y);
     view.addChild(eyebrow, banner, sub);
 
+    /* ---- the archive (top-left): the two records, and the way out ----- */
+    // These three sell nothing and decide nothing, which is exactly why they
+    // are NOT down on the action bar with the three things that do.
+    let navX = MARGIN;
+    for (const [text, hotkey, onTap] of [
+      ["Title", "T", () => this.toTitle()],
+      ["The Bestiary", "B", () => this.showBestiary(null)],
+      ["The Memorial", "M", () => this.showRoster(true)],
+    ] as const) {
+      const b = button(text, NAV_W, NAV_H, onTap, {
+        hotkey,
+        fontSize: TYPE.small,
+      });
+      b.view.position.set(navX, NAV_Y);
+      view.addChild(b.view);
+      navX += NAV_W + SPACE.sm;
+    }
+
     /* ---- the tin (the currency, somewhere honest) -------------------- */
     this.buildTin(view);
     this.buildReceipt(view);
@@ -298,37 +378,40 @@ export class CatTownScene implements Scene {
     view.addChild(this.clowderLayer);
 
     /* ---- action bar --------------------------------------------------- */
+    // Laid out right-to-left from the primary action, so "Begin the descent"
+    // is always in the same corner however many buttons live beside it.
+    let barX = DESIGN_W - MARGIN - BTN_DESCEND;
     const descend = button(
       "Begin the descent",
-      320,
+      BTN_DESCEND,
       BAR_H,
       () => this.beginDescent(),
       { primary: true, hotkey: "Enter" },
     );
-    descend.view.position.set(DESIGN_W - 40 - 320, BAR_Y);
+    descend.view.position.set(barX, BAR_Y);
     view.addChild(descend.view);
 
-    const toTitle = button("Title", 150, BAR_H, () => this.toTitle(), {
-      hotkey: "T",
-    });
-    toTitle.view.position.set(DESIGN_W - 40 - 320 - SPACE.lg - 150, BAR_Y);
-    view.addChild(toTitle.view);
-
-    // The Bestiary is knowledge, not a purchase, so it sits on the action bar
-    // rather than becoming a seventh PLACE (places sell unlocks; this one
-    // sells nothing). Same button, same hotkey chip, same modal idiom.
-    const bestiary = button(
-      "The Bestiary",
-      190,
+    barX -= SPACE.lg + BTN_ACTION;
+    const roster = button(
+      "The Roster",
+      BTN_ACTION,
       BAR_H,
-      () => this.showBestiary(null),
-      { hotkey: "B" },
+      () => this.showRoster(false),
+      { hotkey: "R" },
     );
-    bestiary.view.position.set(
-      DESIGN_W - 40 - 320 - SPACE.lg - 150 - SPACE.lg - 190,
-      BAR_Y,
-    );
-    view.addChild(bestiary.view);
+    roster.view.position.set(barX, BAR_Y);
+    view.addChild(roster.view);
+
+    barX -= SPACE.lg + BTN_ACTION;
+    const den = button("The Den", BTN_ACTION, BAR_H, () => this.showDen(), {
+      hotkey: "P",
+    });
+    den.view.position.set(barX, BAR_Y);
+    view.addChild(den.view);
+
+    /* ---- tips and toasts ride above everything ----------------------- */
+    this.tipLayer = new Container();
+    view.addChild(this.tipLayer);
 
     this.refreshAll();
   }
@@ -347,6 +430,25 @@ export class CatTownScene implements Scene {
   }
 
   onKey(key: string): boolean {
+    if (this.denBox) {
+      if (key === "esc" || key === "p") {
+        this.closeDen();
+        return true;
+      }
+      this.denApi?.onKey(key);
+      return true; // modal, like the place panel
+    }
+    if (this.rosterBox) {
+      if (key === "esc" || key === "r") {
+        this.closeRoster();
+        return true;
+      }
+      if (key === "m") {
+        this.showRoster(!this.rosterMemorial);
+        return true;
+      }
+      return true; // modal, like the place panel
+    }
     if (this.bestiaryBox) {
       if (key === "esc" || key === "b") {
         if (this.bestiaryEntry !== null) this.showBestiary(null);
@@ -354,10 +456,6 @@ export class CatTownScene implements Scene {
         return true;
       }
       return true; // modal, like the place panel
-    }
-    if (key === "b") {
-      this.showBestiary(null);
-      return true;
     }
     if (this.placeBox) {
       if (key === "esc" || key === "x") {
@@ -370,6 +468,22 @@ export class CatTownScene implements Scene {
         return true;
       }
       return true; // the place panel is modal: it swallows everything
+    }
+    if (key === "p") {
+      this.showDen();
+      return true;
+    }
+    if (key === "r") {
+      this.showRoster(false);
+      return true;
+    }
+    if (key === "m") {
+      this.showRoster(true);
+      return true;
+    }
+    if (key === "b") {
+      this.showBestiary(null);
+      return true;
     }
     if (key === "enter") {
       this.beginDescent();
@@ -392,16 +506,54 @@ export class CatTownScene implements Scene {
     this.markers = [];
     this.cats = [];
     this.clowderLayer = null;
+    this.tipLayer = null;
     this.tinText = null;
     this.lifetimeText = null;
     this.townBar = null;
-    this.townBarText = null;
+    this.townBuiltText = null;
+    this.townLeftText = null;
     this.placeBox = null;
     this.openPlace = null;
     this.bestiaryBox = null;
     this.bestiaryEntry = null;
+    this.rosterBox = null;
+    this.rosterMemorial = false;
+    this.denApi = null;
+    this.denBox = null;
     this.view?.destroy({ children: true });
     this.view = null;
+  }
+
+  /* ---- tips + toasts ---------------------------------------------------- */
+
+  private clearTip(): void {
+    const host = this.tipLayer;
+    if (!host) return;
+    for (const c of host.removeChildren()) c.destroy({ children: true });
+  }
+
+  private showTip(text: string, x: number, y: number): void {
+    const host = this.tipLayer;
+    if (!host) return;
+    this.clearTip();
+    const tip = makeTooltip(text);
+    tip.position.set(
+      Math.max(SPACE.sm, Math.min(x, DESIGN_W - Math.ceil(tip.width) - 8)),
+      Math.max(SPACE.sm, Math.min(y, DESIGN_H - Math.ceil(tip.height) - 8)),
+    );
+    host.addChild(tip);
+  }
+
+  /** One line, bottom-centre, gone in a moment — the Den's only voice here. */
+  private toast(text: string): void {
+    const host = this.tipLayer;
+    if (!host) return;
+    const card = toastCard(text);
+    card.position.set((DESIGN_W - card.width) / 2, DESIGN_H - 120);
+    host.addChild(card);
+    tween(card, { alpha: 0 }, 2200, "linear", () => {
+      if (!card.destroyed) card.destroy({ children: true });
+    });
   }
 
   /* ---- the tin --------------------------------------------------------- */
@@ -425,18 +577,28 @@ export class CatTownScene implements Scene {
     card.addChild(this.tinText);
 
     this.lifetimeText = label("", { mono: true, dim: true, size: TYPE.tiny });
-    this.lifetimeText.position.set(SPACE.lg, 34);
+    this.lifetimeText.position.set(SPACE.lg, 36);
     card.addChild(this.lifetimeText);
 
-    // how much of the town is actually built — the kit's xp bar, honestly used
+    // How much of the town is actually built — the kit's xp bar, honestly
+    // used, with the sentence SPLIT either side of it. The old single line
+    // ("town 13/13 · 2650 ✦ to build it all") argued with itself: it printed
+    // the catalog's original price next to a town that had already bought all
+    // of it. What is BUILT sits under the left of the bar, what is LEFT TO
+    // BUY under the right — and at zero the right-hand half says so.
     const b = bar(TIN_W - SPACE.lg * 2, 8, { kind: "xp" });
-    b.view.position.set(SPACE.lg, TIN_H - SPACE.lg - 6);
+    b.view.position.set(SPACE.lg, 58);
     card.addChild(b.view);
     this.townBar = b;
-    this.townBarText = label("", { mono: true, dim: true, size: TYPE.tiny });
-    this.townBarText.anchor.set(1, 1);
-    this.townBarText.position.set(TIN_W - SPACE.lg, TIN_H - SPACE.lg - 8);
-    card.addChild(this.townBarText);
+
+    this.townBuiltText = label("", { mono: true, dim: true, size: TYPE.tiny });
+    this.townBuiltText.position.set(SPACE.lg, 70);
+    card.addChild(this.townBuiltText);
+
+    this.townLeftText = label("", { mono: true, dim: true, size: TYPE.tiny });
+    this.townLeftText.anchor.set(1, 0);
+    this.townLeftText.position.set(TIN_W - SPACE.lg, 70);
+    card.addChild(this.townLeftText);
   }
 
   /** The receipt from the run just finished (absent when walking in cold). */
@@ -555,15 +717,15 @@ export class CatTownScene implements Scene {
       view.addChild(glyph);
     }
 
-    // The plate is sized to its CONTENT, not to a constant. "THE NOTICE
-    // BOARD" and "THE STORM DRAIN" are both wider than MARK_W, and a fixed
-    // plate let them spill out of the glass on both sides and paint straight
-    // over the hotkey chip — places 1 and 6 had no visible number at all.
-    const name = heading(place.name, 3, { center: true, fill: PAL.text });
-    const blurb = label(place.blurb, {
-      dim: true,
-      size: TYPE.tiny,
+    // ONE LINE, sized to its CONTENT. Six two-line plates (name + blurb) on a
+    // 1280×720 room is 264 px of stacked text in the middle of a painting,
+    // and four of the six overlapped: the plates merged into an unreadable
+    // strip and two of them buried their own hotkey chip. The blurb is one
+    // hover away, and it is printed in full the moment the place is opened —
+    // which is where a player is actually deciding anything.
+    const name = heading(plateName(place.name), 3, {
       center: true,
+      fill: PAL.text,
     });
     const hotkey = label(`${index + 1}`, {
       mono: true,
@@ -573,7 +735,7 @@ export class CatTownScene implements Scene {
     const hotW = Math.ceil(hotkey.width) + SPACE.sm * 2;
     const plateW = Math.max(
       MARK_W,
-      Math.ceil(Math.max(name.width, blurb.width)) + hotW + SPACE.md,
+      Math.ceil(name.width) + hotW + SPACE.md * 2,
     );
 
     const plate = panel(plateW, PLATE_H, {
@@ -582,13 +744,11 @@ export class CatTownScene implements Scene {
     });
     plate.position.set(-plateW / 2, MARK_ART / 2 + 8);
     view.addChild(plate);
-    // centre the text in the space LEFT OF nothing and RIGHT OF the hotkey,
-    // so the chip always has room of its own
-    const textCx = hotW + (plateW - hotW) / 2;
-    name.position.set(textCx, 7);
-    blurb.position.set(textCx, 26);
-    hotkey.position.set(SPACE.sm, 15);
-    plate.addChild(name, blurb, hotkey);
+    // centre the name in the space RIGHT OF the hotkey, so the chip always
+    // has room of its own
+    name.position.set(hotW + (plateW - hotW) / 2, 5);
+    hotkey.position.set(SPACE.sm, 7);
+    plate.addChild(name, hotkey);
 
     const badge = new Container();
     badge.position.set(MARK_ART / 2 - 4, -MARK_ART / 2 + 2);
@@ -596,12 +756,27 @@ export class CatTownScene implements Scene {
 
     view.eventMode = "static";
     view.cursor = "pointer";
+    padHitBox(
+      view,
+      -MARK_ART / 2,
+      -MARK_ART / 2,
+      MARK_ART,
+      MARK_ART + PLATE_H + 8,
+    );
     view.on("pointertap", () => this.showPlace(place.id));
     view.on("pointerover", () => {
       if (isTouch()) return; // no hover lift on a finger
       tween(view.scale, { x: 1.05, y: 1.05 }, 120);
+      this.showTip(
+        `${place.name} — ${place.blurb}`,
+        place.x - 120,
+        place.y + MARK_ART / 2 + PLATE_H + 14,
+      );
     });
-    view.on("pointerout", () => tween(view.scale, { x: 1, y: 1 }, 120));
+    view.on("pointerout", () => {
+      tween(view.scale, { x: 1, y: 1 }, 120);
+      if (!isTouch()) this.clearTip();
+    });
 
     return { place, view, ring, badge, hot: false, plate, plateW };
   }
@@ -622,18 +797,17 @@ export class CatTownScene implements Scene {
     }
     const owned = this.catalog.filter((d) => isUnlocked(meta, d.id)).length;
     this.townBar?.set(owned, Math.max(1, this.catalog.length));
-    if (this.townBarText) {
-      // What is LEFT to build, not what the catalog cost when it was empty:
-      // the old line printed the whole catalog's price forever, so a fully
-      // unlocked town said "town 13/13 · 2650 ✦ to build it all", which is a
-      // sentence arguing with itself. `catalogCost` of the unbought remainder
-      // is the honest number, and at zero the line says so.
+    if (this.townBuiltText) {
+      this.townBuiltText.text = `town ${owned}/${this.catalog.length} built`;
+    }
+    if (this.townLeftText) {
+      // What is LEFT to build, never what the catalog cost when it was empty.
       const remaining = this.catalog.filter((d) => !isUnlocked(meta, d.id));
       const left = catalogCost(remaining);
-      this.townBarText.text =
-        remaining.length === 0
-          ? `town ${owned}/${this.catalog.length} · every door open`
-          : `town ${owned}/${this.catalog.length} · ${left} ✦ still to build`;
+      this.townLeftText.text =
+        remaining.length === 0 ? "every door open" : `${left} ✦ still to build`;
+      this.townLeftText.style.fill =
+        remaining.length === 0 ? PAL.heal : PAL.textDim;
     }
 
     const affordable = new Set(affordableUnlocks(meta, this.catalog));
@@ -666,98 +840,257 @@ export class CatTownScene implements Scene {
           ? `${buyable} ready`
           : `${total - left}/${total}`;
     const fill = left === 0 ? PAL.heal : buyable > 0 ? PAL.gold : PAL.textDim;
-    const t = label(text, { mono: true, size: TYPE.tiny, fill: PAL.textDark });
-    const w = Math.max(22, Math.ceil(t.width) + 12);
-    const chip = new Graphics()
-      .roundRect(0, 0, w, 18, RADIUS.chip)
-      .fill({ color: fill, alpha: 0.95 })
-      .stroke({ width: 1, color: PAL.void, alpha: 0.6 });
-    t.position.set(6, 3);
-    m.badge.addChild(chip, t);
-    m.badge.x = MARK_ART / 2 - w / 2;
+    const c = chip(text, { fill });
+    m.badge.addChild(c.view);
+    m.badge.x = MARK_ART / 2 - c.width / 2;
   }
 
-  /** The cats who actually live here, standing on the floor. */
+  /** The cats who actually live here, standing in their own band. */
   private refreshClowder(): void {
     const host = this.clowderLayer;
-    if (!host) return;
+    const ctx = this.ctx;
+    if (!host || !ctx) return;
     for (const c of host.removeChildren()) c.destroy({ children: true });
     this.cats = [];
 
-    // Who LIVES here: the cats the town has. A descent takes
-    // STARTING_PARTY_SIZE of them — Bruno plus one drawn at the door
-    // (`startingRoster`) — so the town must not draw the cats who stay as
-    // the same size and brightness as the ones who go.
-    //
-    // The old rule here was "index 0 sets out, everyone else is dim". With a
-    // fresh town that houses exactly two cats, BOTH set out, and dimming the
-    // second one contradicted the caption right above it.
-    const known = eligibleClasses(this.overlay).filter(
-      (id): id is ClassId => CLASSES[id as ClassId] !== undefined,
-    );
-    const shown = known.slice(0, MAX_PARTY_CAPACITY);
-    /** Every cat in town comes along only when the town is exactly a party. */
-    const allGo = shown.length <= STARTING_PARTY_SIZE;
+    // Who LIVES here is a list of INDIVIDUALS, not a class pool
+    // (roster-and-persistence.md §1) — and who SETS OUT is the player's own
+    // pick from the roster screen, not a draw at the door. So the town floor
+    // can tell the truth: these are the cats, and these are the ones going
+    // down tonight.
+    const roster = livingRoster(ctx.meta);
+    const capacity = this.overlay.partyCapacity;
+    const going = descendingCats(ctx.meta, capacity);
+    const goingIds = new Set(going.map((c) => c.id));
+    const shown = roster.slice(0, CLOWDER_MAX);
+    const lost = ctx.meta.memorial?.length ?? 0;
 
-    shown.forEach((classId, i) => {
-      // the anchor always walks; the others are the draw (or, when the town
-      // is only a party's worth, all of them walk)
-      const descends = allGo || i === 0;
+    const band = panel(CLOWDER_W, CLOWDER_H, { variant: "glass" });
+    band.position.set(CLOWDER_X, CLOWDER_Y);
+    host.addChild(band);
+
+    const title = heading("THE CLOWDER", 3);
+    title.position.set(CLOWDER_PAD, SPACE.sm);
+    band.addChild(title);
+
+    const counts = label(clowderLine(roster.length, going.length, capacity), {
+      size: TYPE.tiny,
+      dim: true,
+      mono: true,
+    });
+    counts.anchor.set(1, 0);
+    counts.position.set(CLOWDER_W - CLOWDER_PAD, SPACE.sm + 3);
+    band.addChild(counts);
+
+    const inner = CLOWDER_W - CLOWDER_PAD * 2;
+    const pitch = Math.min(CAT_PITCH_MAX, inner / Math.max(1, shown.length));
+    const x0 = CLOWDER_X + CLOWDER_PAD + pitch / 2;
+
+    shown.forEach((cat, i) => {
+      const descends = goingIds.has(cat.id);
+      const cx = x0 + i * pitch;
       const c = new Container();
-      c.position.set(CLOWDER_X0 + i * CLOWDER_DX, CLOWDER_FEET_Y);
-      const tex = catTexture(classId);
+      c.position.set(cx, CLOWDER_FEET_Y);
+      const tex = catTexture(cat.classId);
       if (tex && tex.height > 0) {
         const sp = new Sprite({ texture: tex, anchor: { x: 0.5, y: 1 } });
         sp.scale.set(CAT_H / tex.height);
         c.addChild(sp);
       } else {
         const g = new Graphics();
-        drawCat(g, classId, "sit", 0.9);
+        drawCat(g, cat.classId, "sit", 0.8);
         c.addChild(g);
       }
-      // A cat who is only a CANDIDATE stands further back: smaller and
-      // dimmer, but never invisible — at 0.55 over the dark town floor the
-      // grey ones (Pixel especially) read as failed-to-load art.
+      // A cat staying home stands further back: smaller and dimmer, but
+      // never invisible — at 0.55 over the dark town floor the grey ones
+      // (Pixel especially) read as failed-to-load art.
       if (!descends) {
         c.alpha = 0.72;
-        c.scale.set(0.82); // feet are the anchor, so it plants correctly
+        c.scale.set(0.84); // feet are the anchor, so it plants correctly
       }
+      // Every cat is a doorway into its own sheet: tapping one opens THE DEN
+      // on it, which is the whole point of the town rebuild (§4 — you manage
+      // the cats you own, here, between runs).
+      c.eventMode = "static";
+      c.cursor = "pointer";
+      padHitBox(c, -pitch / 2, -CAT_H, pitch, CAT_H);
+      c.on("pointertap", () => this.showDen(cat.id));
+      c.on("pointerover", () => {
+        if (isTouch()) return;
+        this.showTip(
+          `${cat.name} — ${CLASSES[cat.classId].className} · Lv ${cat.level}\n` +
+            `「${cat.standName}」\n` +
+            (descends ? "setting out tonight" : "staying home") +
+            " · click for the Den",
+          cx - 130,
+          CLOWDER_Y - 78,
+        );
+      });
+      c.on("pointerout", () => {
+        if (!isTouch()) this.clearTip();
+      });
       host.addChild(c);
       this.cats.push({ view: c, baseY: CLOWDER_FEET_Y, phase: i * 0.9 });
 
-      const name = label(CLASSES[classId].catName, {
+      const name = label(cat.name, {
         size: TYPE.tiny,
         center: true,
         bold: descends,
         fill: descends ? PAL.text : PAL.textDim,
       });
-      name.position.set(CLOWDER_X0 + i * CLOWDER_DX, CLOWDER_FEET_Y + SPACE.xs);
+      name.position.set(cx, CLOWDER_FEET_Y + SPACE.xs);
       host.addChild(name);
 
-      const role = label(descends ? "sets out" : "may be drawn", {
-        size: TYPE.tiny,
-        center: true,
-        dim: true,
-      });
-      role.alpha = descends ? 0.9 : 0.7;
-      role.position.set(
-        CLOWDER_X0 + i * CLOWDER_DX,
-        CLOWDER_FEET_Y + SPACE.xs + 14,
+      const rank = going.findIndex((g) => g.id === cat.id);
+      // Short enough to fit the pitch with six cats on the floor — the level
+      // and the gear live on the Den sheet, which is where a player is
+      // actually comparing them.
+      const role = label(
+        descends ? `sets out · ${rank + 1}` : `home · Lv ${cat.level}`,
+        { size: TYPE.tiny, center: true, dim: true },
       );
+      role.alpha = descends ? 0.9 : 0.7;
+      role.position.set(cx, CLOWDER_FEET_Y + SPACE.xs + 14);
       host.addChild(role);
     });
 
-    const caption = label(
-      allGo
-        ? `THE CLOWDER — ${known.length} live here · all ${known.length} set ` +
-            `out together · the party can grow to ${this.overlay.partyCapacity}`
-        : `THE CLOWDER — ${known.length} live here · only ` +
-            `${STARTING_PARTY_SIZE} set out (Bruno plus one, drawn at the ` +
-            `door) · the party can grow to ${this.overlay.partyCapacity}`,
-      { size: TYPE.tiny, dim: true, bold: true },
+    // The two things the band cannot show: cats past the sixth, and the ones
+    // who are not coming back at all. Both live on the header's SECOND line —
+    // under the floor is where the cats' own name and role labels are, and a
+    // footer there landed straight on top of them.
+    const subY = 26;
+    if (roster.length > shown.length) {
+      const more = label(
+        `+${roster.length - shown.length} more — see The Den`,
+        {
+          size: TYPE.tiny,
+          dim: true,
+        },
+      );
+      more.position.set(CLOWDER_PAD, subY);
+      band.addChild(more);
+    }
+    const memo = label(
+      lost > 0 ? `${lost} did not come back — The Memorial` : "nobody lost yet",
+      { size: TYPE.tiny, dim: true, fill: lost > 0 ? PAL.danger : PAL.textDim },
     );
-    caption.position.set(CLOWDER_X0 - 48, CLOWDER_FEET_Y - CAT_H - 18);
-    host.addChild(caption);
+    memo.anchor.set(1, 0);
+    memo.position.set(CLOWDER_W - CLOWDER_PAD, subY);
+    memo.eventMode = "static";
+    memo.cursor = "pointer";
+    padHitBox(memo, -Math.ceil(memo.width), 0, Math.ceil(memo.width), 16);
+    memo.on("pointertap", () => this.showRoster(true));
+    band.addChild(memo);
+  }
+
+  /* ---- THE DEN, as a town building (§4) --------------------------------- */
+
+  /**
+   * The screen the feedback asked for: levels, skills and gear on the cats
+   * you actually own, between runs. It is the SAME panel the run uses
+   * (overlays/progressPanel.ts) reading a different book, so the two can
+   * never drift apart — see overlays/townDen.ts.
+   */
+  private showDen(catId?: CatId): void {
+    const view = this.view;
+    const ctx = this.ctx;
+    if (!view || !ctx) return;
+    this.closeDen();
+    this.clearTip();
+    const box = makeTownDenBox({
+      getMeta: () => ctx.meta,
+      setMeta: (meta) => {
+        ctx.meta = meta;
+        saveMeta(meta);
+        this.refreshClowder();
+      },
+      capacity: this.overlay.partyCapacity,
+      onClose: () => this.closeDen(),
+      toast: (t) => this.toast(t),
+      ...(catId !== undefined ? { catId } : {}),
+    });
+    view.addChild(box.view);
+    // tips and toasts must stay on top of a modal that fills the screen
+    if (this.tipLayer) view.addChild(this.tipLayer);
+    this.denBox = box.view;
+    this.denApi = box.api;
+  }
+
+  private closeDen(): void {
+    this.denApi = null;
+    this.denBox?.destroy({ children: true });
+    this.denBox = null;
+  }
+
+  /* ---- THE ROSTER SCREEN (roster-and-persistence.md §3) ---------------- */
+
+  /**
+   * Who descends, and (flipped with M) who did not come back. It is a modal
+   * here, exactly like the Bestiary, rather than a SceneManager overlay:
+   * overlays are run-scoped (loot, pause) and Cat Town has no run.
+   *
+   * Every interaction round-trips through the profile — pick → `setDescending`
+   * → `saveMeta` → rebuild — so what the town floor draws and what
+   * `beginDescent` sends down can never disagree.
+   */
+  private showRoster(memorial = this.rosterMemorial): void {
+    const view = this.view;
+    const ctx = this.ctx;
+    if (!view || !ctx) return;
+    this.rosterBox?.destroy({ children: true });
+    this.rosterMemorial = memorial;
+    this.clearTip();
+
+    const capacity = this.overlay.partyCapacity;
+    const picked = descendingCats(ctx.meta, capacity).map((c) => c.id);
+    const box = makeRosterPanel({
+      meta: ctx.meta,
+      capacity,
+      descending: picked,
+      memorial,
+      onChange: (next: CatId[]) => this.setDescent(next),
+      onToggleMemorial: (show: boolean) => this.showRoster(show),
+      onClose: () => this.closeRoster(),
+      // §3: hunger is bought off HERE, out of the same tin the unlocks come
+      // out of. That competition is the decision the design asks for.
+      shinies: ctx.meta.shinies,
+      onFeed: (id: CatId) => this.feed(id),
+    });
+    view.addChild(box);
+    if (this.tipLayer) view.addChild(this.tipLayer);
+    this.rosterBox = box;
+  }
+
+  private setDescent(ids: readonly CatId[]): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    ctx.meta = setDescending(ctx.meta, ids);
+    saveMeta(ctx.meta);
+    this.showRoster();
+    this.refreshClowder();
+  }
+
+  /**
+   * FEED ONE CAT (roster-and-persistence.md §3). The wallet pays, the roster
+   * screen rebuilds, and the tin on the town floor drops by what it cost —
+   * the whole point being that the player watches an unlock get further away.
+   */
+  private feed(id: CatId): void {
+    const ctx = this.ctx;
+    if (!ctx) return;
+    const out = feedCat(ctx.meta, id);
+    if (out.spent <= 0) return;
+    ctx.meta = out.meta;
+    saveMeta(ctx.meta);
+    this.showRoster();
+    this.refreshAll();
+  }
+
+  private closeRoster(): void {
+    this.rosterBox?.destroy({ children: true });
+    this.rosterBox = null;
+    this.rosterMemorial = false;
+    this.refreshClowder();
   }
 
   /* ---- a place you visit ------------------------------------------------ */
@@ -773,6 +1106,7 @@ export class CatTownScene implements Scene {
     this.placeBox?.destroy({ children: true });
     this.placeBox = null;
     this.openPlace = placeId;
+    this.clearTip();
 
     const place = PLACES.find((p) => p.id === placeId);
     if (!place) return;
@@ -832,6 +1166,7 @@ export class CatTownScene implements Scene {
     card.addChild(close.view);
 
     view.addChild(box);
+    if (this.tipLayer) view.addChild(this.tipLayer);
     this.placeBox = box;
   }
 
@@ -975,6 +1310,7 @@ export class CatTownScene implements Scene {
     if (!view || !ctx) return;
     this.bestiaryBox?.destroy({ children: true });
     this.bestiaryEntry = entry;
+    this.clearTip();
 
     const box = new Container();
     const back = scrim(DESIGN_W, DESIGN_H, 0.72);
@@ -1025,6 +1361,7 @@ export class CatTownScene implements Scene {
     card.addChild(close.view);
 
     view.addChild(box);
+    if (this.tipLayer) view.addChild(this.tipLayer);
     this.bestiaryBox = box;
   }
 
@@ -1200,9 +1537,12 @@ export class CatTownScene implements Scene {
     // party may still have its kit overlay on the content tables)
     applyPartyContent(null);
     const seed = this.params.seed?.trim();
+    // THE ROSTER GOES DOWN, not a draw at the door: `startRun` reads the
+    // player's pick (roster screen → `setDescending`) out of the profile.
     ctx.run = startRun(
       seed === undefined || seed === "" ? randomSeed() : seed,
       applyUnlocks(ctx.meta, this.catalog),
+      { meta: ctx.meta },
     );
     ctx.scenes.goto("floorgen");
   }

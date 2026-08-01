@@ -22,6 +22,7 @@ import {
   MAX_ROWS,
   MIN_COLUMNS,
   MIN_ROWS,
+  SAFE_TYPES,
 } from "../src/core/map/types.js";
 import {
   columnSizes,
@@ -381,16 +382,31 @@ describe("authored node budget (content/floors.ts)", () => {
       expect(b.rowsLo).toBeGreaterThanOrEqual(MIN_ROWS);
       expect(b.rowsHi).toBeLessThanOrEqual(MAX_ROWS);
       expect(b.rowsLo).toBeLessThanOrEqual(b.rowsHi);
-      expect(b.guaranteed).toEqual(["shop", "rest"]);
+      // A shop and exactly ONE guaranteed safe node on every floor: a rest
+      // on floors 1-3, a camp on floors 4-6 (roster-and-persistence.md §4 —
+      // content/floors.ts records why the count must not grow).
+      expect(b.guaranteed).toEqual(
+        FLOORS.indexOf(cfg) >= 3 ? ["shop", "camp"] : ["shop", "rest"],
+      );
+      expect(b.guaranteed.filter((t) => SAFE_TYPES.includes(t))).toHaveLength(
+        1,
+      );
       expect(Object.values(b.weights).every((w) => w > 0)).toBe(true);
     }
   });
 
-  it("guarantees a shop AND a rest on every floor", () => {
+  it("guarantees a shop AND somewhere safe on every floor", () => {
     for (const { seed, floorNum, map } of ALL) {
       const types = map.nodes.map((n) => n.type);
       expect(types, `${seed} floor ${floorNum}`).toContain("shop");
-      expect(types, `${seed} floor ${floorNum}`).toContain("rest");
+      expect(
+        types.some((t) => SAFE_TYPES.includes(t)),
+        `${seed} floor ${floorNum}: no rest and no camp`,
+      ).toBe(true);
+      // …and floors 1-3 specifically still get the warm spot
+      if (floorNum <= 3) {
+        expect(types, `${seed} floor ${floorNum}`).toContain("rest");
+      }
     }
   });
 
@@ -401,6 +417,38 @@ describe("authored node budget (content/floors.ts)", () => {
         expect(pair).not.toEqual(["rest", "rest"]);
       }
     }
+  });
+
+  // A camp is a warm spot too (core/map/types.ts SAFE_TYPES): back-to-back
+  // safety would switch a floor's attrition off.
+  it("never places two SAFE nodes next to each other", () => {
+    for (const { seed, floorNum, map } of ALL) {
+      for (const e of map.edges) {
+        const from = map.nodes[e.from].type;
+        const to = map.nodes[e.to].type;
+        expect(
+          SAFE_TYPES.includes(from) && SAFE_TYPES.includes(to),
+          `${seed} floor ${floorNum}: ${from}→${to}`,
+        ).toBe(false);
+      }
+    }
+  });
+
+  it("guarantees a camp on the long floors, and never puts one on 1-2", () => {
+    for (const { seed, floorNum, map } of ALL) {
+      const types = map.nodes.map((n) => n.type);
+      if (floorNum <= 2) {
+        expect(types, `${seed} floor ${floorNum}`).not.toContain("camp");
+      }
+      if (floorNum >= 4) {
+        expect(types, `${seed} floor ${floorNum}`).toContain("camp");
+      }
+    }
+    // …and they do turn up on floor 3, which only WEIGHTS one
+    const mid = ALL.filter((x) => x.floorNum === 3);
+    expect(mid.some((x) => x.map.nodes.some((n) => n.type === "camp"))).toBe(
+      true,
+    );
   });
 
   it("places elites only from floor 2 on", () => {
@@ -438,7 +486,7 @@ describe("authored node budget (content/floors.ts)", () => {
     }
   });
 
-  it("never opens the floor on a shop, a rest, an elite or the boss", () => {
+  it("never opens the floor on a shop, a rest, a camp, an elite or the boss", () => {
     for (const { map } of ALL) {
       expect(["fight", "event", "treasure"]).toContain(
         map.nodes[map.entryId].type,
@@ -677,10 +725,10 @@ describe("save", () => {
     return run;
   }
 
-  it("SAVE_VERSION is 3 and serializeRun drops the regenerable map", () => {
-    expect(SAVE_VERSION).toBe(3);
+  it("SAVE_VERSION is 4 and serializeRun drops the regenerable map", () => {
+    expect(SAVE_VERSION).toBe(4);
     const sf = serializeRun(midFloorRun());
-    expect(sf.version).toBe(3);
+    expect(sf.version).toBe(4);
     expect("floorMap" in sf.run).toBe(false);
     expect(sf.floorDelta).toBeUndefined();
   });
@@ -715,7 +763,7 @@ describe("save", () => {
     legacy.floorDelta = { partyPos: { x: 3, y: 3 }, explored: "AAAA" };
 
     const migrated = migrateSave(legacy as never)!;
-    expect(migrated.version).toBe(3);
+    expect(migrated.version).toBe(4);
     expect("floor" in migrated.run).toBe(false);
     expect(migrated.run.currentNodeId).toBeNull();
     expect(migrated.run.visitedNodeIds).toEqual([]);
@@ -740,7 +788,7 @@ describe("save", () => {
     ) as Record<string, unknown>;
     legacy.version = 1;
     const migrated = migrateSave(legacy as never)!;
-    expect(migrated.version).toBe(3);
+    expect(migrated.version).toBe(4);
     const storage = memoryStorage();
     storage.set(SAVE_KEY, JSON.stringify(legacy));
     expect(loadRun({ storage })!.floorNum).toBe(3);

@@ -1,10 +1,62 @@
 # c(at)rpg — Technical Architecture
 
 **Status: CANONICAL for implementation structure.** Where this doc and a design doc
-disagree on *game rules*, the design docs win (GDD.md at the top). Where anything
-disagrees on *code structure, types, file ownership, or module boundaries*, this doc
+disagree on _game rules_, the design docs win (GDD.md at the top). Where anything
+disagrees on _code structure, types, file ownership, or module boundaries_, this doc
 wins. The types in §2 are frozen contracts: implementers extend behavior, never
 change these shapes without a tech-lead sign-off recorded here.
+
+## Contract changelog
+
+**THE CAMP + CONDITIONS** (docs/design/roster-and-persistence.md §3-§4) — one
+new node type and one new persisted fact about a cat. Neither adds a mechanic:
+a condition is a `TempMod`, and a camp action is HP / `TempMod` /
+`energyNextBattle` / `CatCondition`, all of which the engine already had.
+
+| before                                  | after                                                                                     |
+| --------------------------------------- | ----------------------------------------------------------------------------------------- |
+| `NodeType` = 7 members                  | `+ 'camp'` (a run-map node; its own SceneId, `runMap → camp → runMap`)                    |
+| —                                       | `CatRunState.conditions?: CatCondition[]` (module augmentation, `core/run/conditions.ts`) |
+| `MetaCat.conditions?` was an empty hook | now written: hunger, `scar:*`, `quirk:*`                                                  |
+| `bankCat(cat, ran, xp)`                 | `+ ctx?: BankCtx` — absent ⇒ conditions ride home unchanged                               |
+| `settleRun(meta, summary)`              | summary `+ victory?` / `+ bossesDefeated?` (both optional)                                |
+| —                                       | `feedCat` / `feedPrice` (core/meta/roster.ts) — hunger spends the town wallet             |
+| every floor guarantees `shop` + `rest`  | a shop and ONE safe node: `rest` on floors 1-3, `camp` on 4-6                             |
+| "never two rests adjacent"              | never two SAFE nodes adjacent (`SAFE_TYPES`, core/map/types.ts)                           |
+
+`CatCondition` is declared TWICE on purpose — in `core/meta/types.ts` for the
+town and in `core/run/conditions.ts` for the run — because §0 forbids
+`core/run` from importing `core/meta`. They are structurally identical and
+`tests/conditions.spec.ts` fails to compile if they drift.
+
+No save or meta version bump: `conditions` is optional on both sides and an
+older blob loads with it absent. The camp's weight is taken entirely out of
+`rest`, and the deep floors SWAP their guaranteed rest for a guaranteed camp
+rather than adding one — measured, because an extra guaranteed node displaces
+a fight and moves the scripted-run clear rate 8 points (see content/floors.ts).
+
+---
+
+**CAT INSTANCES** (docs/design/roster-and-persistence.md §1) — `RunState.cats`
+is no longer four fixed `ClassId` slots. A cat is an INSTANCE with its own
+`CatId`, and class is an attribute of it. What moved:
+
+| before                                          | after                                                          |
+| ----------------------------------------------- | -------------------------------------------------------------- |
+| `CatRunState { classId, … }`                    | `+ id: CatId`, `+ name`, `+ standName?`                        |
+| `RunState.cats` = 4 class slots                 | the cats that DESCENDED (variable length)                      |
+| `RunState.marchingOrder: ClassId[]`             | `CatId[]`                                                      |
+| `BattleSetup.cats[].classId` keys the combatant | `+ catId?`; ABSENT ⇒ class (the §13 fixture, byte-exact)       |
+| `BattleResult.cats[]`                           | `+ catId?` (emitted only when the setup carried one)           |
+| `ApplyBattleOutput.died: ClassId[]`             | `CatRunState[]`                                                |
+| `startRun(seed, overlay, customParty?)`         | `startRun(seed, overlay, opts?)` — `{ meta, customParty }`     |
+| —                                               | `MetaProfile.roster / memorial / stash / descending` (meta v4) |
+| SAVE_VERSION 3                                  | 4 · META_VERSION 3                                             | 4   |
+
+The four seeded Strays keep their class name as their instance id, which is
+why a default descent is behaviourally identical and the v3→v4 save migration
+is a relabelling. Lookups that were `cats.find(c => c.classId === id)` are now
+`catById(run, id)`.
 
 ---
 
@@ -26,7 +78,7 @@ src/content/** ─► src/core/types.ts ONLY (data objects typed against the con
    `core/types.ts`. (Exception: `content` may not import engine modules —
    `core/combat/*` etc. import `content`, never the reverse. This keeps the graph
    acyclic: `types.ts` imports nothing.)
-3. **`src/ui`** — PixiJS scenes and components. UI *reads* core state and *renders*
+3. **`src/ui`** — PixiJS scenes and components. UI _reads_ core state and _renders_
    engine event logs; it never computes gameplay outcomes. Visual randomness is
    `Math.random()` and must never touch a gameplay `Rng`.
 4. **`src/main.ts`** — bootstrap: pixi `Application.init`, root scaling, scene
@@ -65,7 +117,7 @@ src/
       intent.ts               # [190] DECLARED INTENTS (enemy-intel.md §2): declareIntents at round start in queue order, intentFor/consumeIntent, intentFromAction (the kind ladder — shove outranks damage), declaredIntents for the UI
 
     map/                      # the run map — replaced core/dungeon/* (run-map-and-dm.md §2)
-      types.ts                # [60] re-exports the §2.7 wire contract + engine constants (NODE_TYPES, MIN/MAX_COLUMNS, MAX_OUT_EDGES, ELITE_MIN_FLOOR), MapOption, IllegalMoveError, nodeAt
+      types.ts                # [70] re-exports the §2.7 wire contract + engine constants (NODE_TYPES, SAFE_TYPES, MIN/MAX_COLUMNS, MAX_OUT_EDGES, ELITE_MIN_FLOOR), MapOption, IllegalMoveError, nodeAt
       generate.ts             # [260] generateFloorMap(runSeed, floor, cfg) on the 'map' stream: column sizes, non-crossing edge weave, node typing (weights + guarantees), terminal node; validateFloorMap → invariant list
       traverse.ts             # [90] optionsFrom/optionsForRun, outgoing/incoming, isAdjacent/isVisited, canAdvance, advance (throws IllegalMoveError), atTerminal, closedNodes. ZERO RNG
       encounter.ts            # [90] rollPack (dungeon.md §7.3 verbatim) off mulberry32(node.seed), encounterFor(node,cfg), encounterIndexOf(node) = node.id, ELITE_BUDGET_BONUS
@@ -94,6 +146,8 @@ src/
     run/
       runState.ts             # [200] newRun(seed, customParty?, {partyCapacity, roster}), the ROSTER model (STARTING_PARTY_SIZE=2, DEFAULT/MAX_PARTY_CAPACITY=3/4, fieldedCats/benchedCats/canRecruit/recruitCat, RECRUIT_FLOOR=3), generateCurrentFloorMap/enterFloorMap/floorConfig, descend (catnap heal + recruit + map gen), applyBattleResult write-back, fired-event & unique bookkeeping
       party.ts                # [90] effectiveStats(cat) = base+growth+equipment+tempMods, skill list by level, XP → level-ups (delta-HP rule), trait tier
+      conditions.ts           # [230] CONDITIONS (roster-and-persistence.md §3): hunger stages, scars, quirks → run-scoped TempMods (conditionMods), tendMods, afterRun (what a descent costs a cat), feedCost/fed, grantCondition/withConditions. Declares CatCondition + the CatRunState.conditions augmentation
+      camp.ts                 # [330] THE CAMP (§4): CAMP_ACTIONS (eat/bandage/tend/talk/watch) over a 3-ember session, canTakeCamp/takeCampAction, and what the fire SAYS offline — campTags/campPair/campExchange/campOpener off the node's derived seed. Zero rng
       score.ts                # [40] score table (gameloop.md §7), results summary struct
       save.ts                 # [140] SaveFile/MetaFile (de)serialize (the run minus its regenerable floorMap), v1/v2→v3 run migration, localStorage adapter, version gate. The META half is storage ONLY — shape, migration and every spending rule live in core/meta/profile.ts
 
@@ -106,6 +160,8 @@ src/
     consumables.ts            # [90] CONSUMABLES: 10 defs with battle Skill payloads (cost 0, chance 1.0) + explore fields + prices
     lootTables.ts             # [70] consumable weight table (Σ=100), rarity weights by floor band, chest/fight/boss draw tables, §5d bundles, starting kit
     events.ts                 # [300] EVENTS: the 10 shipped GameEvents verbatim from events.md §4 (ids fixed: 'rat'→'ratThug')
+    conditions.ts             # [220] the §3 vocabulary as DATA: HUNGER_STAGES (0-5, label + blurb + BuffStat deltas), SCARS (8 named permanent marks), QUIRKS (7, good and bad, each with the trigger that earns it), FEED_COST_PER_POINT, MAX_CONDITIONS
+    camp.ts                   # [330] the §4 writing: CAMP_OPENERS, CAMP_EXCHANGES (2-4 lines between {a} and {b}, tagged by what is true at the fire — hungry/scarred/hurt/lastLife/fallen/boss/deep/early/flush/broke/bonded, plus a deep untagged pool), CAMP_ACTION_LINES. THIS is what plays when there is no DM
     floors.ts                 # [90] FLOORS: canonical 6-floor table from GDD §6 incl. the per-floor run-map budget (columns/rows/weights/guaranteed) and threat budget, XP_TO_LEVEL, LEVEL_CAP, plus ENEMY_CURVE/floorCurve/curvedEnemyStats — THE difficulty dial (balance-and-meta.md §3); bosses are excluded from it
 
   ui/
@@ -131,13 +187,16 @@ src/
       battle.ts               # [320] battle scene: engine driving loop, event-queue animator, targeting flow, unit containers, floaters, log line
       battleWidgets.ts        # [230] initiative ribbon, skill bar + range strips, active panel, Cat Pile banner, Poise pips, boss telegraph
       event.ts                # [160] event modal: PROMPT/RESULT states, option buttons + gate tags, hotkeys 1-4, delta lines (events.md §3 + ui-art §9)
+      camp.ts                 # [520] THE CAMP screen (roster-and-persistence.md §4): the fire panel (authored exchange immediately, the DM's appended under it when one answers), the cat column with HP + conditions, the five actions over three embers, Break camp. Decides nothing — core/run/camp.ts does
       landing.ts              # [170] Landing scene: catnap floaters, Peddler stock + buy/sell + Warm Lap, marching order, Descend
       results.ts              # [120] victory/defeat banner, score count-up, records line, Again/New Seed/Title
     overlays/
       loot.ts                 # [90] chest/victory loot popup: rows, XP bar + level-up toasts, Lives ledger (pip crack), Take All
       pause.ts                # [110] Esc menu: Resume/Party/Inventory/Help/Abandon; footer seed/floor/time
       inventoryPanel.ts       # [130] 16-slot grid, equip/unequip per cat, full-inventory pickup modal, sort
-      progressPanel.ts        # [900] THE DEN: whisker points / skills / gear, per-cat, "where the numbers come from"
+      progressPanel.ts        # [1800] THE DEN: whisker points / skills / gear, per-cat, "where the numbers come from". Paints a DenBook, not a RunState — `runBook` is the mid-run party/backpack, `townBook` (townDen.ts) is the clowder at its own levels over the town stash
+      rosterPanel.ts          # [440] THE CLOWDER (roster-and-persistence.md §1-§3): who descends and in what order (toggleDescending — tap to send, tap again to move forward, shift-tap to bench), level/Lives/all three slots/Stand/conditions per card, the Feed bowl, and THE MEMORIAL page (§2). Decides nothing; the scene writes through setDescending
+      townDen.ts              # [250] the town half of the Den: townDenCats/townRunCat/bankTownCat/equipFromStash/unequipToStash (profile in → profile out, all through canEquip/equipItem/unequipItem), the signed per-slot delta rows and gearTipText
       tabletopBar.ts          # [330] the "what do you do?" card: DOM <input> positioned through the letterbox transform, echoed prompt, streamed DM reply, phase-fitted height. Built ONLY when a DM answered the probe
 
   services/                   # ui-side clients AND the rules the browser shares with agent/ — no pixi, no Math.random
@@ -149,6 +208,7 @@ src/
     powerLint.ts              # [460] the wrapper over core/combat/powers.ts: error-string lints, normalizePower (a model never computes its own budget), resonancePairKey, STOCK_POWERS, the DSL JSON Schemas
     artPrompt.ts              # [25] composeArtPrompt(category, subject) — the versioned house style appended to a subject-only model prompt
     gmTypes.ts                # [90] generated-content contracts (GeneratedCatKit, GeneratedEquip, the Power Script DSL re-export), shared by src/, agent/ and scripts/
+    pool.ts                   # [350] THE DREAMING, read-only (roster-and-persistence.md §5-§6): the browser's SELECT-only path into Supabase over the anon key. Owns the DreamedKind union + DREAMED_KIND_COLUMN — ONE home, which agent/lib/pool.ts imports so src/ never depends on agent/. Short-circuits with no env and never throws, because the pool is an enrichment layer and never a dependency
 
 tests/
   rng.spec.ts                 # known-answer hash/mulberry32 vectors, int bounds
@@ -173,9 +233,11 @@ agent/                        # the persistent DM (Vercel eve) — NEVER in the 
   agent.ts                    # defineAgent({ model: 'anthropic/claude-haiku-4.5', sessionTimeoutMs: 7d })
   instructions.md             # the DM's voice, the hard bounds, the refusal policy
   channels/eve.ts             # HTTP channel: CORS to the game origin, auth policy
-  lib/{effects,memory,catalog,oneshot,pool}.ts # EffectSpec mirror w/ compile-time parity assertion, run memory, one-shot zod schemas, the shared content pool (server-side only — reads process.env, so src/ never imports it)
-  tools/                      # narrate · apply_effect · grant_item · adjust_shinies · remember · offer_encounter · contribute_content (validates with the SHIPPED lintEvent/lintItem, stamps styleVersion + provenance, writes to the shared pool)
+  lib/{effects,memory,catalog,oneshot,pool}.ts # EffectSpec mirror w/ compile-time parity assertion, run memory, one-shot zod schemas, the shared content pool (SupabasePool over PostgREST + Storage on plain fetch — server-side only, reads process.env, so src/ never imports it)
+  lib/generationZero.ts       # the shipped tables → ContentRow[]. Pure, and the ONE home shared by the pool's bootstrap and scripts/seed-pool.ts
+  tools/                      # narrate · apply_effect · grant_item · adjust_shinies · remember · offer_encounter · contribute_content (validates with the SHIPPED lintEvent/lintItem, stamps styleVersion + provenance, re-hosts art, writes to the shared pool) · recall_content (the READ half: pool-first, with the p = min(0.7, size/200) roll made SERVER-side so the model cannot see the pool size)
   subagents/encounter/        # one fight's adjudicator: battle snapshot in, typed verdict out
+  subagents/resonance/        # cat-power × enemy-power verdicts, with recall_resonance / record_resonance so a pairing (including a NULL verdict) is memoised across players forever
 ```
 
 There is no `api/` directory. The six stateless `api/gm/*` functions the DM
@@ -198,26 +260,40 @@ them.** Additive optional fields require tech-lead sign-off.
 ```ts
 // ---- RNG (implemented in core/rng.ts) ----
 export interface Rng {
-  float(): number;                 // [0, 1)
+  float(): number; // [0, 1)
   int(lo: number, hi: number): number; // inclusive both ends
 }
 
 // ---- ids ----
-export type ClassId  = 'bruiser' | 'trickster' | 'hexer' | 'medic';
-export type SkillId  = string;    // camelCase, e.g. 'bodySlam'
-export type EnemyId  = string;    // camelCase, e.g. 'ratThug', 'vacuumKing'
-export type ItemId   = string;    // consumable OR equip def id, camelCase e.g. 'tunaSnack'
-export type StatusId = 'scratched' | 'frazzled' | 'offBalance'
-                     | 'guarded' | 'provoked' | 'mending'
-                     | 'braced';       // blocks offBalance re-application (balance-and-meta.md §1)
-export type TraitId  = 'heavy'                      // immune to forced movement
-                     | 'immovableLoaf' | 'opportunist'
-                     | 'stringTheory' | 'purrEngine';
+export type ClassId = "bruiser" | "trickster" | "hexer" | "medic";
+export type SkillId = string; // camelCase, e.g. 'bodySlam'
+export type EnemyId = string; // camelCase, e.g. 'ratThug', 'vacuumKing'
+export type ItemId = string; // consumable OR equip def id, camelCase e.g. 'tunaSnack'
+export type StatusId =
+  | "scratched"
+  | "frazzled"
+  | "offBalance"
+  | "guarded"
+  | "provoked"
+  | "mending"
+  | "braced"; // blocks offBalance re-application (balance-and-meta.md §1)
+export type TraitId =
+  | "heavy" // immune to forced movement
+  | "immovableLoaf"
+  | "opportunist"
+  | "stringTheory"
+  | "purrEngine";
 
 // ---- stats ----
-export type StatKey = 'hp' | 'atk' | 'def' | 'spd' | 'crt' | 'enMax';
-export interface Stats { hp: number; atk: number; def: number;
-                         spd: number; crt: number; enMax: number; }
+export type StatKey = "hp" | "atk" | "def" | "spd" | "crt" | "enMax";
+export interface Stats {
+  hp: number;
+  atk: number;
+  def: number;
+  spd: number;
+  crt: number;
+  enMax: number;
+}
 ```
 
 ### 2.2 Skills & statuses (combat.md §4 + classes.md §2 additive fields, merged)
@@ -225,40 +301,40 @@ export interface Stats { hp: number; atk: number; def: number;
 ```ts
 export interface StatusApplication {
   status: StatusId;
-  chance: number;                  // 0..1; EXACTLY 1.0 draws NO rng roll (GDD §4 ruling)
-  value?: number;                  // scratched/mending magnitude
-  to?: 'target' | 'self' | 'allEnemies';  // default 'target'
+  chance: number; // 0..1; EXACTLY 1.0 draws NO rng roll (GDD §4 ruling)
+  value?: number; // scratched/mending magnitude
+  to?: "target" | "self" | "allEnemies"; // default 'target'
 }
 
 export interface Skill {
   id: SkillId;
   name: string;
   desc: string;
-  cost: number;                    // energy (cats); ignored for enemies
-  cooldown?: number;               // rounds (enemies); ignored for cats
-  usableFrom: number[];            // user ranks
+  cost: number; // energy (cats); ignored for enemies
+  cooldown?: number; // rounds (enemies); ignored for cats
+  usableFrom: number[]; // user ranks
   target: {
-    side: 'enemy' | 'ally' | 'self';
+    side: "enemy" | "ally" | "self";
     ranks: number[];
-    pattern: 'single' | 'row';
+    pattern: "single" | "row";
   };
-  power: number;                   // 0 = no damage/heal component
-  kind: 'damage' | 'heal' | 'utility';
-  moveTarget?: number;             // + push back N, − pull forward N (forced)
-  moveSelf?: number;               // + retreat, − advance (voluntary, no Off-Balance)
+  power: number; // 0 = no damage/heal component
+  kind: "damage" | "heal" | "utility";
+  moveTarget?: number; // + push back N, − pull forward N (forced)
+  moveSelf?: number; // + retreat, − advance (voluntary, no Off-Balance)
   applies?: StatusApplication[];
-  cleanses?: StatusId[];           // remove ONE application of each per target
-  revivePct?: number;              // targets KO'd allies; revive at pct, placed rank 4
-  oncePerBattle?: boolean;         // latched per battle per user
-  energyGain?: number;             // Claw Swipe's +1
-  aiWeight?: number;               // enemy AI base score (default 10)
+  cleanses?: StatusId[]; // remove ONE application of each per target
+  revivePct?: number; // targets KO'd allies; revive at pct, placed rank 4
+  oncePerBattle?: boolean; // latched per battle per user
+  energyGain?: number; // Claw Swipe's +1
+  aiWeight?: number; // enemy AI base score (default 10)
 }
 
 export interface StatusInstance {
   id: StatusId;
-  value: number;                   // 0 where meaningless
-  duration: number;                // interpretation per status def in combat/status.ts
-                                   // (rounds for scratched/mending; latch flags for the rest)
+  value: number; // 0 where meaningless
+  duration: number; // interpretation per status def in combat/status.ts
+  // (rounds for scratched/mending; latch flags for the rest)
 }
 ```
 
@@ -266,89 +342,108 @@ export interface StatusInstance {
 
 ```ts
 export interface Combatant {
-  id: string;                      // battle-unique: 'cat:bruiser', 'e0:ratThug', 'summon2:sockWraith'
+  id: string; // battle-unique: 'cat:bruiser', 'e0:ratThug', 'summon2:sockWraith'
   name: string;
-  side: 'cat' | 'enemy';
-  classId?: ClassId;               // cats only
-  speciesId?: EnemyId;             // enemies only
-  rank: number;                    // 1-based current position
-  stats: Stats;                    // EFFECTIVE stats (base+growth+equip+tempMods), frozen at setup
+  side: "cat" | "enemy";
+  classId?: ClassId; // cats only
+  speciesId?: EnemyId; // enemies only
+  rank: number; // 1-based current position
+  stats: Stats; // EFFECTIVE stats (base+growth+equip+tempMods), frozen at setup
   hp: number;
-  energy: number;                  // cats only
-  skills: SkillId[];               // current kit (boss phase swap mutates this)
+  energy: number; // cats only
+  skills: SkillId[]; // current kit (boss phase swap mutates this)
   cooldowns: Record<SkillId, number>; // enemies only
   statuses: StatusInstance[];
   traits: TraitId[];
-  hooks: MewHookId[];              // equipped Mewthical effects, resolved at setup
-  usedOncePerBattle: SkillId[];    // Nine Lives Nudge etc.
-  traitLatchUsed?: boolean;        // Immovable Loaf once-per-battle
-  lives?: number;                  // cats only, 0..9
-  ko: boolean;                     // KO'd (removed from ranks, revivable)
+  hooks: MewHookId[]; // equipped Mewthical effects, resolved at setup
+  usedOncePerBattle: SkillId[]; // Nine Lives Nudge etc.
+  traitLatchUsed?: boolean; // Immovable Loaf once-per-battle
+  lives?: number; // cats only, 0..9
+  ko: boolean; // KO'd (removed from ranks, revivable)
   // boss-only:
-  poise?: number;                  // current
+  poise?: number; // current
   poiseMax?: number;
-  phase?: number;                  // 0-based phase index
+  phase?: number; // 0-based phase index
   charging?: { skillId: SkillId; ranks: number[] } | null;
 }
 
 export interface BossData {
   poise: number;
   doubleTurn: boolean;
-  phases: { hpPct: number; skills: SkillId[] }[];   // phases[0].hpPct = 1.0
+  phases: { hpPct: number; skills: SkillId[] }[]; // phases[0].hpPct = 1.0
   windup?: { skillId: SkillId; telegraph: string }; // 2-slot nuke
   summon?: { skillId: SkillId; minion: EnemyId; cap: number };
 }
 
-export interface QueueEntry { combatantId: string; initiative: number; acted: boolean; }
+export interface QueueEntry {
+  combatantId: string;
+  initiative: number;
+  acted: boolean;
+}
 
 export interface BattleState {
-  combatants: Combatant[];         // all, both sides (KO'd stay, ranks compressed)
+  combatants: Combatant[]; // all, both sides (KO'd stay, ranks compressed)
   round: number;
-  queue: QueueEntry[];             // frozen per round
+  queue: QueueEntry[]; // frozen per round
   queueIndex: number;
-  catPileLatch: boolean;           // prompt already offered this round
-  catPilePrompt: boolean;          // engine awaits catPile accept/decline action
+  catPileLatch: boolean; // prompt already offered this round
+  catPilePrompt: boolean; // engine awaits catPile accept/decline action
   cucumberUsed: boolean;
   canFlee: boolean;
   encounterIndex: number;
-  outcome: 'ongoing' | 'victory' | 'defeat' | 'fled';
-  intents?: Record<string, DeclaredIntent>;  // per living enemy, this round
+  outcome: "ongoing" | "victory" | "defeat" | "fled";
+  intents?: Record<string, DeclaredIntent>; // per living enemy, this round
 }
 
 /** What an enemy has committed to do NEXT (enemy-intel.md §2). */
 export interface DeclaredIntent {
-  id: string;                      // the enemy's combatant id
-  kind: 'strike' | 'status' | 'shove' | 'heal' | 'buff'
-      | 'summon' | 'windup' | 'advance' | 'unknown';
-  value: number;                   // expected damage / heal; 0 when meaningless
-  round: number;                   // the round it was declared for
+  id: string; // the enemy's combatant id
+  kind:
+    | "strike"
+    | "status"
+    | "shove"
+    | "heal"
+    | "buff"
+    | "summon"
+    | "windup"
+    | "advance"
+    | "unknown";
+  value: number; // expected damage / heal; 0 when meaningless
+  round: number; // the round it was declared for
   skillId?: SkillId;
   targetId?: string;
-  ranks?: number[];                // row skills: the ranks it will hit
-  status?: StatusId;               // kind === 'status'
+  ranks?: number[]; // row skills: the ranks it will hit
+  status?: StatusId; // kind === 'status'
 }
 
 export interface BattleSetup {
-  cats: {                          // in marching order, front→back
-    classId: ClassId; name: string; stats: Stats; hp: number; lives: number;
-    skills: SkillId[]; traits: TraitId[]; hooks: MewHookId[];
-    startEnergyBonus: number;      // energyNextBattle mods, cap 10 total
+  cats: {
+    // in marching order, front→back
+    classId: ClassId;
+    name: string;
+    stats: Stats;
+    hp: number;
+    lives: number;
+    skills: SkillId[];
+    traits: TraitId[];
+    hooks: MewHookId[];
+    startEnergyBonus: number; // energyNextBattle mods, cap 10 total
   }[];
-  enemies: EnemyId[];              // front-to-back, 1..5
-  encounterIndex: number;          // 0 = boss
+  enemies: EnemyId[]; // front-to-back, 1..5
+  encounterIndex: number; // 0 = boss
   canFlee: boolean;
-  floor?: number;                  // drives ENEMY_CURVE; omitted ⇒ floor 1
+  floor?: number; // drives ENEMY_CURVE; omitted ⇒ floor 1
   isBoss?: boolean;
 }
 
 export type BattleAction =
-  | { type: 'skill'; skillId: SkillId; targetId?: string } // targetId omitted for self/row
-  | { type: 'move'; dir: 'forward' | 'back' }              // swap with adjacent cat
-  | { type: 'guard' }
-  | { type: 'item'; itemId: ItemId; targetId?: string }
-  | { type: 'flee' }
-  | { type: 'catPile'; accept: boolean }
-  | { type: 'advance' };                                   // enemy fallback (AI only)
+  | { type: "skill"; skillId: SkillId; targetId?: string } // targetId omitted for self/row
+  | { type: "move"; dir: "forward" | "back" } // swap with adjacent cat
+  | { type: "guard" }
+  | { type: "item"; itemId: ItemId; targetId?: string }
+  | { type: "flee" }
+  | { type: "catPile"; accept: boolean }
+  | { type: "advance" }; // enemy fallback (AI only)
 
 // Engine API (core/combat):
 //   createBattle(setup: BattleSetup): BattleState
@@ -362,43 +457,62 @@ export type BattleAction =
 // All functions pure: state in → new state out (structural sharing ok, no mutation).
 
 export type BattleEvent =
-  | { t: 'roundStart'; round: number; queue: QueueEntry[] }
-  | { t: 'turnStart'; id: string; energyAfterRegen?: number }
-  | { t: 'damage'; id: string; amount: number; crit: boolean; offBal: boolean;
-      source: SkillId | 'catPile' | 'scratched' }
-  | { t: 'heal'; id: string; amount: number; source: SkillId | 'mending' | ItemId }
-  | { t: 'moved'; id: string; from: number; to: number; forced: boolean }
-  | { t: 'statusApplied'; id: string; status: StatusId; value: number }
-  | { t: 'statusExpired'; id: string; status: StatusId }
-  | { t: 'cleansed'; id: string; status: StatusId }
-  | { t: 'energy'; id: string; delta: number }
-  | { t: 'guard'; id: string }
-  | { t: 'poiseChip'; id: string; left: number }
-  | { t: 'poiseBreak'; id: string }
-  | { t: 'catPilePrompt'; damageEach: number }
-  | { t: 'catPile'; damageEach: number; targets: string[] }
-  | { t: 'ko'; id: string }
-  | { t: 'revive'; id: string; hp: number }
-  | { t: 'lifeLost'; id: string; livesLeft: number }     // post-battle standup
-  | { t: 'lifeSaved'; id: string }                        // Ninth Bell
-  | { t: 'phaseChange'; id: string; phase: number }
-  | { t: 'charging'; id: string; skillId: SkillId; ranks: number[]; text: string }
-  | { t: 'chargeCancelled'; id: string }
-  | { t: 'summon'; id: string; minion: EnemyId; rank: number }
-  | { t: 'traitTriggered'; id: string; trait: TraitId }
-  | { t: 'fleeAttempt'; ok: boolean; chance: number }
-  | { t: 'victory' } | { t: 'defeat' } | { t: 'fled' }
-  | { t: 'log'; text: string };                           // flavor lines
+  | { t: "roundStart"; round: number; queue: QueueEntry[] }
+  | { t: "turnStart"; id: string; energyAfterRegen?: number }
+  | {
+      t: "damage";
+      id: string;
+      amount: number;
+      crit: boolean;
+      offBal: boolean;
+      source: SkillId | "catPile" | "scratched";
+    }
+  | {
+      t: "heal";
+      id: string;
+      amount: number;
+      source: SkillId | "mending" | ItemId;
+    }
+  | { t: "moved"; id: string; from: number; to: number; forced: boolean }
+  | { t: "statusApplied"; id: string; status: StatusId; value: number }
+  | { t: "statusExpired"; id: string; status: StatusId }
+  | { t: "cleansed"; id: string; status: StatusId }
+  | { t: "energy"; id: string; delta: number }
+  | { t: "guard"; id: string }
+  | { t: "poiseChip"; id: string; left: number }
+  | { t: "poiseBreak"; id: string }
+  | { t: "catPilePrompt"; damageEach: number }
+  | { t: "catPile"; damageEach: number; targets: string[] }
+  | { t: "ko"; id: string }
+  | { t: "revive"; id: string; hp: number }
+  | { t: "lifeLost"; id: string; livesLeft: number } // post-battle standup
+  | { t: "lifeSaved"; id: string } // Ninth Bell
+  | { t: "phaseChange"; id: string; phase: number }
+  | {
+      t: "charging";
+      id: string;
+      skillId: SkillId;
+      ranks: number[];
+      text: string;
+    }
+  | { t: "chargeCancelled"; id: string }
+  | { t: "summon"; id: string; minion: EnemyId; rank: number }
+  | { t: "traitTriggered"; id: string; trait: TraitId }
+  | { t: "fleeAttempt"; ok: boolean; chance: number }
+  | { t: "victory" }
+  | { t: "defeat" }
+  | { t: "fled" }
+  | { t: "log"; text: string }; // flavor lines
 
 export interface BattleResult {
-  outcome: 'victory' | 'defeat' | 'fled';
+  outcome: "victory" | "defeat" | "fled";
   cats: { classId: ClassId; hp: number; lives: number }[]; // post-standup values
-  xpGained: number;                // Σ enemy xp, 0 on flee/defeat
+  xpGained: number; // Σ enemy xp, 0 on flee/defeat
   catPiles: number;
   enemiesDefeated: number;
   bossDefeated: boolean;
-  ninthBellSpent: boolean;         // mark hookSpent on the equipped instance
-  events: BattleEvent[];           // full log (for tests / scrollback)
+  ninthBellSpent: boolean; // mark hookSpent on the equipped instance
+  events: BattleEvent[]; // full log (for tests / scrollback)
 }
 ```
 
@@ -406,16 +520,20 @@ export interface BattleResult {
 
 ```ts
 export interface CatTrait {
-  id: TraitId; name: string; desc: string;
-  tier2Level: number;              // 7 in v1
+  id: TraitId;
+  name: string;
+  desc: string;
+  tier2Level: number; // 7 in v1
   tier2Desc: string;
 }
 
 export interface CatClass {
   id: ClassId;
-  className: string; catName: string; epithet: string;
+  className: string;
+  catName: string;
+  epithet: string;
   base: Stats;
-  growth: Partial<Stats>[];        // 7 rows, applied at L2..L8
+  growth: Partial<Stats>[]; // 7 rows, applied at L2..L8
   skills: { skillId: SkillId; unlockLevel: number }[];
   trait: CatTrait;
   flavor: { bio: string; barks: { crit: string; ko: string; catPile: string } };
@@ -427,33 +545,34 @@ export interface CatClass {
 
 ```ts
 export interface EnemyLook {
-  family: 'vermin' | 'bird' | 'beast' | 'construct';
-  sizeGrade: 'minion' | 'standard' | 'elite' | 'boss';
+  family: "vermin" | "bird" | "beast" | "construct";
+  sizeGrade: "minion" | "standard" | "elite" | "boss";
   tier: 1 | 2 | 3;
-  props?: string[];                // 'crown' | 'shamanStaff' | 'scarf' | 'patchEye' | ...
+  props?: string[]; // 'crown' | 'shamanStaff' | 'scarf' | 'patchEye' | ...
 }
 
 export interface EnemyDef {
-  id: EnemyId; name: string;
+  id: EnemyId;
+  name: string;
   tier: 1 | 2 | 3;
-  level: number;                   // DERIVED (see below), never hand-typed
-  description: string;             // 1-2 lines of flavour; the Stand hinted
-  tell: string;                    // how it telegraphs — flavour for the icon
-  weaknesses: IntelTag[];          // takes EXTRA from these (mechanical)
-  resistances: IntelTag[];         // shrugs these off
-  threat: number;                  // pack-budget cost; bosses/summons: 0
-  row: 'front' | 'back';           // formation ordering in pack build
-  stats: Stats;                    // enMax unused for enemies (0)
+  level: number; // DERIVED (see below), never hand-typed
+  description: string; // 1-2 lines of flavour; the Stand hinted
+  tell: string; // how it telegraphs — flavour for the icon
+  weaknesses: IntelTag[]; // takes EXTRA from these (mechanical)
+  resistances: IntelTag[]; // shrugs these off
+  threat: number; // pack-budget cost; bosses/summons: 0
+  row: "front" | "back"; // formation ordering in pack build
+  stats: Stats; // enMax unused for enemies (0)
   skills: SkillId[];
-  traits: TraitId[];               // ['heavy'] for yarnGolem
+  traits: TraitId[]; // ['heavy'] for yarnGolem
   xp: number;
   look: EnemyLook;
-  boss?: BossData;                 // present on vacuumKing/dogfather/(ratPrince)
+  boss?: BossData; // present on vacuumKing/dogfather/(ratPrince)
 }
 
 /** The CLOSED intel vocabulary. Widening it is a design decision, not a typo. */
 export type IntelTag =
-  'shove' | 'offBalance' | 'scratched' | 'frazzled' | 'provoked';
+  "shove" | "offBalance" | "scratched" | "frazzled" | "provoked";
 ```
 
 **Enemy intel** (`docs/design/enemy-intel.md` §1, `combat.md` §8.1). Three rules
@@ -462,67 +581,80 @@ make this a mechanic rather than a stat sheet:
 - **Every tag is a modifier on a step the resolver already had**, and it never
   costs a draw. `shove` is ×1.25 / ×0.80 on a `moveTarget` hit; the four status
   tags decide the application outright (weak ⇒ always lands, resist ⇒ never
-  lands) and the chance roll is *not drawn* in either direction, because the
+  lands) and the chance roll is _not drawn_ in either direction, because the
   outcome was never in doubt.
 - **`resistances: ['offBalance']` IS the tier Off-Paw resistance.** It is not a
   second system layered on the tier — the tier supplies the magnitude
   (0.25 / 0.40), the def supplies whether the gate applies at all, so
   `offBalanceResistOf` has one source of truth.
 - **`level` is derived from `ENEMY_CURVE`**, not authored: `baseLevel(tier,
-  isBoss)` plus `curveLevelSteps(floor)`. The table that scales the stat block
+isBoss)` plus `curveLevelSteps(floor)`. The table that scales the stat block
   moves the printed level, so the inspect panel can never drift from the damage
   formula (`balance-and-meta.md` §3.2).
 
 Whenever a modifier actually fires the engine emits an `intel` event. That is
-the *only* way the Bestiary learns a tag — knowledge comes from watching it
+the _only_ way the Bestiary learns a tag — knowledge comes from watching it
 happen, never from reading the content table.
 
 ### 2.6 Items, equipment, inventory (loot.md §10)
 
 ```ts
-export type Rarity = 'stray' | 'sleek' | 'pedigree' | 'mewthical';
+export type Rarity = "stray" | "sleek" | "pedigree" | "mewthical";
 
 export type MewHookId =
-  | 'poiseChip2' | 'critOffBalance' | 'appliesAlwaysHit' | 'healsGrantMending'
-  | 'moverOffBalance' | 'ninthBell' | 'catPileDouble' | 'startEnergy6';
+  | "poiseChip2"
+  | "critOffBalance"
+  | "appliesAlwaysHit"
+  | "healsGrantMending"
+  | "moverOffBalance"
+  | "ninthBell"
+  | "catPileDouble"
+  | "startEnergy6";
 
 export interface EquipDef {
-  id: ItemId; name: string; icon: string;
-  slot: 'weapon' | 'trinket';
-  classId?: ClassId;               // weapons only
+  id: ItemId;
+  name: string;
+  icon: string;
+  slot: "weapon" | "trinket";
+  classId?: ClassId; // weapons only
   primary: StatKey;
   secondaryPool: [StatKey, StatKey];
-  uniqueId?: MewHookId;            // absent on Cardboard Cuirass / Spiked Collar
-  uniqueName?: string;             // Mewthical display name
+  uniqueId?: MewHookId; // absent on Cardboard Cuirass / Spiked Collar
+  uniqueName?: string; // Mewthical display name
 }
 
 export interface EquipInstance {
   uid: number;
   defId: ItemId;
-  itemLevel: number;               // L = drop floor (boss/shop: floor+1)
+  itemLevel: number; // L = drop floor (boss/shop: floor+1)
   rarity: Rarity;
-  stats: Partial<Record<StatKey, number>>;  // fully resolved at drop time
+  stats: Partial<Record<StatKey, number>>; // fully resolved at drop time
   hook?: MewHookId;
-  hookSpent?: boolean;             // Ninth Bell crack
+  hookSpent?: boolean; // Ninth Bell crack
 }
 
 export interface ConsumableDef {
-  id: ItemId; name: string; icon: string;
+  id: ItemId;
+  name: string;
+  icon: string;
   price: number;
-  battleSkill: Skill;              // cost 0, all applies chance 1.0
-  explore?: { heal: number | 'full' };   // tunaSnack, sardineTin only
-  oncePerBattle?: boolean;         // theCucumber
-  nonBoss?: boolean;               // canOpenerRecording
+  battleSkill: Skill; // cost 0, all applies chance 1.0
+  explore?: { heal: number | "full" }; // tunaSnack, sardineTin only
+  oncePerBattle?: boolean; // theCucumber
+  nonBoss?: boolean; // canOpenerRecording
 }
 
-export interface ConsumableStack { defId: ItemId; count: number; }  // 1..5
+export interface ConsumableStack {
+  defId: ItemId;
+  count: number;
+} // 1..5
 
 export type InventorySlot = EquipInstance | ConsumableStack | null;
 
 export interface Inventory {
-  shinies: number;                 // 0..999
-  slots: InventorySlot[];          // length 16
-  nextUid: number;                 // EquipInstance uid counter
+  shinies: number; // 0..999
+  slots: InventorySlot[]; // length 16
+  nextUid: number; // EquipInstance uid counter
 }
 
 // Loot grants, as returned by core/loot/roll.ts and displayed by the loot overlay:
@@ -535,45 +667,52 @@ export interface LootGrant {
 
 ### 2.7 The run map (run-map-and-dm.md §2)
 
-*(Replaces the tile-dungeon contract. `Tile`, `Room`, `Roamer`, `Entity`,
-`FloorState`, `StepTrigger` and `FloorDelta` are gone.)*
+_(Replaces the tile-dungeon contract. `Tile`, `Room`, `Roamer`, `Entity`,
+`FloorState`, `StepTrigger` and `FloorDelta` are gone.)_
 
 ```ts
 export type NodeType =
-  | 'fight' | 'elite' | 'event' | 'shop' | 'rest' | 'treasure' | 'boss';
+  "fight" | "elite" | "event" | "shop" | "rest" | "treasure" | "boss";
 
 export interface MapNode {
-  id: number;                      // index into FloorMap.nodes — stable, 0-based
+  id: number; // index into FloorMap.nodes — stable, 0-based
   type: NodeType;
-  depth: number;                   // column index, 0 = entry
-  row: number;                     // 0-based row within the column, top → bottom
-  rowCount: number;                // how many nodes live in this column
-  seed: number;                    // hash(runSeed, floor, 'node', id) — DERIVED, never drawn
+  depth: number; // column index, 0 = entry
+  row: number; // 0-based row within the column, top → bottom
+  rowCount: number; // how many nodes live in this column
+  seed: number; // hash(runSeed, floor, 'node', id) — DERIVED, never drawn
 }
 
 /** A one-way step. Always nodes[from].depth + 1 === nodes[to].depth. */
-export interface MapEdge { from: number; to: number; }
+export interface MapEdge {
+  from: number;
+  to: number;
+}
 
 export interface FloorMap {
-  floor: number;                   // 1..6
-  columns: number;                 // 4..7
-  nodes: MapNode[];                // index === node.id
-  edges: MapEdge[];                // sorted by (from, to)
-  entryId: number;                 // the single column-0 node
-  bossId: number;                  // the single terminal node (boss, or the stairs guard)
+  floor: number; // 1..6
+  columns: number; // 4..7
+  nodes: MapNode[]; // index === node.id
+  edges: MapEdge[]; // sorted by (from, to)
+  entryId: number; // the single column-0 node
+  bossId: number; // the single terminal node (boss, or the stairs guard)
 }
 
 /** Authored density — replaces the maze's roamers/chests/events counts. */
 export interface FloorMapBudget {
-  columnsLo: number; columnsHi: number;          // clamped to 4..7
-  rowsLo: number; rowsHi: number;                // clamped to 1..4
-  weights: Partial<Record<NodeType, number>>;    // a missing type is never drawn
-  guaranteed: NodeType[];                        // shop + rest
+  columnsLo: number;
+  columnsHi: number; // clamped to 4..7
+  rowsLo: number;
+  rowsHi: number; // clamped to 1..4
+  weights: Partial<Record<NodeType, number>>; // a missing type is never drawn
+  guaranteed: NodeType[]; // shop + rest
 }
 
 export interface FloorConfig {
   name: string;
-  pool: EnemyId[]; budgetLo: number; budgetHi: number;
+  pool: EnemyId[];
+  budgetLo: number;
+  budgetHi: number;
   map: FloorMapBudget;
   boss?: { bossId: EnemyId; encounter: EnemyId[] };
 }
@@ -594,49 +733,73 @@ unvisited — the UI can never teleport the party.
 
 ```ts
 export type Scalar = number | { base: number; perFloor: number };
-export type BuffStat = 'atk' | 'def' | 'spd' | 'crt' | 'hpMax';
+export type BuffStat = "atk" | "def" | "spd" | "crt" | "hpMax";
 
-export type TargetSel = 'party' | 'random' | 'lowestHp' | 'lowestLives' | 'gateCat';
+export type TargetSel =
+  "party" | "random" | "lowestHp" | "lowestLives" | "gateCat";
 
 export type Requirement =
-  | { kind: 'class';   class: ClassId }
-  | { kind: 'stat';    stat: 'atk' | 'def' | 'spd' | 'crt'; min: number }  // best EFFECTIVE stat
-  | { kind: 'item';    item: ItemId; count?: number }
-  | { kind: 'shinies'; cost: Scalar };
+  | { kind: "class"; class: ClassId }
+  | { kind: "stat"; stat: "atk" | "def" | "spd" | "crt"; min: number } // best EFFECTIVE stat
+  | { kind: "item"; item: ItemId; count?: number }
+  | { kind: "shinies"; cost: Scalar };
 
 export type Effect =
-  | { kind: 'heal';    target: TargetSel; amount: Scalar }
-  | { kind: 'damage';  target: TargetSel; amount: Scalar }   // ignores def; clamps at 1 HP
-  | { kind: 'buff';    target: TargetSel; stat: BuffStat; amount: number;
-      duration: 'floor' | 'run' }
-  | { kind: 'shinies'; amount: Scalar }
-  | { kind: 'giveItem'; item: ItemId; count?: number }
-  | { kind: 'takeItem'; item: ItemId; count?: number }
-  | { kind: 'restoreLife'; target: 'lowestLives'; amount: number }
-  | { kind: 'energyNextBattle'; target: TargetSel; amount: number }
-  | { kind: 'fight'; encounter: EnemyId[]; loot: 'none' | 'normal' | 'bonus';
-      onWinEffects?: Effect[] }
-  | { kind: 'nothing' };
+  | { kind: "heal"; target: TargetSel; amount: Scalar }
+  | { kind: "damage"; target: TargetSel; amount: Scalar } // ignores def; clamps at 1 HP
+  | {
+      kind: "buff";
+      target: TargetSel;
+      stat: BuffStat;
+      amount: number;
+      duration: "floor" | "run";
+    }
+  | { kind: "shinies"; amount: Scalar }
+  | { kind: "giveItem"; item: ItemId; count?: number }
+  | { kind: "takeItem"; item: ItemId; count?: number }
+  | { kind: "restoreLife"; target: "lowestLives"; amount: number }
+  | { kind: "energyNextBattle"; target: TargetSel; amount: number }
+  | {
+      kind: "fight";
+      encounter: EnemyId[];
+      loot: "none" | "normal" | "bonus";
+      onWinEffects?: Effect[];
+    }
+  | { kind: "nothing" };
 
-export interface Outcome { weight: number; text: string; effects: Effect[]; }
-export interface EventOption { label: string; requires?: Requirement; outcomes: Outcome[]; }
+export interface Outcome {
+  weight: number;
+  text: string;
+  effects: Effect[];
+}
+export interface EventOption {
+  label: string;
+  requires?: Requirement;
+  outcomes: Outcome[];
+}
 
 export interface GameEvent {
-  id: string; title: string; prompt: string;
+  id: string;
+  title: string;
+  prompt: string;
   weight: number;
   floors: [number, number];
   once?: boolean;
-  options: EventOption[];          // 2..4
+  options: EventOption[]; // 2..4
 }
 
-export interface TempMod {          // events.md §1 "Temp stat mods"
-  stat: BuffStat; amount: number;
-  duration: 'floor' | 'run';
+export interface TempMod {
+  // events.md §1 "Temp stat mods"
+  stat: BuffStat;
+  amount: number;
+  duration: "floor" | "run";
   sourceEventId: string;
 }
 
-export interface ResultLine {       // UI delta lines, also used by loot overlay
-  text: string; tone: 'gain' | 'loss' | 'buff' | 'neutral';
+export interface ResultLine {
+  // UI delta lines, also used by loot overlay
+  text: string;
+  tone: "gain" | "loss" | "buff" | "neutral";
 }
 ```
 
@@ -645,37 +808,38 @@ export interface ResultLine {       // UI delta lines, also used by loot overlay
 ```ts
 export interface CatRunState {
   classId: ClassId;
-  hp: number;                      // current; max derives from effectiveStats
-  lives: number;                   // 0..9; 0 = gone for the run
+  hp: number; // current; max derives from effectiveStats
+  lives: number; // 0..9; 0 = gone for the run
   weapon: EquipInstance | null;
   trinket: EquipInstance | null;
   tempMods: TempMod[];
-  energyNextBattle: number;        // consumed by next battle setup, then cleared
+  energyNextBattle: number; // consumed by next battle setup, then cleared
 }
 
 export interface ScoreCounters {
-  floorsCleared: number;           // ticks once per floor, on a victory at floorMap.bossId
+  floorsCleared: number; // ticks once per floor, on a victory at floorMap.bossId
   floorsReached: number;
   enemiesDefeated: number;
   bossesDefeated: number;
   catPiles: number;
-  shiniesCollected: number;        // lifetime-this-run (score), not the wallet
+  shiniesCollected: number; // lifetime-this-run (score), not the wallet
 }
 
 export interface RunState {
   runSeed: string;
-  floorNum: number;                // 1..6
-  cats: CatRunState[];             // FIXED order [bruiser, trickster, hexer, medic]
-  marchingOrder: ClassId[];        // living cats only, front→back
-  xp: number; level: number;       // 1..8
+  floorNum: number; // 1..6
+  cats: CatRunState[]; // FIXED order [bruiser, trickster, hexer, medic]
+  marchingOrder: ClassId[]; // living cats only, front→back
+  xp: number;
+  level: number; // 1..8
   inventory: Inventory;
   score: ScoreCounters;
-  firedEventIds: string[];         // run-scoped (for `once`)
-  floorFiredEventIds: string[];    // reset each floor
-  uniquesDropped: MewHookId[];     // mewthical downgrade rule
-  floorMap: FloorMap | null;       // regenerated on load — never saved
-  currentNodeId: number | null;    // where the party is standing
-  visitedNodeIds: number[];        // this floor only
+  firedEventIds: string[]; // run-scoped (for `once`)
+  floorFiredEventIds: string[]; // reset each floor
+  uniquesDropped: MewHookId[]; // mewthical downgrade rule
+  floorMap: FloorMap | null; // regenerated on load — never saved
+  currentNodeId: number | null; // where the party is standing
+  visitedNodeIds: number[]; // this floor only
   playTimeMs: number;
 }
 
@@ -687,13 +851,15 @@ export interface RunState {
 // ---- persistence (core/run/save.ts) ----
 export type SaveVersion = 1 | 2 | 3;
 
-export interface SaveFile {        // localStorage 'catrpg.save.v1' (a KEY, not a schema tag)
-  version: SaveVersion;            // written as 3; 1 and 2 are READ and migrated
-  run: Omit<RunState, 'floorMap'>; // the map regenerates from (runSeed, floorNum)
-  floorDelta?: unknown;            // v1/v2 only — dropped by the migration
+export interface SaveFile {
+  // localStorage 'catrpg.save.v1' (a KEY, not a schema tag)
+  version: SaveVersion; // written as 3; 1 and 2 are READ and migrated
+  run: Omit<RunState, "floorMap">; // the map regenerates from (runSeed, floorNum)
+  floorDelta?: unknown; // v1/v2 only — dropped by the migration
 }
 
-export interface MetaFile {        // localStorage 'catrpg.meta.v1' — records only, no unlocks
+export interface MetaFile {
+  // localStorage 'catrpg.meta.v1' — records only, no unlocks
   version: 1;
   counters: { runs: number; victories: number };
   records: { bestScore: number; fastestVictoryMs: number | null };
@@ -723,18 +889,28 @@ export declare const EQUIP_DEFS: Record<ItemId, EquipDef>;
 export declare const CONSUMABLES: Record<ItemId, ConsumableDef>;
 // content/lootTables.ts
 export declare const CONSUMABLE_WEIGHTS: { id: ItemId; weight: number }[]; // Σ = 100
-export declare const RARITY_WEIGHTS: Record<'f12' | 'f34' | 'f56', Record<Rarity, number>>;
-export declare const CHEST_DRAWS: { kind: 'consumable' | 'equipment' | 'shinyPile'; weight: number }[];
-export declare const BUNDLES: Record<'SNACK_STASH' | 'SHINY_HOARD' | 'GEAR' | 'GEAR_FANCY'
-                                   | 'TITHE' | 'MOULT', object>; // shapes per loot.md §5d
-export declare const STARTING_KIT: { shinies: number;
-  consumables: { defId: ItemId; count: number }[] }; // + stray L1 weapons equipped
+export declare const RARITY_WEIGHTS: Record<
+  "f12" | "f34" | "f56",
+  Record<Rarity, number>
+>;
+export declare const CHEST_DRAWS: {
+  kind: "consumable" | "equipment" | "shinyPile";
+  weight: number;
+}[];
+export declare const BUNDLES: Record<
+  "SNACK_STASH" | "SHINY_HOARD" | "GEAR" | "GEAR_FANCY" | "TITHE" | "MOULT",
+  object
+>; // shapes per loot.md §5d
+export declare const STARTING_KIT: {
+  shinies: number;
+  consumables: { defId: ItemId; count: number }[];
+}; // + stray L1 weapons equipped
 // content/events.ts
 export declare const EVENTS: GameEvent[];
 // content/floors.ts
-export declare const FLOORS: FloorConfig[];         // length 6, GDD §6 table
-export declare const XP_TO_LEVEL: number[];         // [0,30,70,130,210,310,430,570]
-export declare const LEVEL_CAP: number;             // 8
+export declare const FLOORS: FloorConfig[]; // length 6, GDD §6 table
+export declare const XP_TO_LEVEL: number[]; // [0,30,70,130,210,310,430,570]
+export declare const LEVEL_CAP: number; // 8
 ```
 
 ---
@@ -762,21 +938,21 @@ path that silently drops unlocks.
 ```ts
 // ui/sceneManager.ts (contract — UI-layer type, not in core/types.ts)
 export interface GameCtx {
-  run: RunState | null;            // THE shared mutable state; scenes communicate only through it
+  run: RunState | null; // THE shared mutable state; scenes communicate only through it
   scenes: SceneManager;
-  save(): void;                    // core/run/save.ts wrapper — called at the 5 autosave points
-  meta: MetaProfile;               // the Cat Town profile (core/meta), widened from MetaFile
+  save(): void; // core/run/save.ts wrapper — called at the 5 autosave points
+  meta: MetaProfile; // the Cat Town profile (core/meta), widened from MetaFile
 }
 
 export interface Scene {
   mount(root: Container, ctx: GameCtx, params?: unknown): void;
-  unmount(): void;                 // MUST destroy all owned display objects + tickers
-  update?(dtMs: number): void;     // called by the shared ticker while topmost
-  onKey?(key: string): boolean;    // true = consumed
+  unmount(): void; // MUST destroy all owned display objects + tickers
+  update?(dtMs: number): void; // called by the shared ticker while topmost
+  onKey?(key: string): boolean; // true = consumed
 }
 
 export interface SceneManager {
-  goto(id: SceneId, params?: unknown): void;       // full swap: unmount old, mount new
+  goto(id: SceneId, params?: unknown): void; // full swap: unmount old, mount new
   pushOverlay(id: OverlayId, params?: unknown): void;
   popOverlay(): void;
   current: SceneId;
@@ -866,7 +1042,8 @@ export function fnv1a(str: string): number {
   }
   return h >>> 0;
 }
-export const hash = (...parts: (string | number)[]): number => fnv1a(parts.join('|'));
+export const hash = (...parts: (string | number)[]): number =>
+  fnv1a(parts.join("|"));
 
 export function mulberry32(seed: number): Rng {
   let a = seed >>> 0;
@@ -878,30 +1055,32 @@ export function mulberry32(seed: number): Rng {
       t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
       return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
     },
-    int(lo, hi) { return lo + Math.floor(this.float() * (hi - lo + 1)); },
+    int(lo, hi) {
+      return lo + Math.floor(this.float() * (hi - lo + 1));
+    },
   };
 }
 ```
 
 `runSeed` is a **string** (user-entered or generated as 8 hex chars from
 `Math.random()` at title screen — the only place visual RNG feeds gameplay, and
-only to *pick* a seed).
+only to _pick_ a seed).
 
 ### Stream split table (complete — no other gameplay streams may exist)
 
-| Stream | Seed expression | Consumer | Consumption contract |
-|---|---|---|---|
-| `mapRng` | `mulberry32(hash(runSeed, floor, 'map'))` | `map/generate.ts` | the run map's dedicated stream (run-map-and-dm.md §2). Draw order: column count → per intermediate column its node count → per column pair, per left node: 1 span pick + 1 converge coin (both burned even when only one branch is legal) → entry node type → per intermediate node its type → 1 pick per MISSING guaranteed type. Same seed ⇒ same graph |
-| `nodeSeed` | `hash(runSeed, floor, 'node', nodeId)` | `map/encounter.ts`, `events/*`, `loot/roll.ts`, lazily on arrival | derived, never drawn — one fresh `mulberry32(node.seed)` per node, so what a node holds can never depend on the order nodes are visited. Pack rolls per dungeon.md §7.3 (budget roll, then 1 roll per pick) |
-| `battleRng` | `mulberry32(hash(runSeed, floor, encounterIndex))` | battle scene → all `core/combat` calls | `encounterIndex` = the map node's id (event fights: `1000 + nodeId`). Draw order per combat.md §3: initiative (cats R1→4, enemies R1→5) → per action per target: variance, crit, per-effect status chances (chance 1.0 draws nothing) → AI tie-breaks → flee. Re-engaging a fled pack restarts the same stream |
-| `chestSeed` | the treasure node's `nodeSeed` | `loot/roll.ts`, lazily at open | one fresh `mulberry32(chestSeed)` per open; roll order loot.md §5e |
-| `victorySeed` | `hash(runSeed, floor, 'loot', 100 + encounterIndex)` | `loot/roll.ts`, at victory screen | same roll-order contract |
-| `eventSeed` | the event node's `nodeSeed` | `events/select.ts` + `events/resolve.ts`, at trigger | draw order events.md §2.2: selection → outcome → per-`random`-target |
-| `shopRng` | `mulberry32(hash(runSeed, 'shop', n))` | `loot/shop.ts` per landing (n = floor just cleared) | stock rolls in loot.md §6 order |
-| `bossPickRng` | `mulberry32(hash(runSeed, 'bossPick'))` | `runState.ts` (SHOULD: Rat Prince alternate) | one roll per run |
+| Stream        | Seed expression                                      | Consumer                                                          | Consumption contract                                                                                                                                                                                                                                                                                                                                      |
+| ------------- | ---------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `mapRng`      | `mulberry32(hash(runSeed, floor, 'map'))`            | `map/generate.ts`                                                 | the run map's dedicated stream (run-map-and-dm.md §2). Draw order: column count → per intermediate column its node count → per column pair, per left node: 1 span pick + 1 converge coin (both burned even when only one branch is legal) → entry node type → per intermediate node its type → 1 pick per MISSING guaranteed type. Same seed ⇒ same graph |
+| `nodeSeed`    | `hash(runSeed, floor, 'node', nodeId)`               | `map/encounter.ts`, `events/*`, `loot/roll.ts`, lazily on arrival | derived, never drawn — one fresh `mulberry32(node.seed)` per node, so what a node holds can never depend on the order nodes are visited. Pack rolls per dungeon.md §7.3 (budget roll, then 1 roll per pick)                                                                                                                                               |
+| `battleRng`   | `mulberry32(hash(runSeed, floor, encounterIndex))`   | battle scene → all `core/combat` calls                            | `encounterIndex` = the map node's id (event fights: `1000 + nodeId`). Draw order per combat.md §3: initiative (cats R1→4, enemies R1→5) → per action per target: variance, crit, per-effect status chances (chance 1.0 draws nothing) → AI tie-breaks → flee. Re-engaging a fled pack restarts the same stream                                            |
+| `chestSeed`   | the treasure node's `nodeSeed`                       | `loot/roll.ts`, lazily at open                                    | one fresh `mulberry32(chestSeed)` per open; roll order loot.md §5e                                                                                                                                                                                                                                                                                        |
+| `victorySeed` | `hash(runSeed, floor, 'loot', 100 + encounterIndex)` | `loot/roll.ts`, at victory screen                                 | same roll-order contract                                                                                                                                                                                                                                                                                                                                  |
+| `eventSeed`   | the event node's `nodeSeed`                          | `events/select.ts` + `events/resolve.ts`, at trigger              | draw order events.md §2.2: selection → outcome → per-`random`-target                                                                                                                                                                                                                                                                                      |
+| `shopRng`     | `mulberry32(hash(runSeed, 'shop', n))`               | `loot/shop.ts` per landing (n = floor just cleared)               | stock rolls in loot.md §6 order                                                                                                                                                                                                                                                                                                                           |
+| `bossPickRng` | `mulberry32(hash(runSeed, 'bossPick'))`              | `runState.ts` (SHOULD: Rat Prince alternate)                      | one roll per run                                                                                                                                                                                                                                                                                                                                          |
 
 Rules: an `Rng` instance is created at the boundary (scene or run-state function)
-and passed *down* into core functions — core never seeds itself, which is what
+and passed _down_ into core functions — core never seeds itself, which is what
 makes every engine test drivable with a scripted `Rng`. Run-map traversal
 consumes **zero** RNG. Per-node derived seeds mean the order the party takes
 its routes in can never perturb any other system.
@@ -933,12 +1112,14 @@ packages then fan out again.
 
 ---
 
-### WP-01 · Foundation *(no dependencies — lands first, blocks everything)*
+### WP-01 · Foundation _(no dependencies — lands first, blocks everything)_
+
 **Files:** `src/core/types.ts`, `src/core/rng.ts`, `src/core/util.ts`,
 `tests/rng.spec.ts`, plus one-time project setup: vitest devDependency +
 `"test"` script in `package.json`, the `no-restricted-imports` rule in
 `eslint.config.mjs`.
 **Acceptance:**
+
 - `types.ts` compiles standalone and contains §2 verbatim (plus doc comments).
 - `hash('MEOW-1987', 1, 'gen')` and 10 first draws of its `mulberry32` recorded
   as known-answer test vectors; `int(lo,hi)` inclusive-bounds property test.
@@ -947,11 +1128,13 @@ packages then fan out again.
 - `npm test` and `npm run lint` green; lint fails on a planted `pixi.js` import
   in `src/core`.
 
-### WP-02 · Content *(deps: WP-01)*
+### WP-02 · Content _(deps: WP-01)_
+
 **Files:** all of `src/content/` (`classes.ts`, `skills.ts`, `enemies.ts`,
 `bosses.ts`, `equipment.ts`, `consumables.ts`, `lootTables.ts`, `events.ts`,
 `floors.ts`), `tests/content.spec.ts`.
 **Acceptance:**
+
 - Every table typechecks against §2.10. All cross-references resolve (skill ids
   on enemies/classes exist in `SKILLS`; event `encounter`/item ids exist;
   `'rat'`→`'ratThug'` fix applied; roombaScout uses dungeon.md's stat block).
@@ -962,10 +1145,12 @@ packages then fan out again.
 - Boss data: vacuumKing 140 HP/Poise 3, dogfather 200 HP/Poise 4 + porcelainHound
   escort, flags per GDD §6.
 
-### WP-03 · Combat engine *(deps: WP-01, WP-02)*
+### WP-03 · Combat engine _(deps: WP-01, WP-02)_
+
 **Files:** `src/core/combat/` (`setup.ts`, `state.ts`, `turns.ts`, `resolve.ts`,
 `status.ts`, `ai.ts`, `boss.ts`), `tests/combat.spec.ts`.
 **Acceptance:**
+
 - **combat.md §13 worked example reproduces exactly** (scripted `Rng` yielding the
   listed rolls → identical damage numbers, order, end state). This is the gate.
 - Pipeline order (damage→moveTarget→applies→moveSelf→pile check→death check),
@@ -977,12 +1162,14 @@ packages then fan out again.
 - Purity: same seed + same action script ⇒ identical `BattleEvent` log (deep-equal
   test); no `Math.random`, no pixi (lint).
 
-### WP-04 · Run-map engine *(deps: WP-01, WP-02)*
-*(Replaced the dungeon engine — `src/core/dungeon/*` and `tests/dungeon.spec.ts`
-are deleted. run-map-and-dm.md §2.)*
+### WP-04 · Run-map engine _(deps: WP-01, WP-02)_
+
+_(Replaced the dungeon engine — `src/core/dungeon/*` and `tests/dungeon.spec.ts`
+are deleted. run-map-and-dm.md §2.)_
 **Files:** `src/core/map/` (`types.ts`, `generate.ts`, `traverse.ts`,
 `encounter.ts`, `index.ts`), `tests/run-map.spec.ts`.
 **Acceptance:**
+
 - `generateFloorMap(runSeed, floor, cfg)` is a pure function of its arguments:
   the same triple gives a byte-identical `FloorMap`, and the map is never
   persisted — `deserializeRun` regenerates it.
@@ -999,10 +1186,12 @@ are deleted. run-map-and-dm.md §2.)*
   `encounterIndexOf(node) === node.id`, so the battle stream is
   `hash(runSeed, floor, nodeId)`.
 
-### WP-05 · Loot & economy engine *(deps: WP-01, WP-02)*
+### WP-05 · Loot & economy engine _(deps: WP-01, WP-02)_
+
 **Files:** `src/core/loot/` (`roll.ts`, `inventory.ts`, `shop.ts`),
 `tests/loot.spec.ts`.
 **Acceptance:**
+
 - Roll order per loot.md §5e (unneeded rolls skipped, not burned); rarity bands,
   slot 40/60, living-classes weapon pick, Mewthical unique-or-downgrade rule.
 - Value formulas §3 (primary/secondary, round half up) against a reference table;
@@ -1011,10 +1200,12 @@ are deleted. run-map-and-dm.md §2.)*
   1), grief loot on cat death, MOULT downgrade, full-inventory take/leave paths.
 - Shop stock roll from `shopRng` matches a recorded fixture for a known seed.
 
-### WP-06 · Events engine *(deps: WP-01, WP-02)*
+### WP-06 · Events engine _(deps: WP-01, WP-02)_
+
 **Files:** `src/core/events/` (`select.ts`, `resolve.ts`, `validate.ts`),
 `tests/events.spec.ts`.
 **Acceptance:**
+
 - `validate(EVENTS)` passes for shipped content and fails crafted violations of
   each of the 7 invariants.
 - Draw order §2.2 verified with instrumented Rng (selection → outcome →
@@ -1024,10 +1215,12 @@ are deleted. run-map-and-dm.md §2.)*
   tile consumed even on `nothing`/fled fight; `fightRequest` handed up unresolved;
   empty-pool shiny fallback.
 
-### WP-07 · Run state, progression & save *(deps: WP-01, WP-02)*
+### WP-07 · Run state, progression & save _(deps: WP-01, WP-02)_
+
 **Files:** `src/core/run/` (`runState.ts`, `party.ts`, `score.ts`, `save.ts`),
 `tests/run.spec.ts`.
 **Acceptance:**
+
 - `newRun(seed)`: starting kit, stray L1 weapons equipped, 20 ✦, default marching
   order, level 1.
 - `effectiveStats`: base + growth rows + equip + tempMods; spd floors at 1,
@@ -1037,15 +1230,17 @@ are deleted. run-map-and-dm.md §2.)*
 - `applyBattleResult`: hp/lives write-back, 0-Lives removal (marching order
   compression, grief loot via WP-05 API), score counters.
 - Save: `serialize(run) → deserialize → regenerate floor from seed + overlay
-  delta` round-trips to deep-equal `RunState` (for a mid-floor fixture);
+delta` round-trips to deep-equal `RunState` (for a mid-floor fixture);
   version-mismatch deletion; MetaFile records update; descend applies catnap heal
   `floor(0.25·maxHP)` and clears floor-scoped mods/event ids.
 - Score table matches gameloop.md §7 on hand-computed fixtures.
 
-### WP-08 · UI kit *(deps: WP-01, WP-02 — parallel with WP-03..07)*
+### WP-08 · UI kit _(deps: WP-01, WP-02 — parallel with WP-03..07)_
+
 **Files:** `src/ui/` (`palette.ts`, `layout.ts`, `textStyles.ts`, `tween.ts`,
 `widgets.ts`, `input.ts`), `src/ui/draw/` (`cats.ts`, `enemies.ts`, `glyphs.ts`).
 **Acceptance:**
+
 - `PAL`/`THEMES`/rects/text styles match ui-art.md §§2-3, 7-11 values exactly.
 - `drawCat` renders all 4 classes in both poses + mini-portrait + KO variant;
   `drawEnemy` renders all 4 families × size grades + boss extras; verified via a
@@ -1054,10 +1249,12 @@ are deleted. run-map-and-dm.md §2.)*
 - Tween helper: 3 eases, shake, fire-and-forget; widgets render per §6 spec.
 - No gameplay imports beyond `core/types.ts` + `content` palettes.
 
-### WP-09 · Shell: bootstrap, scene manager, meta screens *(deps: WP-07, WP-08)*
+### WP-09 · Shell: bootstrap, scene manager, meta screens _(deps: WP-07, WP-08)_
+
 **Files:** `src/main.ts`, `src/ui/sceneManager.ts`, `src/ui/scenes/boot.ts`,
 `title.ts`, `floorgen.ts`, `results.ts`, `src/ui/overlays/pause.ts`.
 **Acceptance:**
+
 - App boots to title at 60fps; letterbox scaling correct at arbitrary window
   sizes; FSM enforces the §3.1 transition table (gameloop.md §1's is superseded
   by run-map-and-dm.md — `explore` is now `runMap`).
@@ -1069,10 +1266,12 @@ are deleted. run-map-and-dm.md §2.)*
   Title; save deleted on entry; autosave fires at the five specified points via
   `ctx.save()`.
 
-### WP-10 · Run-map UI *(deps: core/map, WP-07, WP-08)*
-**Files:** `src/ui/scenes/runMap.ts`. *(Supersedes the explore/minimap/HUD trio
-of the tile crawl, all deleted — run-map-and-dm.md §2.)*
+### WP-10 · Run-map UI _(deps: core/map, WP-07, WP-08)_
+
+**Files:** `src/ui/scenes/runMap.ts`. _(Supersedes the explore/minimap/HUD trio
+of the tile crawl, all deleted — run-map-and-dm.md §2.)_
 **Acceptance:**
+
 - Renders any generated `FloorMap`: medallions positioned from `depth`/`row`,
   inked routes between them, the party marker on `currentNodeId`, and the
   terminal node telegraphed (halo + stairs badge + its own tooltip line).
@@ -1087,9 +1286,11 @@ of the tile crawl, all deleted — run-map-and-dm.md §2.)*
 - Fully playable with ZERO generated assets: procedural medallions, procedural
   state overlays and the palette-wash backdrop.
 
-### WP-11 · Battle UI *(deps: WP-03, WP-08)*
+### WP-11 · Battle UI _(deps: WP-03, WP-08)_
+
 **Files:** `src/ui/scenes/battle.ts`, `battleWidgets.ts`.
 **Acceptance:**
+
 - Full battle playable start-to-finish against any pack and both bosses using
   only `core/combat`'s public API + `BattleEvent` log (no rule logic in UI —
   verified by review).
@@ -1100,10 +1301,12 @@ of the tile crawl, all deleted — run-map-and-dm.md §2.)*
 - Animation queue drains ≥3 events/s; engine resolution never blocked; hotkeys
   1-6, R scatter (hidden vs bosses), arrows for move-swap.
 
-### WP-12 · Event, Landing & Loot UI *(deps: WP-05, WP-06, WP-07, WP-08)*
+### WP-12 · Event, Landing & Loot UI _(deps: WP-05, WP-06, WP-07, WP-08)_
+
 **Files:** `src/ui/scenes/event.ts`, `landing.ts`, `src/ui/overlays/loot.ts`,
 `inventoryPanel.ts`.
 **Acceptance:**
+
 - Event modal: geometry per ui-art §9, interaction per events.md §3 (hotkeys 1-4,
   Esc does nothing, grayed-but-visible gates, RESULT delta lines, `Fight!`
   handoff to battle scene).
@@ -1114,11 +1317,13 @@ of the tile crawl, all deleted — run-map-and-dm.md §2.)*
 - Inventory panel: 16-slot grid, per-cat equip/unequip with stat-delta preview,
   sort; opens from pause and from pickup.
 
-### WP-13 · The tabletop layer *(deps: WP-10, WP-11, WP-12)*
+### WP-13 · The tabletop layer _(deps: WP-10, WP-11, WP-12)_
+
 **Files:** `src/services/tabletop.ts` (pure), `src/services/dm.ts` (transport),
 `src/ui/overlays/tabletopBar.ts`, the `[T]` paths in `scenes/battle.ts` and
 `scenes/event.ts`, `tests/tabletop.spec.ts`; the agent itself in `agent/`.
 **Acceptance:**
+
 - **Offline-first is provable.** With no DM reachable the affordance is never
   built and both scenes are byte-identical to their pre-feature behaviour. The
   release gate plays a run with `VITE_DM_URL` pointed at a dead host.
@@ -1140,6 +1345,7 @@ of the tile crawl, all deleted — run-map-and-dm.md §2.)*
   the mirrors and the tests are gone, because a single constant cannot drift.
 
 ### Integration gate (owned by WP-09's implementer, after all packages merge)
+
 **Files:** `tests/integration.spec.ts`.
 **Acceptance:** headless scripted run (fixed seed): new run → generate floor 1's
 run map → walk entry → boss resolving each node → fight via scripted actions →
@@ -1158,12 +1364,12 @@ layering rules. Nothing here introduced a new `SceneId` or `OverlayId`.
 
 ### `src/core` — progression (pure, no pixi)
 
-| Module | Layer | What it owns |
-|---|---|---|
-| `core/run/party.ts` *(extended)* | core | `POINT_MENU` and the whisker-point API (`unspentPoints`, `canSpendPoint`, `spendPoint`, `clearPoints`, `pointStats`); milestone skill unlocks (`knownSkills`, `activeSkills`, `benchedSkills`, `setLoadout`, `LOADOUT_SIZE = 4`, slot 1 pinned to `BASIC_SKILL_ID`); `effectiveStats` now folds growth → points → **all three** equip slots → temp mods → clamps. |
-| `core/types.ts` *(extended)* | core | `EquipSlot = 'weapon' \| 'trinket' \| 'collar'` + `EQUIP_SLOTS`; `CatRunState.collar? / points? / loadout?` (all optional, so v1 saves load); `SaveVersion`. |
-| `core/loot/{inventory,roll,shop}.ts` | core | Slot-generic: equip/unequip/sort/grief walk `EQUIP_SLOTS`; `rollOneEquip` takes `{ slotWeights?, slot? }`; the Peddler stocks a guaranteed collar. |
-| `core/run/save.ts` | core | `SAVE_VERSION = 3`, `READABLE_SAVE_VERSIONS = [1,2,3]`, `migrateSave()` — v1 and v2 blobs load and are migrated forward, never rejected. v2→v3 drops the tile `FloorState`/`floorDelta` and restarts the party at the equivalent floor's entry node with party, gear, wallet and floor number intact. |
+| Module                               | Layer | What it owns                                                                                                                                                                                                                                                                                                                                                      |
+| ------------------------------------ | ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `core/run/party.ts` _(extended)_     | core  | `POINT_MENU` and the whisker-point API (`unspentPoints`, `canSpendPoint`, `spendPoint`, `clearPoints`, `pointStats`); milestone skill unlocks (`knownSkills`, `activeSkills`, `benchedSkills`, `setLoadout`, `LOADOUT_SIZE = 4`, slot 1 pinned to `BASIC_SKILL_ID`); `effectiveStats` now folds growth → points → **all three** equip slots → temp mods → clamps. |
+| `core/types.ts` _(extended)_         | core  | `EquipSlot = 'weapon' \| 'trinket' \| 'collar'` + `EQUIP_SLOTS`; `CatRunState.collar? / points? / loadout?` (all optional, so v1 saves load); `SaveVersion`.                                                                                                                                                                                                      |
+| `core/loot/{inventory,roll,shop}.ts` | core  | Slot-generic: equip/unequip/sort/grief walk `EQUIP_SLOTS`; `rollOneEquip` takes `{ slotWeights?, slot? }`; the Peddler stocks a guaranteed collar.                                                                                                                                                                                                                |
+| `core/run/save.ts`                   | core  | `SAVE_VERSION = 3`, `READABLE_SAVE_VERSIONS = [1,2,3]`, `migrateSave()` — v1 and v2 blobs load and are migrated forward, never rejected. v2→v3 drops the tile `FloorState`/`floorDelta` and restarts the party at the equivalent floor's entry node with party, gear, wallet and floor number intact.                                                             |
 
 ### `src/ui` — the shared chrome kit and the screens built on it
 
@@ -1173,15 +1379,15 @@ picks its own font size, or invents a colour or gap** — everything resolves to
 with a procedural fallback, so the whole UI still renders with zero generated
 assets.
 
-| Module | Layer | What it owns |
-|---|---|---|
-| `ui/widgets.ts` *(extended)* | ui | The kit: `panel` (solid/glass/raised), `avatar`/`enemyAvatar`, `bar` (hp/energy/xp/poise), `heading`/`label`, `button`, `vignette`, `scrim`, `sceneBackdrop`. All fail-soft — a missing texture degrades, never throws. |
-| `ui/palette.ts`, `ui/textStyles.ts`, `ui/layout.ts` *(extended)* | ui | The design tokens the kit resolves against: `PAL.sheen/shadow/glass/xp` + `mix()`; `TYPE` scale + `headingStyle`/`labelStyle`; `RADIUS.avatar/.bar` + `SPACE`. |
-| `ui/overlays/progressPanel.ts` **(new)** | ui | THE DEN — an *embeddable* panel (same shape as `inventoryPanel.ts`, hosted by both the Landing and the pause overlay, hence no new `OverlayId`). Its view-model half (`buildStatRows`, `buildPointRows`, `buildSkillRows`, `buildGearRows`, `assignToSlot`, `buildLevelUpSummary`, …) is pure and unit-tested headless; the pixi half is `makeProgressPanel` / `makeDenBox` / `makeLevelUpCard`. |
-| `ui/scenes/battleWidgets.ts` *(rewritten)* | ui | `makeBattleStage(floorNum)` — painted `scene:battle:<n>` backdrop, parallax, ground pool, contact shadows, presence auras — plus every re-chromed HUD widget. Falls back to a fully drawn stage when the painting is absent. |
-| `ui/overlays/tabletopBar.ts` **(new)** | ui | The "what do you do?" card, shared by battle and event. A DOM `<input>` positioned through main.ts's own letterbox transform, the prompt echoed back, the DM's reply streamed in, and a per-phase card height. Renders and collects text; decides nothing. |
-| `services/dm.ts`, `services/tabletop.ts` **(new)** | services | The DM transport (eve's four HTTP routes, one durable session per run, `null` on any failure) and the pure half (verdict contracts, the client-side re-lint, the cap mirrors, the transcript). `eve/client` and zod are deliberately not shipped to the browser. |
-| `ui/scenes/runMap.ts` **(new)** | ui | THE floor screen. Owns the board geometry, the medallion/overlay vocabulary (painted `node:*` first, procedural fallback second), the route-line states, the party marker's edge walk, and the node → scene dispatch. *(It replaced `explore.ts`, `exploreHud.ts`, `exploreLayout.ts`, `exploreAtmosphere.ts`, `minimap.ts` and `draw/mapIcons.ts`, all deleted with the tile crawl.)* |
+| Module                                                           | Layer    | What it owns                                                                                                                                                                                                                                                                                                                                                                                     |
+| ---------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ui/widgets.ts` _(extended)_                                     | ui       | The kit: `panel` (solid/glass/raised), `avatar`/`enemyAvatar`, `bar` (hp/energy/xp/poise), `heading`/`label`, `button`, `vignette`, `scrim`, `sceneBackdrop`. All fail-soft — a missing texture degrades, never throws.                                                                                                                                                                          |
+| `ui/palette.ts`, `ui/textStyles.ts`, `ui/layout.ts` _(extended)_ | ui       | The design tokens the kit resolves against: `PAL.sheen/shadow/glass/xp` + `mix()`; `TYPE` scale + `headingStyle`/`labelStyle`; `RADIUS.avatar/.bar` + `SPACE`.                                                                                                                                                                                                                                   |
+| `ui/overlays/progressPanel.ts` **(new)**                         | ui       | THE DEN — an _embeddable_ panel (same shape as `inventoryPanel.ts`, hosted by both the Landing and the pause overlay, hence no new `OverlayId`). Its view-model half (`buildStatRows`, `buildPointRows`, `buildSkillRows`, `buildGearRows`, `assignToSlot`, `buildLevelUpSummary`, …) is pure and unit-tested headless; the pixi half is `makeProgressPanel` / `makeDenBox` / `makeLevelUpCard`. |
+| `ui/scenes/battleWidgets.ts` _(rewritten)_                       | ui       | `makeBattleStage(floorNum)` — painted `scene:battle:<n>` backdrop, parallax, ground pool, contact shadows, presence auras — plus every re-chromed HUD widget. Falls back to a fully drawn stage when the painting is absent.                                                                                                                                                                     |
+| `ui/overlays/tabletopBar.ts` **(new)**                           | ui       | The "what do you do?" card, shared by battle and event. A DOM `<input>` positioned through main.ts's own letterbox transform, the prompt echoed back, the DM's reply streamed in, and a per-phase card height. Renders and collects text; decides nothing.                                                                                                                                       |
+| `services/dm.ts`, `services/tabletop.ts` **(new)**               | services | The DM transport (eve's four HTTP routes, one durable session per run, `null` on any failure) and the pure half (verdict contracts, the client-side re-lint, the cap mirrors, the transcript). `eve/client` and zod are deliberately not shipped to the browser.                                                                                                                                 |
+| `ui/scenes/runMap.ts` **(new)**                                  | ui       | THE floor screen. Owns the board geometry, the medallion/overlay vocabulary (painted `node:*` first, procedural fallback second), the route-line states, the party marker's edge walk, and the node → scene dispatch. _(It replaced `explore.ts`, `exploreHud.ts`, `exploreLayout.ts`, `exploreAtmosphere.ts`, `minimap.ts` and `draw/mapIcons.ts`, all deleted with the tile crawl.)_           |
 
 ### Generated art contract
 

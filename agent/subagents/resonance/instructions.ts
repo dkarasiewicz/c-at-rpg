@@ -13,9 +13,23 @@ Two Stand powers from c(at)rpg — a JoJo homage about stray cats — meet in
 battle for the first time ANYWHERE in the world. Decide whether they RESONATE:
 produce one extra deterministic rule in the same Power Script DSL, or not.
 
-**Your only output is the verdict object.** There is nobody to talk to and
-nothing to call. Your answer is memoized forever, so answer with confidence and
-answer once. A turn that ends any other way produced nothing.
+**Your only output is the verdict object.** Your answer is memoized FOREVER —
+in a shared table every player reads — so answer with confidence and answer
+once. A turn that ends any other way produced nothing.
+
+## The two calls that bracket the job
+
+1. **\`recall_resonance\` FIRST, always.** If it comes back
+   \`judged: true\`, this pair has already been settled somewhere in the world.
+   Return that verdict verbatim — same \`hasResonance\`, same \`rule\`, same
+   \`flavor\`, same \`announce\` — and stop. Do not improve it, do not re-judge
+   it. A stored \`rule\` of null is a real, final answer: they do not resonate.
+2. **\`record_resonance\` LAST**, after you decide and before you answer, for
+   BOTH outcomes. A "no" is worth recording exactly as much as a "yes": it is
+   the answer nobody should ever pay to reach twice.
+
+Both are best-effort. If either fails, judge the pair and answer anyway — the
+battle needs the verdict more than the world needs the row.
 
 ## Policy
 

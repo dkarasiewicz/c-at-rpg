@@ -13,6 +13,7 @@
 import type {
   BattleResult,
   CatClass,
+  CatId,
   CatRunState,
   ClassId,
   EquipDef,
@@ -26,6 +27,8 @@ import type {
   Stats,
 } from "../types.js";
 import type { PowerScript } from "../combat/powerTypes.js";
+import { CLASSES } from "../../content/classes.js";
+import { CAT_POWERS } from "../../content/powers.js";
 import { EQUIP_DEFS } from "../../content/equipment.js";
 import { FLOORS } from "../../content/floors.js";
 import { STARTING_KIT } from "../../content/lootTables.js";
@@ -48,11 +51,12 @@ import {
 } from "./party.js";
 
 /**
- * Fixed party SLOT order (types.ts §2.9). Every classId-keyed system still
- * indexes off this — it is the shape of `RunState.cats`, which always carries
- * all four slots. What changed (balance-and-meta.md §2) is that a run no
- * longer FIELDS all four: `marchingOrder` is the recruited roster, and cats
- * outside it are on the bench, waiting to be recruited.
+ * The four authored classes, in display order (classes.md §9). This is NO
+ * LONGER the shape of `RunState.cats` — since roster-and-persistence.md §1 a
+ * run carries the cat INSTANCES that descended, however many that is, and
+ * class is an attribute of each. What survives here is what the name always
+ * meant underneath: the canonical ordering of the class table, used by the
+ * party creator's slot mapping and by the town when it seeds a roster.
  */
 export const PARTY_ORDER: readonly ClassId[] = [
   "bruiser",
@@ -95,85 +99,101 @@ export function partyCapacity(run: RunState): number {
 const clampInt = (v: number, lo: number, hi: number): number =>
   Math.max(lo, Math.min(hi, Math.round(v)));
 
+/** THE lookup — every classId-keyed `find` in the old engine became this. */
+export function catById(run: RunState, id: CatId): CatRunState | undefined {
+  return run.cats.find((c) => c.id === id);
+}
+
 /** The cats actually in the formation, front→back (== `marchingOrder`). */
 export function fieldedCats(run: RunState): CatRunState[] {
   const out: CatRunState[] = [];
-  for (const classId of run.marchingOrder) {
-    const cat = run.cats.find((c) => c.classId === classId);
+  for (const id of run.marchingOrder) {
+    const cat = catById(run, id);
     if (cat && cat.lives > 0) out.push(cat);
   }
   return out;
 }
 
 /**
- * Cats this run is ALLOWED to field at all (balance-and-meta.md §4).
- *
- * `RunState.cats` always carries all four slots — every classId-keyed system
- * depends on that — but the town decides which of them actually live there.
- * `startRun` stamps the overlay's class pool onto the run; a run with no
- * stamp (a bare `newRun`, an old save) may field anyone, which is the
- * pre-Cat-Town behaviour.
+ * The CLASSES represented on this descent. Kept because several screens ask
+ * "does the party contain a hexer?" — a class question, which class-as-an-
+ * attribute answers by scanning the instances instead of consulting a table.
  */
 export function rosterClasses(run: RunState): readonly ClassId[] {
-  const allowed = run.eligibleClasses;
-  if (!allowed || allowed.length === 0) return PARTY_ORDER;
-  // whoever is already marching stays legal no matter what: a save written
-  // before a class was un-listed must never lose a cat mid-run.
-  return PARTY_ORDER.filter(
-    (id) => allowed.includes(id) || run.marchingOrder.includes(id),
-  );
+  const seen: ClassId[] = [];
+  for (const c of run.cats) {
+    if (c.lives > 0 && !seen.includes(c.classId)) seen.push(c.classId);
+  }
+  return seen;
 }
 
 /**
- * Cats this run could still recruit: alive, not already fielded, LIVING IN
- * TOWN (`rosterClasses`), in slot order. Empty once the roster is full or
- * everyone has been taken.
- *
- * The town gate is the point: without it the mid-run third cat could be a
- * class Cat Town has not bought, handing out an unlock for free.
+ * Cats that came along but are not in the formation. Normally EMPTY: since
+ * the roster screen (roster-and-persistence.md §3) the player picks who
+ * descends in town, so everyone who descended is fielded. It stays non-empty
+ * for exactly two cases, and both matter:
+ *   - a v3 save migrated forward, which carried all four class slots;
+ *   - a cat pushed past capacity by a custom party.
  */
 export function benchedCats(run: RunState): CatRunState[] {
-  const allowed = rosterClasses(run);
   return run.cats.filter(
-    (c) =>
-      c.lives > 0 &&
-      !run.marchingOrder.includes(c.classId) &&
-      allowed.includes(c.classId),
+    (c) => c.lives > 0 && !run.marchingOrder.includes(c.id),
   );
+}
+
+/** Is there room in the formation for one more cat? */
+export function hasRoom(run: RunState): boolean {
+  return fieldedCats(run).length < partyCapacity(run);
 }
 
 /** Is there both room in the formation and somebody left to fill it? */
 export function canRecruit(run: RunState): boolean {
-  return (
-    fieldedCats(run).length < partyCapacity(run) && benchedCats(run).length > 0
-  );
+  return hasRoom(run) && benchedCats(run).length > 0;
 }
 
 /**
- * THE recruit API — the seam a recruit encounter (or Cat Town) calls.
- * Adds one benched cat to the back of the marching order. `classId` picks a
- * specific cat; omitted takes the first on the bench. Returns the same run
- * untouched with `recruited: null` when the roster is full, the cat is
- * unknown/dead, or it is already fielded, so callers can fire and forget.
+ * THE recruit API — the seam a recruit encounter (or a migrated save's
+ * mid-run join) calls, and the one that had ZERO call sites before the
+ * roster screen existed (roster-and-persistence.md §0).
+ *
+ * `who` is either a cat ALREADY in `run.cats` (by id) or a brand-new
+ * instance to add to the descent — the shape a "a stray follows you home"
+ * encounter hands over. Omitted takes the first benched cat. Returns the run
+ * untouched with `recruited: null` when the formation is full, the cat is
+ * unknown/dead, or it is already marching, so callers can fire and forget.
  *
  * The recruit joins at FULL HP for the party's current level: a cat that
- * shows up on floor 3 is a floor-3 cat, not a level-1 one — `RunState.cats`
- * has been levelling all four slots the whole time (`applyLevelUps`).
+ * shows up on floor 3 is a floor-3 cat, not a level-1 one.
  */
 export function recruitCat(
   run: RunState,
-  classId?: ClassId,
-): { run: RunState; recruited: ClassId | null } {
-  if (!canRecruit(run)) return { run, recruited: null };
+  who?: CatId | CatRunState,
+): { run: RunState; recruited: CatId | null } {
+  if (!hasRoom(run)) return { run, recruited: null };
+
+  // a fresh instance: it joins the descent AND the formation
+  if (who !== undefined && typeof who !== "string") {
+    if (catById(run, who.id)) return recruitCat(run, who.id);
+    const joined: CatRunState = { ...who, hp: maxHp(who, run.level) };
+    return {
+      run: {
+        ...run,
+        cats: [...run.cats, joined],
+        marchingOrder: [...run.marchingOrder, joined.id],
+      },
+      recruited: joined.id,
+    };
+  }
+
   const bench = benchedCats(run);
-  const pick = classId ? bench.find((c) => c.classId === classId) : bench[0];
+  const pick = who !== undefined ? bench.find((c) => c.id === who) : bench[0];
   if (!pick) return { run, recruited: null };
   const cats = run.cats.map((c) =>
-    c.classId === pick.classId ? { ...c, hp: maxHp(c, run.level) } : c,
+    c.id === pick.id ? { ...c, hp: maxHp(c, run.level) } : c,
   );
   return {
-    run: { ...run, cats, marchingOrder: [...run.marchingOrder, pick.classId] },
-    recruited: pick.classId,
+    run: { ...run, cats, marchingOrder: [...run.marchingOrder, pick.id] },
+    recruited: pick.id,
   };
 }
 
@@ -228,10 +248,11 @@ declare module "../types" {
      */
     partyCapacity?: number;
     /**
-     * Which classes this run may field or RECRUIT — the town's class pool,
-     * stamped in by `core/meta/startRun`. Absent ⇒ all four (a bare
-     * `newRun`, a save from before Cat Town). Core never imports core/meta;
-     * the overlay writes the answer down here and `benchedCats` reads it.
+     * Which classes the TOWN houses, stamped in by `core/meta/startRun` —
+     * informational since the roster became instance-based (who descends is
+     * `run.cats`, decided in town, not derived from a class gate). Kept
+     * because the DM and the event layer ask "what could this player have
+     * fielded?", and because dropping it would break v3 saves for nothing.
      */
     eligibleClasses?: ClassId[];
   }
@@ -250,6 +271,12 @@ const zeroScore = (): ScoreCounters => ({
   shiniesCollected: 0,
 });
 
+/** Every equipment uid a cat is wearing (0 when it wears nothing). */
+const equipUids = (cat: CatRunState): number[] =>
+  [cat.weapon, cat.trinket, cat.collar ?? null]
+    .filter((e): e is EquipInstance => e !== null && e !== undefined)
+    .map((e) => e.uid);
+
 function weaponDefFor(classId: ClassId): EquipDef {
   const def = Object.values(EQUIP_DEFS).find(
     (d) => d.slot === "weapon" && d.classId === classId,
@@ -259,35 +286,75 @@ function weaponDefFor(classId: ClassId): EquipDef {
 }
 
 /**
- * A fresh run (gameloop RUN_INIT). All four ClassId slots exist in `cats` at
- * level 1, 9 Lives and full HP each, wearing their Stray L1 class weapons
- * (`atk +2`, fixed — no rolls, loot.md §6); starting kit 20 ✦ + 2 Tuna Snacks
- * + 1 Cardboard Box. The run map is NOT generated yet — FLOORGEN calls
- * `generateCurrentFloorMap` (floorNum starts at 1, floorsReached counts it as
- * entered).
+ * The Stand a Stray carries. Reads the stock Power table so the town and the
+ * battle log can never disagree about what a cat's Stand is called.
+ */
+export function standNameFor(classId: ClassId): string | undefined {
+  return CAT_POWERS[classId]?.name;
+}
+
+/**
+ * A freshly minted L1 instance of a class, wearing its Stray L1 class weapon
+ * (`atk +2`, fixed — no rolls, loot.md §6). `id`/`name` default to the class
+ * (see `CatId`): one of each is what a fresh town houses.
+ */
+export function makeCat(
+  classId: ClassId,
+  opts?: { id?: CatId; name?: string; standName?: string; weaponUid?: number },
+): CatRunState {
+  const uid = opts?.weaponUid ?? PARTY_ORDER.indexOf(classId) + 1;
+  const stand = opts?.standName ?? standNameFor(classId);
+  const cat: CatRunState = {
+    id: opts?.id ?? classId,
+    name: opts?.name ?? CLASSES[classId].catName,
+    ...(stand !== undefined ? { standName: stand } : {}),
+    classId,
+    hp: 0,
+    lives: 9,
+    weapon: makeEquipInstance(uid, weaponDefFor(classId).id, 1, "stray"),
+    trinket: null,
+    tempMods: [],
+    energyNextBattle: 0,
+  };
+  cat.hp = maxHp(cat, 1);
+  return cat;
+}
+
+/**
+ * A fresh run (gameloop RUN_INIT). The run map is NOT generated yet —
+ * FLOORGEN calls `generateCurrentFloorMap` (floorNum starts at 1,
+ * floorsReached counts it as entered); starting kit 20 ✦ + 2 Tuna Snacks +
+ * 1 Cardboard Box.
  *
- * WHAT IS FIELDED IS TWO CATS (balance-and-meta.md §2): Bruno plus one drawn
- * from the run seed, so the opening is fragile and the run earns its clowder.
- * The rest sit on the bench until `recruitCat` takes them. The draw runs off
- * its own `hash(runSeed, 'roster')` stream — never the map or battle streams
- * — so adding it cannot shift any other seeded sequence.
+ * WHO DESCENDS is `opts.cats` — the instances Cat Town's roster screen chose
+ * (roster-and-persistence.md §3), already levelled and geared, in marching
+ * order. THEY ARE THE WHOLE PARTY: nobody sits on a bench any more, because
+ * the choice happened in town where the player could see it.
+ *
+ * With `opts.cats` ABSENT this is the pre-instance engine, byte for byte: all
+ * four Strays exist in `cats` at level 1 with 9 Lives, and the formation is
+ * Bruno plus one drawn from `hash(runSeed, 'roster')` — its own stream, so
+ * the draw can never shift the map or battle sequences. That path is what the
+ * fixtures, the party creator and every direct-start smoke hook still use.
  *
  * `customParty` (optional, additive): a party-creator run records its
  * GM-generated kits. NOTE the caller must have overlaid the kits onto the
  * content tables BEFORE calling (ui/scenes/partyCreator.ts applyPartyContent)
- * so starting HP derives from the custom base stats; kits still occupy the
- * four fixed ClassId slots, and the run still fields only two of them.
+ * so starting HP derives from the custom base stats.
  *
- * `opts.partyCapacity` is Cat Town's hook (§4); `opts.roster` lets a caller
- * (tests, the hub, a debug menu) name the exact starting formation.
+ * `opts.partyCapacity` is Cat Town's hook (§4); `opts.roster` names the exact
+ * starting formation on the legacy path.
  */
 export function newRun(
   runSeed: string,
   customParty?: CustomCatKit[],
   opts?: {
     partyCapacity?: number;
+    /** THE roster: the instances that descend, front→back. */
+    cats?: readonly CatRunState[];
+    /** Legacy path only — which of the four Strays start fielded. */
     roster?: readonly ClassId[];
-    /** The classes the town has; absent ⇒ all four (see `rosterClasses`). */
+    /** The classes the town houses (informational — see `RunState`). */
     eligibleClasses?: readonly ClassId[];
   },
 ): RunState {
@@ -297,39 +364,34 @@ export function newRun(
     inventory = addConsumables(inventory, c.defId, c.count).inv;
   }
 
-  const cats: CatRunState[] = PARTY_ORDER.map((classId, i) => {
-    const weapon = makeEquipInstance(
-      i + 1,
-      weaponDefFor(classId).id,
-      1,
-      "stray",
-    );
-    const cat: CatRunState = {
-      classId,
-      hp: 0,
-      lives: 9,
-      weapon,
-      trinket: null,
-      tempMods: [],
-      energyNextBattle: 0,
-    };
-    cat.hp = maxHp(cat, 1);
-    return cat;
-  });
-  inventory = { ...inventory, nextUid: PARTY_ORDER.length + 1 };
+  const chosen = opts?.cats;
+  const cats: CatRunState[] = chosen
+    ? chosen.map((c) => ({ ...c }))
+    : PARTY_ORDER.map((classId) => makeCat(classId));
+  // Town-supplied cats bring their own gear with their own uids; the four
+  // seeded Strays consumed uid 1..4 above.
+  inventory = {
+    ...inventory,
+    nextUid: chosen
+      ? Math.max(1, ...cats.flatMap(equipUids)) + 1
+      : PARTY_ORDER.length + 1,
+  };
 
   const score = zeroScore();
   score.floorsReached = 1;
 
-  // The starting formation: Bruno, then one of the other three drawn from the
-  // roster stream. An explicit `opts.roster` overrides the draw entirely.
+  // The starting formation. Town-chosen cats ARE the formation; otherwise
+  // Bruno plus one of the other three, drawn from the roster stream (an
+  // explicit `opts.roster` overrides the draw entirely).
   const second =
     SECOND_CAT_POOL[
       mulberry32(hash(runSeed, "roster")).int(0, SECOND_CAT_POOL.length - 1)
     ];
-  const marchingOrder: ClassId[] = opts?.roster
-    ? opts.roster.filter((id) => PARTY_ORDER.includes(id)).slice()
-    : ["bruiser", second];
+  const marchingOrder: CatId[] = chosen
+    ? cats.map((c) => c.id)
+    : opts?.roster
+      ? opts.roster.filter((id) => PARTY_ORDER.includes(id)).slice()
+      : ["bruiser", second];
 
   return {
     runSeed,
@@ -432,14 +494,16 @@ export function catnapHeal(
  *  3. floorNum+1, floorsReached+1, floor-scoped fired-event ids reset,
  *  4. the new floor's run map generates from the seed and the party is
  *     placed on its entry node (traversal state resets with the floor),
- *  5. arriving on `RECRUIT_FLOOR` with room in the formation, a benched cat
- *     joins (balance-and-meta.md §2's mid-run recruit).
+ *  5. arriving on `RECRUIT_FLOOR` with room in the formation AND somebody on
+ *     the bench, that cat joins.
  * `energyNextBattle` grants persist — they are consumed by the next battle
  * setup, whenever that happens.
  *
- * The floor-3 recruit is the FLOOR of what the run gets, not the ceiling: a
- * recruit encounter or Cat Town can call `recruitCat` at any time, and this
- * step then finds the roster already full and does nothing.
+ * Step 5 is now a NO-OP on a normal descent, and that is the point: the
+ * player picks who comes along in town (roster-and-persistence.md §3), so
+ * there is no bench for the dungeon to hand out from. It survives for the
+ * one case that still has one — a v3 save migrated forward, which carried all
+ * four class slots and expects its third cat on floor 3.
  */
 export function descend(run: RunState): RunState {
   if (run.floorNum >= FLOOR_COUNT) {
@@ -471,8 +535,12 @@ export function descend(run: RunState): RunState {
 
 export interface ApplyBattleOutput {
   run: RunState;
-  /** classIds that hit 0 Lives in this battle (gone for the run) */
-  died: ClassId[];
+  /**
+   * The cats that hit 0 Lives in this battle. Gone for the run here, and
+   * gone FOREVER once the town buries them (`buryRun`, core/meta/roster.ts) —
+   * this is the event perma-death hangs off.
+   */
+  died: CatRunState[];
   /** their equipment, now in the shared inventory (grief loot) */
   griefLoot: EquipInstance[];
   /** grief pieces that found no inventory slot (dropped to the tile) */
@@ -506,8 +574,15 @@ export function applyBattleResult(
   nodeId?: number,
 ): ApplyBattleOutput {
   // 1. hp/lives write-back (post-standup values), energyNextBattle cleared.
+  //    Matched by INSTANCE id; a result row without one (a hand-built fixture
+  //    from before instances) falls back to the class, which is unambiguous
+  //    exactly when the run has one cat of that class — the fixture case.
   let cats: CatRunState[] = run.cats.map((cat) => {
-    const r = result.cats.find((c) => c.classId === cat.classId);
+    const r =
+      result.cats.find((c) => c.catId === cat.id) ??
+      result.cats.find(
+        (c) => c.catId === undefined && c.classId === cat.classId,
+      );
     if (!r) return cat;
     return { ...cat, hp: r.hp, lives: r.lives, energyNextBattle: 0 };
   });
@@ -528,22 +603,26 @@ export function applyBattleResult(
   const levelAfter = levelForXp(xp);
   cats = applyLevelUps(cats, run.level, levelAfter);
 
-  // 4. deaths: marching-order compression + grief loot.
-  const died: ClassId[] = [];
+  // 4. deaths: marching-order compression + grief loot. The gear goes into
+  //    the shared backpack, which is what carries it home — see `buryRun`:
+  //    losing the cat is permanent, losing the gear too would make a small
+  //    roster unrecoverable.
+  const died: CatRunState[] = [];
   const griefLoot: EquipInstance[] = [];
   const griefOverflow: EquipInstance[] = [];
   let inventory = run.inventory;
   cats = cats.map((cat) => {
     if (cat.lives > 0) return cat;
-    if (!run.marchingOrder.includes(cat.classId)) return cat; // already gone
-    died.push(cat.classId);
+    if (!run.marchingOrder.includes(cat.id)) return cat; // already gone
     const g = applyGriefLoot(cat, inventory);
     inventory = g.inv;
     griefLoot.push(...g.dropped);
     griefOverflow.push(...g.overflow);
+    died.push(g.cat);
     return g.cat;
   });
-  const marchingOrder = run.marchingOrder.filter((id) => !died.includes(id));
+  const deadIds = died.map((c) => c.id);
+  const marchingOrder = run.marchingOrder.filter((id) => !deadIds.includes(id));
 
   // 5. score counters.
   const score: ScoreCounters = {

@@ -15,11 +15,18 @@
  * versions migrate forward instead — a v1/v2 (tile-dungeon) save loads into a
  * freshly generated run map at the same floor rather than being thrown away.
  */
-import type { RunState, SaveFile, SaveVersion } from "../types.js";
+import type {
+  CatRunState,
+  ClassId,
+  RunState,
+  SaveFile,
+  SaveVersion,
+} from "../types.js";
 import type { MetaProfile } from "../meta/types.js";
+import { CLASSES } from "../../content/classes.js";
 import { generateFloorMap } from "../map/generate.js";
 import { META_VERSION, emptyProfile, migrateMeta } from "../meta/profile.js";
-import { enterFloorMap, floorConfig } from "./runState.js";
+import { enterFloorMap, floorConfig, standNameFor } from "./runState.js";
 
 export const SAVE_KEY = "catrpg.save.v1";
 export const META_KEY = "catrpg.meta.v1";
@@ -28,15 +35,17 @@ export const META_KEY = "catrpg.meta.v1";
  * Current save schema (docs/design/progression.md §5, run-map-and-dm.md §2).
  *   v1 — pre-progression: no Whisker Points, no loadouts, no collar slot.
  *   v2 — pre-run-map: the tile dungeon, saved as `run.floor` + a FloorDelta.
- *   v3 — current. The run map replaces the maze: `floorMap` regenerates and
- *        `currentNodeId` / `visitedNodeIds` carry the traversal.
+ *   v3 — pre-instance: the run map, but `cats` was four fixed ClassId slots
+ *        and `marchingOrder` held class ids.
+ *   v4 — current. Cats are INSTANCES (roster-and-persistence.md §1):
+ *        `marchingOrder` holds `CatId`s and every cat carries `id`/`name`.
  * The localStorage KEY deliberately keeps its `.v1` name — it is a key, not a
  * schema tag, and renaming it would orphan every save on disk.
  */
-export const SAVE_VERSION = 3;
+export const SAVE_VERSION = 4;
 
 /** Versions `loadRun` will accept and migrate forward. */
-export const READABLE_SAVE_VERSIONS: readonly SaveVersion[] = [1, 2, 3];
+export const READABLE_SAVE_VERSIONS: readonly SaveVersion[] = [1, 2, 3, 4];
 
 /* ------------------------------------------------------------------ */
 /* storage adapter                                                     */
@@ -99,10 +108,17 @@ export function serializeRun(run: RunState): SaveFile {
   return { version: SAVE_VERSION, run: rest };
 }
 
+/** A stored cat: pre-v4 blobs have no `id`/`name`. */
+type StoredCat = Omit<CatRunState, "id" | "name"> & {
+  id?: string;
+  name?: string;
+};
+
 /** The loose shape a stored `run` object really has before migration. */
-type StoredRun = Partial<Omit<RunState, "floorMap">> & {
+type StoredRun = Omit<Partial<Omit<RunState, "floorMap">>, "cats"> & {
   runSeed?: unknown;
   floorNum?: unknown;
+  cats?: StoredCat[];
   /** v1/v2 only: the live tile FloorState, dropped by the v2→v3 migration. */
   floor?: unknown;
 };
@@ -122,6 +138,14 @@ type StoredRun = Partial<Omit<RunState, "floorMap">> & {
  * from the seed and lands the party on its entry node. The party keeps its
  * HP, Lives, XP, gear, wallet and floor number; it loses only its position
  * inside a dungeon that no longer exists.
+ *
+ * v3 → v4 (roster-and-persistence.md §1): cats become INSTANCES. A v3 cat
+ * was identified by its class, so it becomes the instance whose id IS that
+ * class — the same identity, written down — and `marchingOrder`, which held
+ * class ids, is already a list of those ids and needs no rewriting at all.
+ * That is not an accident: `CatId` was defined so this migration is a
+ * relabelling and a mid-run save keeps its party, its bench and its floor 3
+ * recruit exactly as it left them.
  */
 export function migrateSave(sf: SaveFile): SaveFile | null {
   if (!sf || typeof sf !== "object" || !sf.run) return null;
@@ -129,13 +153,36 @@ export function migrateSave(sf: SaveFile): SaveFile | null {
   if (sf.version === SAVE_VERSION) return sf;
 
   const carried: StoredRun = { ...(sf.run as StoredRun) };
+  const preMap = sf.version < 3;
   delete carried.floor; // the tile FloorState a v1/v2 blob carried inline
   const run = {
     ...carried,
-    currentNodeId: null,
-    visitedNodeIds: [],
+    cats: (carried.cats ?? []).map(nameCat),
+    ...(preMap ? { currentNodeId: null, visitedNodeIds: [] } : {}),
   } as unknown as SaveFile["run"];
   return { version: SAVE_VERSION, run };
+}
+
+/**
+ * Give a pre-instance cat its identity. Idempotent, and it never overwrites
+ * an id that is already there, so re-migrating a partly-migrated blob (a
+ * hand-edited save) cannot rename anybody.
+ */
+function nameCat(stored: StoredCat): CatRunState {
+  const cat = stored as CatRunState;
+  const classId = stored.classId as ClassId;
+  const name = stored.name ?? CLASSES[classId]?.catName ?? classId;
+  if (typeof stored.id === "string" && stored.id !== "") {
+    return stored.name === name ? cat : { ...cat, name };
+  }
+  return {
+    ...cat,
+    id: classId,
+    name,
+    ...(stored.standName === undefined
+      ? { standName: standNameFor(classId) }
+      : {}),
+  };
 }
 
 /**

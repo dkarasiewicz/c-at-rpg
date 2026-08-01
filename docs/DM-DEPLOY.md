@@ -10,8 +10,12 @@ promised the elder stray they would come back.
 **`api/gm/*` is gone.** The migration is finished: the endpoints, their
 `api/_lib` support and the game's whole `api/` directory are deleted, and the
 browser talks only to this agent. What each endpoint became is recorded in
-[Where the endpoints went](#where-the-endpoints-went); the one capability that
-did NOT survive is in [What the agent does not cover](#what-the-agent-does-not-cover).
+[Where the endpoints went](#where-the-endpoints-went); what is still missing is
+in [What the agent does not cover](#what-the-agent-does-not-cover).
+
+It also owns **[the Dreaming](#the-dreaming)** — the shared Supabase pool where
+everything it authors is persisted and reused, so the world grows with play
+instead of resetting every run.
 
 The offline-first invariant is unchanged: no DM reachable ⇒ the typed-action
 input is hidden and the game is fully playable on authored content. A 401, a
@@ -28,7 +32,8 @@ chose not to use the DM".
 | `agent/lib/effects.ts` | the zod mirror of the engine's `EffectSpec` union + the per-floor ramp; pricing is **imported** from `src/core/combat/powers.ts`, never reimplemented |
 | `agent/lib/memory.ts` | `defineState` run memory: the fact ledger and the emission ledger |
 | `agent/lib/catalog.ts` | the closed item menu and the per-floor shinies cap |
-| `agent/lib/pool.ts` | the shared content pool (Upstash REST or in-memory). SERVER-SIDE ONLY — it reads `process.env`, so `src/` never imports it. It outlived `api/` because `contribute_content` and `scripts/seed-pool.ts` write to it |
+| `agent/lib/pool.ts` | **the Dreaming** — the shared content pool over Supabase Postgres (PostgREST + Storage, plain `fetch`). SERVER-SIDE ONLY: it holds the service-role key, so `src/` never imports it. See [The Dreaming](#the-dreaming) |
+| `agent/lib/generationZero.ts` | the rows the world starts with, built from the shipped content tables. Pure; shared by `scripts/seed-pool.ts` and nothing else may disagree with it |
 | `agent/lib/oneshot.ts` | output schemas for the one-shot capabilities, with compile-time parity assertions against `src/core/types.ts` / `src/services/gmTypes.ts` |
 | `agent/tools/narrate.ts` | flavour text only — no mechanics, and the home of refusals |
 | `agent/tools/apply_effect.ts` | 1–3 bounded `EffectSpec`s, floor-capped, budget-linted |
@@ -36,10 +41,12 @@ chose not to use the DM".
 | `agent/tools/adjust_shinies.ts` | currency, capped by `EVENT_CAPS.shiniesMax(floor)` |
 | `agent/tools/remember.ts` | write a fact to run state for a later callback |
 | `agent/tools/offer_encounter.ts` | advisory bias for the next run-map node |
+| `agent/tools/recall_content.ts` | pool-FIRST read: has the world already dreamed one of these, for this floor, at this style version? |
+| `agent/tools/contribute_content.ts` | the write half: validate, budget-lint, stamp, re-host the art, persist |
 | `agent/skills/{item,event}.ts` | the remaining one-shot procedures, with budgets interpolated from the shipped lint tables. **`party` and `resonance` are not skills any more** — they are subagents, below |
 | `agent/subagents/encounter/` | the fight adjudicator: battle snapshot in, structured verdict out |
 | `agent/subagents/party/` | the party forge. **No `tools/` directory**: brief in, four kits out, nothing else to call |
-| `agent/subagents/resonance/` | the Stand-pair judge. Same shape, same reason |
+| `agent/subagents/resonance/` | the Stand-pair judge. Two tools, both about memory: `recall_resonance` before it thinks, `record_resonance` after it decides |
 | `agent/tsconfig.json` | standalone typecheck (`npm run typecheck:agent`) — the app's root tsconfig still includes only `src/` |
 
 ## The bounds, and where they are actually enforced
@@ -88,6 +95,81 @@ pulls `VERCEL_OIDC_TOKEN`) or set `AI_GATEWAY_API_KEY` in `.env.local`.
 | `VERCEL_OIDC_TOKEN` | pulled by `eve link` | — | how a linked project reaches the gateway |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | local | no | set before `eve dev <url>` if the deployment has Deployment Protection on |
 | `VITE_DM_URL` | game build | **yes, for any DM feature** | absolute origin of this deployment, e.g. `https://c-at-rpg-dm.vercel.app`. UNSET IS A SUPPORTED STATE: the probe short-circuits without a request and the game plays offline on authored content. But with it unset there is no party generation, no typed actions and no resonance — there is no `/api` fallback any more. |
+| `SUPABASE_URL` | **agent deployment only** | no | the Dreaming's Postgres + Storage origin. Unset ⇒ the pool falls back to in-memory and nothing is kept. |
+| `SUPABASE_SERVICE_ROLE_KEY` | **agent deployment only** | no | bypasses RLS. **This key must never appear beside a `VITE_` prefix**: Vite bakes those into the shipped browser bundle. The agent is the only thing in this repo that holds it. |
+| `SUPABASE_SCHEMA` | agent deployment | no | defaults to `catrpg`. Sent per request as `Accept-Profile` / `Content-Profile`. |
+| `SUPABASE_ART_BUCKET` | agent deployment | no | defaults to `catrpg-art`. Public bucket; dreamed art is re-hosted there. |
+| `POSTGRES_URL_NON_POOLING` | local / ops | no | direct connection for `psql -f supabase/001_init.sql`. Not read by any code. |
+| `VITE_SUPABASE_URL` | game build | no | same origin, for the browser's READ-ONLY path (`src/services/pool.ts`). |
+| `VITE_SUPABASE_ANON_KEY` | game build | no | publishable. RLS grants it `SELECT` and refuses `INSERT` with `42501`, which is what makes it safe to bake into the bundle. |
+| `VITE_SUPABASE_SCHEMA` / `VITE_SUPABASE_ART_BUCKET` | game build | no | default `catrpg` / `catrpg-art`. |
+
+`UPSTASH_REDIS_REST_URL` / `UPSTASH_REDIS_REST_TOKEN` are **gone**. They were
+never set in production, which is why nothing the DM authored had ever
+persisted for anybody (roster-and-persistence.md §6).
+
+> **Reading these back.** The Supabase variables are stored SENSITIVE on the
+> Vercel project, so `vercel env pull` writes them as `""` — that is the
+> platform refusing to decrypt, not a misconfiguration. Anything that needs the
+> service-role key locally (notably `scripts/seed-pool.ts`) has to be given it
+> out of band, from the Supabase dashboard.
+
+## The Dreaming
+
+The shared content pool: everything the DM authors is persisted and reused, so
+the world genuinely grows with play (docs/design/roster-and-persistence.md §5,
+§6). Schema in `supabase/001_init.sql` — idempotent, safe to re-run.
+
+| Table | Holds |
+|---|---|
+| `catrpg.content` | every dreamed thing — `stand` / `item` / `event` / `enemy` / `encounter` / `background` / `cat` / `power` — with its payload, art URL, `style_version`, floor band (`floor_min`/`floor_max`), tier and provenance |
+| `catrpg.interactions` | compiled Stand-pair verdicts, keyed by the ordered pair key. **A null `rule` is a row, not an absence**: "these two do not resonate" is the common, correct answer and the one nobody should ever pay to reach twice |
+| `catrpg.art` | keyed asset rows (shipped sprites, generated icons) so a style-version bump can find the pictures that went stale |
+| `catrpg-art` (Storage) | the bytes. Public bucket, so a dreamed thing keeps its picture without a signed request per frame |
+
+**Two halves, one direction.**
+
+- **Writes go through the agent, always.** `agent/lib/pool.ts` holds the
+  service-role key. `contribute_content` validates with the game's own
+  validators, budget-lints, stamps `styleVersion` + provenance, **downloads the
+  generator's image and re-hosts it in the bucket**, and only then writes the
+  row. Pointing a row at a generator URL is not persistence: that picture 404s
+  in a month and the dream is then remembered wrong.
+- **Reads may skip the agent.** `src/services/pool.ts` talks to PostgREST with
+  the publishable anon key, so the game can show the dreamed world even when
+  the DM is cold or down. It cannot write; RLS refuses `anon` `INSERT` with
+  `42501`.
+
+**Pool-first.** Before authoring anything the DM calls `recall_content`, which
+rolls `p = min(0.7, poolSize / 200)` **server-side** — the model cannot see the
+pool size, and a decision the model makes is a decision that drifts. Generation
+zero always generates; a world with 200 dreamed items reuses 7 times in 10.
+`{ found: false }` (nothing suitable / pool unreachable / the roll said "make
+something new") all mean the same thing to the DM: author it, then publish it.
+
+**Offline-first is unchanged.** With `SUPABASE_URL` unset, `getPool()` returns
+`MemoryPool`: every method still answers, the DM still authors, the game still
+plays to results — nothing is merely *kept*. No database is a supported state,
+exactly like no DM.
+
+### Seeding generation zero
+
+An empty pool reuses nothing, so the shipped content is written in as
+generation zero:
+
+```bash
+SUPABASE_URL=… SUPABASE_SERVICE_ROLE_KEY=… npx tsx scripts/seed-pool.ts
+```
+
+Idempotent — fixed ids plus `resolution=merge-duplicates`, so running it twice
+is running it once. Without the two variables it dry-runs against the in-memory
+pool and prints the same shapes, which is how you check a change without
+touching the shared world. With them it writes and then **reads the counts back
+out of Postgres**, so the number it prints is the number that is actually
+there.
+
+One upsert per kind, not one per row: `addContentBatch` sends an array, which
+is the difference between six requests and two hundred and fifty.
 
 ## Deploy
 
@@ -455,8 +537,13 @@ Every stat total landed exactly on `ROLE_STAT_TOTALS`.
 
 ## What the agent does not cover
 
-Two things. Neither is a reason to bring an endpoint back; both are recorded
-here so the next person does not rediscover them by accident.
+One thing. It is not a reason to bring an endpoint back; it is recorded here so
+the next person does not rediscover it by accident.
+
+(There used to be a second: global resonance memoisation, lost when
+`POST /api/gm/resonance` went away. **It is back** — `catrpg.interactions`,
+read by `recall_resonance` and written by `record_resonance` on the resonance
+subagent, including null verdicts. See [The Dreaming](#the-dreaming).)
 
 **1. A party is still ONE ~65s generation, and the next fix is parallelism.**
 Five of five is where it stands, but the sample is five and a single bad kit
@@ -479,28 +566,31 @@ three descriptions as context. This is an `agent/` + `src/services/oneshot.ts`
 change and nothing else; the routing, harvesting and lint machinery it needs
 already exists.
 
-**2. Global resonance memoisation.** `POST /api/gm/resonance` kept a keyed
-`interactions` row per pair, so a verdict compiled by one player was reused by
-every other player, forever — stand-powers.md Layer 3 calls that memoisation
-part of the design. The agent has no such store (memoisation was always the
-caller's job, and the caller is now a browser), so verdicts are cached in a
-`Map` for the life of one browser session and `firstDiscoveredBy` is gone.
+**RESOLVED — global resonance memoisation.** `POST /api/gm/resonance` kept a
+keyed `interactions` row per pair, so a verdict compiled by one player was
+reused by every other player, forever — stand-powers.md Layer 3 calls that
+memoisation part of the design. It was lost with the endpoint, and for a while
+verdicts lived in a `Map` for the life of one browser tab.
 
-Two things make this a smaller regression than it reads:
+It is now `catrpg.interactions` (see [The Dreaming](#the-dreaming)). The
+`resonance` subagent calls `recall_resonance` before it thinks and
+`record_resonance` after it decides — **including a null verdict**, because
+roughly two pairs in three do not resonate and that "no" is the expensive
+answer to recompute and the cheap one to store. `recall_resonance`
+distinguishes "no row" (never judged) from "row with a null rule" (judged; the
+answer is no).
 
-- it was **never live**. `GET /api/gm/health` on the production game reported
-  `poolBacked: false` — `UPSTASH_REDIS_REST_URL` was never set, so the "shared"
-  memo was a per-warm-lambda `Map` that evaporated on every cold start;
-- a wrong or missing verdict is not a failure. `rule: null` and "not fetched
-  yet" both mean the battle runs on base rules, and the pair recompiles next
-  session.
+Note what was true before, and is worth remembering: the old memo was **never
+live either**. `GET /api/gm/health` on the production game reported
+`poolBacked: false` — `UPSTASH_REDIS_REST_URL` was never set, so the "shared"
+memo was a per-warm-lambda `Map` that evaporated on every cold start. Both
+halves — the endpoint's store and the agent's — were inert for the same reason:
+nobody had provisioned a database. Provisioning it was the fix.
 
-The right home for it is the agent, not another endpoint: `agent/lib/pool.ts`
-already offers `getEntry`/`setEntry` on a keyed `interactions` table and the DM
-already writes to the pool via `contribute_content`. A `resonance_memo` tool (or
-a pool read from the `resonance` subagent) restores the global codex without
-bringing back a serverless function or a second model credential. Provision
-Upstash first, or it will be exactly as inert as it was.
+Defence in depth is unchanged: `readResonanceVerdict` re-lints the compiled
+rule against the engine's own budget tables before it can affect a battle, so a
+wrong "yes" — stored or fresh — is rejected rather than played, and a missing
+verdict just means the battle runs on base rules.
 
 ## The combat path
 
@@ -536,7 +626,7 @@ Kept as a record of where things moved, because half of it is load-bearing.
 | `api/_lib/constraints.ts` | split: numeric tables → `src/services/caps.ts`, lints → `src/services/contentLint.ts` |
 | `api/_lib/powers.ts` | `src/services/powerLint.ts` (still a wrapper over `core/combat/powers.ts`, which still owns the pricing) |
 | `api/_lib/artPrompt.ts` | `src/services/artPrompt.ts` |
-| `api/_lib/pool.ts` | `agent/lib/pool.ts` — server-side only, and the one `api/_lib` module that outlived the endpoints |
+| `api/_lib/pool.ts` | `agent/lib/pool.ts` — server-side only, the one `api/_lib` module that outlived the endpoints, and now Supabase-backed rather than a Redis that was never provisioned. See [The Dreaming](#the-dreaming) |
 | `api/_lib/{anthropic,generate,http}.ts` | deleted. The model client, the generate→lint→retry loop and the Vercel Request/Response shim are eve's job now |
 | `src/services/gm.ts` | deleted. `dm.ts` (transport + beats) and `oneshot.ts` (party, resonance) |
 | `EVENT_CAPS_MIRROR` in `tabletop.ts`, `floorRamp` in `agent/lib/effects.ts` | both re-export `src/services/caps.ts`. The two parity tests that pinned the mirrors are deleted — there is nothing left to pin |

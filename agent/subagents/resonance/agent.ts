@@ -5,14 +5,22 @@
  * Same architecture and same reason as `agent/subagents/party/`: a structured
  * turn on the root DM loses to the root's own "you may only change the world
  * through your tools", so the structured work moves to an agent that has no
- * such instruction and no such tools. No `tools/` directory; `outputSchema`
- * declared here so a delegation runs in task mode and the runtime holds the
- * child to the shape.
+ * such instruction. `outputSchema` is declared here so a delegation runs in
+ * task mode and the runtime holds the child to the shape.
  *
- * A verdict is memoized by the caller for the life of the browser session, and
+ * It has exactly TWO tools, both about memory and neither about the world
+ * (the same shape as `agent/subagents/encounter/`, whose one tool only lints):
+ * `recall_resonance` reads the shared verdict table before it thinks, and
+ * `record_resonance` writes the verdict after it decides — including a null
+ * one, because "these two do not resonate" is the answer nobody should pay to
+ * reach twice. That table is `catrpg.interactions`
+ * (docs/design/roster-and-persistence.md §5), and it is what finally makes
+ * stand-powers.md Layer 3's "memoized forever" true across players rather than
+ * across one browser tab.
+ *
  * `readResonanceVerdict` re-lints the compiled rule against the engine's own
- * budget tables before it can affect a battle, so "no" is cheap and a wrong
- * "yes" is rejected rather than played.
+ * budget tables before it can affect a battle, so a wrong "yes" — stored or
+ * fresh — is rejected rather than played.
  */
 import { defineAgent } from "eve";
 import { resonanceOutputSchema } from "../../lib/oneshot.js";

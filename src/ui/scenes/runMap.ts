@@ -25,6 +25,7 @@
  *   event                → EVENT    (eventSeed = the node's payload seed)
  *   shop                 → LANDING  in Peddler-only mode
  *   rest                 → in-scene catnap panel (core `catnapHeal`)
+ *   camp                 → CAMP     (the beat between fights, §4)
  *   treasure             → the LOOT overlay on a `rollChest` of the node seed
  * Every one of them comes back here; the terminal node, once cleared, opens
  * the way down (LANDING on floors 1-5, RESULTS after the floor-6 boss).
@@ -143,6 +144,7 @@ import type { LootOverlayParams } from "../overlays/loot.js";
 import type { BattleSceneParams } from "./battle.js";
 import type { EventSceneParams } from "./event.js";
 import type { LandingParams } from "./landing.js";
+import type { CampSceneParams } from "./camp.js";
 
 /**
  * Additive, optional extension of the §2.9 RunState (same pattern as
@@ -223,6 +225,7 @@ const NODE_TINT: Record<NodeType, number> = {
   event: PAL.stFrazzled,
   shop: PAL.energy,
   rest: PAL.heal,
+  camp: PAL.gold,
   treasure: CHEST_WOOD,
   boss: PAL.danger,
 };
@@ -234,6 +237,7 @@ const NODE_NAME: Record<NodeType, string> = {
   event: "Unknown",
   shop: "The Peddler",
   rest: "Catnap",
+  camp: "The Camp",
   treasure: "Treasure",
   boss: "Boss",
 };
@@ -263,6 +267,7 @@ const NODE_BLURB: Record<NodeType, string> = {
   event: "Nobody can tell what's down there. Could be a gift. Could be a bill.",
   shop: "The Peddler set up shop. Shinies in, kit out.",
   rest: "A warm spot to curl up. Every living cat mends a little.",
+  camp: "A fire, and three embers of it. Eat, patch up, or just talk.",
   treasure: "Something glitters. Unattended, apparently.",
   boss: "The thing this floor belongs to. No running from it.",
 };
@@ -917,6 +922,14 @@ export class RunMapScene implements Scene {
         c.addChild(z);
         break;
       }
+      case "camp": {
+        // three logs and a flame — the only medallion that is not a threat
+        g.moveTo(-14, 12).lineTo(14, 6).stroke({ width: 4, color: CHEST_WOOD });
+        g.moveTo(-14, 6).lineTo(14, 12).stroke({ width: 4, color: CHEST_WOOD });
+        g.poly([0, -18, 7, -4, 4, 4, -4, 4, -7, -4]).fill(PAL.gold);
+        g.poly([0, -9, 4, -1, 0, 3, -4, -1]).fill(PAL.warnYel);
+        break;
+      }
       case "treasure":
         // the 20×14 chest pictogram needs a bump to fill a medallion
         drawChest(g, 0, 1);
@@ -985,7 +998,10 @@ export class RunMapScene implements Scene {
 
   private buildParty(): void {
     const run = this.run;
-    const lead = run.marchingOrder[0] ?? run.cats[0].classId;
+    // marching order holds cat INSTANCE ids; the marker draws the CLASS
+    const classOf = (id: string): ClassId =>
+      run.cats.find((c) => c.id === id)?.classId ?? run.cats[0].classId;
+    const lead = classOf(run.marchingOrder[0] ?? "");
     this.partyC.removeChildren().forEach((c) => c.destroy({ children: true }));
     const marker = new Container();
     marker.addChild(
@@ -995,7 +1011,8 @@ export class RunMapScene implements Scene {
     );
     marker.addChild(avatar(lead, 46, { ring: PAL.gold }));
     // the rest of the clowder as small coloured dots trailing the lead
-    run.marchingOrder.slice(1, 4).forEach((cls, i) => {
+    run.marchingOrder.slice(1, 4).forEach((catId, i) => {
+      const cls = classOf(catId);
       // catNameColor, not the raw body colour: soot-black Pixel and dusk
       // Mora are darker than the map and their dots vanish otherwise
       const dot = new Graphics()
@@ -1471,7 +1488,8 @@ export class RunMapScene implements Scene {
       !this.resolvedIds().includes(id);
     // a passive entry node (a Peddler, a warm spot) has nothing to brace for
     const passive =
-      node !== undefined && (node.type === "shop" || node.type === "rest");
+      node !== undefined &&
+      (node.type === "shop" || node.type === "rest" || node.type === "camp");
     this.entryHold = firstArrival && !passive ? node : null;
     this.refresh();
     if (!this.entryHold) this.resolveArrival();
@@ -1531,6 +1549,13 @@ export class RunMapScene implements Scene {
       case "rest":
         this.openRest();
         return;
+      case "camp": {
+        // §4: the party stops and the cats talk to each other. Its own scene,
+        // because it owns a screen's worth of interaction and a DM turn.
+        const params: CampSceneParams = { nodeId: node.id, seed: node.seed };
+        this.ctx.scenes.goto("camp", params);
+        return;
+      }
     }
   }
 

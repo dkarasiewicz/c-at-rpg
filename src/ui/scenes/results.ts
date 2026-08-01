@@ -32,7 +32,7 @@ import {
   startRun,
 } from "../../core/meta/index.js";
 import type { Payout, UnlockId } from "../../core/meta/types.js";
-import { CLASSES } from "../../content/classes.js";
+import type { EquipInstance } from "../../core/types.js";
 import { PAL } from "../palette.js";
 import { DESIGN_H, DESIGN_W, SPACE } from "../layout.js";
 import { TYPE } from "../textStyles.js";
@@ -107,7 +107,11 @@ export function createResultsScene(): Scene {
   const again = (sameSeed: boolean): void => {
     if (!ctx) return;
     // straight back down, with whatever the town has already unlocked
-    ctx.run = startRun(sameSeed ? seed : randomSeed(), applyUnlocks(ctx.meta));
+    // the roster has already been settled by `bankRun` above, so "Again"
+    // descends with whoever actually survived
+    ctx.run = startRun(sameSeed ? seed : randomSeed(), applyUnlocks(ctx.meta), {
+      meta: ctx.meta,
+    });
     ctx.scenes.goto("floorgen");
   };
 
@@ -178,6 +182,15 @@ export function createResultsScene(): Scene {
         shiniesCarried: run.inventory.shinies,
         score: summary.total,
         playTimeMs: run.playTimeMs,
+        // THE ROSTER WRITE-BACK (roster-and-persistence.md §1-§2): the cats
+        // come home with their xp and gear, the ones at 0 Lives are buried
+        // for good, and the backpack empties into the town stash.
+        cats: run.cats,
+        carried: run.inventory.slots.filter(
+          (s): s is EquipInstance => s !== null && "uid" in s,
+        ),
+        xp: run.xp,
+        cause: p.cause ?? (p.victory ? "came home" : "the dark under the city"),
       });
       ctx.meta = banked.meta;
       payout = banked.payout;
@@ -385,7 +398,7 @@ export function createResultsScene(): Scene {
         // only the cats that actually walked the floors bob
         cats.push({ c: face, baseY: face.y, phase: i * 0.9, dead });
 
-        const name = label(CLASSES[cat.classId].catName, {
+        const name = label(cat.name, {
           bold: true,
           size: TYPE.body,
           fill: dead ? PAL.textDim : PAL.text,

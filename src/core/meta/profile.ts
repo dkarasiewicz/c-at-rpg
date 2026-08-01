@@ -17,14 +17,23 @@ import type {
 import { computePayout } from "./payout.js";
 import type { Payout } from "./types.js";
 import { unlockCatalog, unlockDef } from "./unlocks.js";
+import { applyUnlocks } from "./overlay.js";
 import { observeBattle, readBestiary } from "./bestiary.js";
+import {
+  readMemorial,
+  readRoster,
+  readStash,
+  settleRun,
+  syncRoster,
+} from "./roster.js";
 import type { BattleEvent, BattleState } from "../types.js";
 
 /**
  * Current meta schema. v1 = lifetime records only; v2 = the town;
- * v3 = the Bestiary (enemy-intel.md §4).
+ * v3 = the Bestiary (enemy-intel.md §4); v4 = THE ROSTER — cat instances,
+ * the memorial and the town stash (roster-and-persistence.md §1-§2).
  */
-export const META_VERSION = 3 as const;
+export const META_VERSION = 4 as const;
 
 /** Runs kept in `history` (newest first). */
 export const HISTORY_LIMIT = 10;
@@ -33,8 +42,14 @@ export const HISTORY_LIMIT = 10;
 /* construction & migration                                            */
 /* ------------------------------------------------------------------ */
 
+/**
+ * A brand-new town: nothing unlocked, nothing banked — and the two cats who
+ * live here already (roster-and-persistence.md §2 "you start with one or
+ * two"). `syncRoster` seeds them from the base class pool, so the starting
+ * clowder and the starting overlay can never drift apart.
+ */
 export function emptyProfile(): MetaProfile {
-  return {
+  return syncRoster({
     version: META_VERSION,
     counters: { runs: 0, victories: 0 },
     records: { bestScore: 0, fastestVictoryMs: null },
@@ -43,7 +58,11 @@ export function emptyProfile(): MetaProfile {
     unlocked: [],
     history: [],
     bestiary: {},
-  };
+    roster: [],
+    memorial: [],
+    descending: [],
+    stash: [],
+  });
 }
 
 const num = (v: unknown, fallback = 0): number =>
@@ -83,12 +102,27 @@ function readHistory(v: unknown): RunRecord[] {
  * not met anything yet. A v3 file is repaired rather than trusted
  * (`readBestiary`), so a hand-edited entry cannot claim a tag outside the
  * vocabulary, a skill the species does not own, or more kills than meetings.
+ *
+ * v3 → v4: THE ROSTER. A v3 town owned CLASSES, not cats, so the migration
+ * turns each class it houses into the individual it always implied — one
+ * instance per unlocked class, level 1, 9 Lives, wearing its Stray weapon.
+ * The player loses nothing (a v3 profile stored no per-cat progress to lose)
+ * and walks into a town whose clowder is exactly the pool the old overlay
+ * would have drawn from. `syncRoster` does that fold and the §2 guard rail
+ * runs on the way out, so no loaded profile is ever catless.
  */
 export function migrateMeta(raw: unknown): MetaProfile | null {
   if (!raw || typeof raw !== "object") return null;
   const m = raw as Omit<Partial<MetaProfile>, "version"> &
     Omit<Partial<MetaFile>, "version"> & { version?: unknown };
-  if (m.version !== 1 && m.version !== 2 && m.version !== 3) return null;
+  if (
+    m.version !== 1 &&
+    m.version !== 2 &&
+    m.version !== 3 &&
+    m.version !== 4
+  ) {
+    return null;
+  }
 
   const base = emptyProfile();
   const counters = m.counters ?? base.counters;
@@ -111,12 +145,20 @@ export function migrateMeta(raw: unknown): MetaProfile | null {
     unlocked: dedupe(strings(m.unlocked)),
     history: readHistory(m.history),
     bestiary: readBestiary(m.bestiary),
+    roster: readRoster(m.roster),
+    memorial: readMemorial(m.memorial),
+    descending: strings(m.descending),
+    stash: readStash(m.stash),
+    ...(typeof m.nextCatId === "number" ? { nextCatId: m.nextCatId } : {}),
+    ...(typeof m.nextUid === "number" ? { nextUid: m.nextUid } : {}),
   };
   // a v1 file (or a hand-edited one) can have banked less than it owns
   if (profile.lifetimeShinies < profile.shinies) {
     profile.lifetimeShinies = profile.shinies;
   }
-  return profile;
+  // v3 → v4: give every class the town owns the cat it always implied, and
+  // guarantee the roster is never empty (roster-and-persistence.md §2).
+  return syncRoster(profile, applyUnlocks(profile));
 }
 
 const dedupe = (ids: readonly string[]): string[] =>
@@ -134,7 +176,9 @@ export interface BankResult {
 /**
  * Fold a finished run into the profile — the ONE write the results screen
  * makes. Banks the payout (win or lose), ticks the lifetime counters and
- * records, and pushes the run onto the history.
+ * records, pushes the run onto the history, and — when the summary carries
+ * `cats` — settles the roster: survivors come home with their xp and gear,
+ * the fallen are buried for good (roster-and-persistence.md §2).
  */
 export function bankRun(meta: MetaProfile, summary: RunSummary): BankResult {
   const payout = computePayout(summary);
@@ -147,25 +191,26 @@ export function bankRun(meta: MetaProfile, summary: RunSummary): BankResult {
     playTimeMs: summary.playTimeMs,
   };
   const fastest = meta.records.fastestVictoryMs;
+  const banked: MetaProfile = {
+    ...meta,
+    version: META_VERSION,
+    counters: {
+      runs: meta.counters.runs + 1,
+      victories: meta.counters.victories + (summary.victory ? 1 : 0),
+    },
+    records: {
+      bestScore: Math.max(meta.records.bestScore, summary.score),
+      fastestVictoryMs: summary.victory
+        ? Math.min(fastest ?? Number.POSITIVE_INFINITY, summary.playTimeMs)
+        : fastest,
+    },
+    shinies: meta.shinies + payout.total,
+    lifetimeShinies: meta.lifetimeShinies + payout.total,
+    history: [record, ...meta.history].slice(0, HISTORY_LIMIT),
+  };
   return {
     payout,
-    meta: {
-      ...meta,
-      version: META_VERSION,
-      counters: {
-        runs: meta.counters.runs + 1,
-        victories: meta.counters.victories + (summary.victory ? 1 : 0),
-      },
-      records: {
-        bestScore: Math.max(meta.records.bestScore, summary.score),
-        fastestVictoryMs: summary.victory
-          ? Math.min(fastest ?? Number.POSITIVE_INFINITY, summary.playTimeMs)
-          : fastest,
-      },
-      shinies: meta.shinies + payout.total,
-      lifetimeShinies: meta.lifetimeShinies + payout.total,
-      history: [record, ...meta.history].slice(0, HISTORY_LIMIT),
-    },
+    meta: settleRun(banked, summary, applyUnlocks(banked)),
   };
 }
 
@@ -249,6 +294,11 @@ export interface PurchaseResult {
  * reports `owned` and never charges twice. Prerequisites are checked against
  * the profile, not the catalog order, so a registered pool def with an
  * unowned parent stays shut.
+ *
+ * A purchase that widens the town's class pool ALSO moves the cat in
+ * (`syncRoster`). This is the reported bug's other half: before, `class:*`
+ * bought an entry in a pool that no screen could reach — now it buys a cat
+ * standing in the town, ready to be fielded from the roster screen.
  */
 export function purchase(
   meta: MetaProfile,
@@ -258,14 +308,15 @@ export function purchase(
   const state = unlockState(meta, id, catalog);
   if (state !== "available") return { ok: false, meta, reason: state };
   const def = unlockDef(id, catalog)!;
+  const bought: MetaProfile = {
+    ...meta,
+    shinies: meta.shinies - def.cost,
+    unlocked: dedupe([...meta.unlocked, id]),
+  };
   return {
     ok: true,
     reason: "available",
-    meta: {
-      ...meta,
-      shinies: meta.shinies - def.cost,
-      unlocked: dedupe([...meta.unlocked, id]),
-    },
+    meta: syncRoster(bought, applyUnlocks(bought, catalog)),
   };
 }
 

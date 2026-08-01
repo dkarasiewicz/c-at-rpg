@@ -1,10 +1,13 @@
 {
-  "version": 3,
+  "version": 4,
   "run": {
     "runSeed": "MEOW-1987",
     "floorNum": 2,
     "cats": [
       {
+        "id": "bruiser",
+        "name": "Bruno",
+        "standName": "THE DUMPSTER KING",
         "classId": "bruiser",
         "hp": 32,
         "lives": 9,
@@ -25,6 +28,9 @@
         }
       },
       {
+        "id": "trickster",
+        "name": "Pixel",
+        "standName": "BOX AMBUSH",
         "classId": "trickster",
         "hp": 38,
         "lives": 9,
@@ -45,6 +51,9 @@
         }
       },
       {
+        "id": "hexer",
+        "name": "Mora",
+        "standName": "STRING THEORY",
         "classId": "hexer",
         "hp": 34,
         "lives": 9,
@@ -65,6 +74,9 @@
         }
       },
       {
+        "id": "medic",
+        "name": "Baguette",
+        "standName": "PURR ENGINE",
         "classId": "medic",
         "hp": 38,
         "lives": 9,
