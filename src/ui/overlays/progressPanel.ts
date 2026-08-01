@@ -1355,9 +1355,13 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
       );
       cost.anchor.set(1, 0);
       cost.position.set(w - SPACE.sm, 9);
-      const desc = label(oneLine(r.desc, 70), { dim: true, size: TYPE.tiny });
-      // the desc column moves with the name column, or a long name
-      // ("TRASH COMPACTOR") runs straight into it
+      // The desc column moves with the name column, or a long name
+      // ("TRASH COMPACTOR") runs straight into it — and it gives back the
+      // same characters at the far end so it never reaches the EN cost.
+      const desc = label(oneLine(r.desc, tile ? 62 : 70), {
+        dim: true,
+        size: TYPE.tiny,
+      });
       desc.position.set(250 + (tile ? ART : 0), 8);
       row.addChild(state, nm, cost, desc);
       host.addChild(row);

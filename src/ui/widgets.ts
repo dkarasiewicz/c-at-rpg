@@ -578,9 +578,17 @@ export function iconTile(
     // scannable column, not to draw a second border inside a card that
     // already has one — anything heavier and six cards read as a grid of
     // boxes instead of a row of pictures.
+    // A DIMMED tile inverts the plate instead of deepening it: the painted
+    // icons are dark to begin with, so a darker plate under a faded icon
+    // leaves one unreadable smudge. A faint LIGHT plate keeps the
+    // silhouette separated from the row it sits on.
     const plate = new Graphics()
       .roundRect(0, 0, size, size, r)
-      .fill({ color: PAL.void, alpha: 0.26 });
+      .fill(
+        opts.dim === true
+          ? { color: PAL.text, alpha: 0.09 }
+          : { color: PAL.void, alpha: 0.26 },
+      );
     if (opts.accent !== undefined) {
       plate
         .roundRect(0, 0, size, size, r)
@@ -595,8 +603,11 @@ export function iconTile(
   sp.position.set(size / 2, size / 2);
   view.addChild(sp);
   if (opts.dim === true) {
-    sp.tint = PAL.textDim;
-    view.alpha = 0.7;
+    // Opacity only. A tint MULTIPLIES, and most of this art pack is dark
+    // paint on a dark key — multiplying it by PAL.textDim crushed the
+    // unlearned rows in THE DEN to black rectangles. Fading keeps the hue,
+    // which is the only thing that still says "this is a picture".
+    view.alpha = 0.62;
   }
   return view;
 }

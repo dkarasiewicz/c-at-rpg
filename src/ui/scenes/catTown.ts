@@ -1022,10 +1022,18 @@ export class CatTownScene implements Scene {
         }),
       );
 
-      // A SILHOUETTE, not a blank: you can see there is something there. With
-      // the art pack that is the painted `bestiary:unknown` plate (which
-      // carries its own question mark, so we do not stack a second one on
-      // it); without it, the old voided tint of the real art plus a "?".
+      // A SILHOUETTE, not a blank: you can see there is something there.
+      //
+      // With the art pack that is the painted `bestiary:unknown` shape — one
+      // bristling, glowing-eyed nobody, the same for every unmet species. It
+      // replaces the old trick of tinting the REAL portrait black, which was
+      // never a silhouette so much as a spoiler with the lights off: the
+      // outline of the boss you have not met yet was right there. The big "?"
+      // that used to sit on top of that plate goes with it — it would cover
+      // the shape it is meant to be asking about, and the tile already says
+      // "???" for the name and "LVL ???" underneath.
+      //
+      // No art ⇒ exactly the old rendering, voided tint and "?" included.
       const face = enemyAvatar(id, 58, {
         shape: "rounded",
         ...(seen ? {} : { unknown: true }),

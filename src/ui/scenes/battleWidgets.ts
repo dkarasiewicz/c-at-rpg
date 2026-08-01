@@ -1152,12 +1152,12 @@ export function makeSkillBar(): SkillBar {
  * the skill name across the full width, then the rank/range strip.
  *
  * WITH ART the middle band is re-cut into two columns rather than having an
- * icon shoved into the text: a 40px `iconTile` on the left at a FIXED
+ * icon shoved into the text: a 44px `iconTile` on the left at a FIXED
  * baseline (y 44 on all six cards, so the row of icons is a single scannable
- * column), the name beside it in a 66px column auto-fitted from 12px down so
- * "TRASH COMPACTOR" never spills into the range strip. The header row and the
- * strip are untouched, so cost, cooldown and rank legality stay exactly where
- * a player's eye already knows to find them.
+ * column), the name beside it in the 58px that are left, auto-fitted from
+ * 12px down so "TRASH COMPACTOR" never spills into the range strip. The
+ * header row and the strip are untouched, so cost, cooldown and rank
+ * legality stay exactly where a player's eye already knows to find them.
  *
  * No texture ⇒ the pre-art layout, verbatim.
  */
