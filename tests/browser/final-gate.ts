@@ -8,12 +8,16 @@
  * configured, and a DM that is configured but dead. Both must reach the
  * results screen without a page error.
  *
- * The mobile leg is TAP ONLY. Not "mostly taps" — the driver never presses a
- * game hotkey, and every coordinate it touches is read back off the live
- * stage through `window.__hits()` rather than guessed from a mockup, so a
- * button that moved 20px fails the gate instead of silently passing it. The
- * one keyboard event in the whole leg is text going INTO the typed-action
+ * The mobile leg is FINGER ONLY — taps and one long press, never a game
+ * hotkey — and every coordinate it touches is read back off the live stage
+ * through `window.__hits()` rather than guessed from a mockup, so a button
+ * that moved 20px fails the gate instead of silently passing it. The one
+ * keyboard event in the whole leg is text going INTO the typed-action
  * `<input>`, which is what a virtual keyboard is.
+ *
+ * The gestures are the shipped ones (docs/design/mobile.md §2): a TAP ACTS —
+ * one tap takes a route, one tap commits an attack — and a LONG PRESS READS,
+ * which is how the leg opens the enemy intel card.
  *
  *   npx tsx tests/browser/final-gate.ts [--headed] [--keep]
  *
@@ -180,6 +184,35 @@ async function hits(page: Page): Promise<Hit[]> {
  */
 async function tapAt(page: Page, x: number, y: number): Promise<void> {
   await page.touchscreen.tap(Math.round(x), Math.round(y));
+  await page.waitForTimeout(420);
+}
+
+/**
+ * A finger that STAYS DOWN — the details gesture (docs/design/mobile.md §2:
+ * tap acts, long press reads). Playwright's touchscreen only knows how to
+ * tap, so the press is driven straight through CDP: touchStart, wait past
+ * `LONG_PRESS_MS`, touchEnd.
+ */
+async function holdAt(
+  page: Page,
+  x: number,
+  y: number,
+  ms = 650,
+): Promise<void> {
+  const cdp = await page.context().newCDPSession(page);
+  const pt = [
+    { x: Math.round(x), y: Math.round(y), radiusX: 12, radiusY: 12, force: 1 },
+  ];
+  await cdp.send("Input.dispatchTouchEvent", {
+    type: "touchStart",
+    touchPoints: pt,
+  });
+  await page.waitForTimeout(ms);
+  await cdp.send("Input.dispatchTouchEvent", {
+    type: "touchEnd",
+    touchPoints: [],
+  });
+  await cdp.detach();
   await page.waitForTimeout(420);
 }
 
@@ -399,9 +432,10 @@ async function tapToBattle(page: Page): Promise<void> {
           all.map((h) => JSON.stringify(h.text)).join(", "),
       );
     }
-    // On the board a node is TAP TO READ, TAP AGAIN TO GO (the header says
-    // so). One tap only ever opens the blurb, so a route needs both.
-    const isNode = s === "runMap" && !/Into the|Continue/i.test(pick.text);
+    // ONE TAP GOES (docs/design/mobile.md §2). A node used to want two — tap
+    // to read, tap again to walk — and this loop dutifully sent both. It now
+    // sends one, because a second tap would land on whatever the first one
+    // opened.
     if (DEBUG) {
       console.log(
         `      tap#${i} on '${s}' → ${JSON.stringify(pick.text)} ` +
@@ -410,7 +444,6 @@ async function tapToBattle(page: Page): Promise<void> {
       );
     }
     await tapAt(page, pick.x + pick.w / 2, pick.y + pick.h / 2);
-    if (isNode) await tapAt(page, pick.x + pick.w / 2, pick.y + pick.h / 2);
     await page.waitForTimeout(900);
   }
   throw new Error(`never reached a battle (stuck on '${await scene(page)}')`);
@@ -479,19 +512,21 @@ async function mobileJourney(page: Page): Promise<void> {
   await page.waitForTimeout(1600);
   await shot(page, "gate-mobile-04-battle.png");
 
-  /* ---- inspect an enemy, by tapping it ----------------------------- */
+  /* ---- inspect an enemy, by HOLDING it ----------------------------- */
+  // A tap is the attack now (docs/design/mobile.md §2). Reading an enemy is
+  // the long press, and this leg is the one that proves it under a finger.
   const enemy = await rightmostEnemy(page);
   if (!enemy) {
-    problems.push("[mobile] no enemy unit on the battle screen to tap");
+    problems.push("[mobile] no enemy unit on the battle screen to press");
   } else {
-    await tapAt(page, enemy.x + enemy.w / 2, enemy.y + enemy.h / 2);
+    await holdAt(page, enemy.x + enemy.w / 2, enemy.y + enemy.h / 2);
     await page.waitForTimeout(800);
     const card = (await hits(page)).some((h) => /Close/i.test(h.text));
     await shot(page, "gate-mobile-05-inspect.png");
     if (!card) {
-      problems.push("[mobile] tapping an enemy opened no inspect card");
+      problems.push("[mobile] a long press on an enemy opened no inspect card");
     } else {
-      console.log("    enemy inspected by tap");
+      console.log("    enemy inspected by long press");
       // and it closes by its own Close chip — a phone has no Esc
       await tap(page, /Close/i);
     }

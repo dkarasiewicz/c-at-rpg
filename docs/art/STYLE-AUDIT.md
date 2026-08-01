@@ -183,3 +183,40 @@ brightest thing in it (`p90 207`), which is what matters at 48 px.
 
 `docs/art/contact-cast.png` shows the final cast grouped by family, each sprite
 at its true relative in-game height on the real stage gradient.
+
+## Enemy & boss HUD portraits (2026-08)
+
+The turn strip mixed 320² `portrait:*` head-and-shoulders art for cats with a
+bust crop of each enemy's full-body `enemy:*` battle sprite, so at the real
+34 px chip size Crow Shaman and Yarn Golem were brown smudges while Bruno and
+Pixel read instantly. Every enemy and boss now ships its own portrait under
+`portrait:<enemyId>` (15 ids), generated with the same recipe as the cats.
+
+**Recipe** — `gpt-image-2`, `--dimension 1024x1024`, one `--ref`: the
+creature's OWN shipped battle sprite (`public/assets/gen/enemy-*.png` /
+`boss-*.png`), so identity is copied rather than described. Prompt =
+`<subject> + SAME_CREATURE + PORTRAIT_FRAMING + PORTRAIT_CONSIST +
+ART_STYLE.basePrompt + "Avoid: " + ART_STYLE.negative`, where the two
+`PORTRAIT_*` clauses are the ones the cats shipped with (head large and
+centred, purple Stand haze behind, face brightest thing in frame) and
+`SAME_CREATURE` says the reference is this exact creature and only the CAMERA
+changes. Raw 1024² PNGs land in `assets-src/portraits/`; `node
+scripts/trim-sprites.mjs` does the square face crop, aura attenuation and the
+320² output — portraits are NOT keyed, same as the cats.
+
+**The one trap.** A portrait framed with a full chest makes the trim script's
+square crop (subject box + 14 %) zoom OUT, so the head lands at ~35 % of the
+chip and the chip is a lump again. `ratThug`, `dustBunny`, `elderStray`,
+`dogfather` and `crowShaman` all needed a second pass adding: *"PUSH IN HARD:
+the HEAD ALONE fills about three quarters of the square frame … no chest, no
+torso"*. Judge every result at 34 px, never at 320.
+
+`docs/art/portrait-legibility.png` is the acceptance test: all 19 portraits at
+their true 34 px chip size, in colour and desaturated. If a row is not tellable
+apart, the set is not done.
+
+**`bestiary:unknown`** was regenerated at the same time — it was a hunched
+tentacled shadow-quadruped, and nothing in this game has tentacles. It is now a
+hunched CAT-shaped silhouette (two pointed ears, two dim eye-points, no
+readable face) with its Stand aura curling into a question mark, soft-keyed by
+the recipe above and downscaled 1024 → 512 on premultiplied alpha.

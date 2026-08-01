@@ -64,8 +64,10 @@ HP, current statuses, description, and **what you know**: weaknesses and
 resistances discovered so far, skills you have seen it use.
 
 Unknown facts render as `???` rather than being hidden, so the panel doubles as
-a checklist of what is left to learn. Touch-first: tap to inspect, tap again to
-target, so it works on mobile (`docs/design/mobile.md`).
+a checklist of what is left to learn. Touch-first, and the rule is the same one
+the whole game uses: **a tap acts, a long press reads**. On a phone the panel
+opens on a ~400 ms hold; a tap on an enemy you are aiming at attacks it
+(`docs/design/mobile.md` §2).
 
 ## 4. The Bestiary — knowledge as meta progression
 

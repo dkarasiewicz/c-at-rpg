@@ -21,7 +21,7 @@
  * the floor number (never a gameplay Rng — ARCHITECTURE.md §0) so a given
  * floor's fallback stage is byte-identical on every mount.
  */
-import { Container, Graphics, Sprite, Text } from "pixi.js";
+import { Container, Graphics, Sprite, Text, type Texture } from "pixi.js";
 import type {
   BattleState,
   Combatant,
@@ -35,7 +35,7 @@ import { PAL, THEMES, darken, mix } from "../palette.js";
 import { DESIGN_H, DESIGN_W, R, RADIUS, SPACE, rh, rw } from "../layout.js";
 import { TYPE, mono, ui } from "../textStyles.js";
 import { tween } from "../tween.js";
-import { isTouch, padHit } from "../touch.js";
+import { isTouch, padHit, tapAct } from "../touch.js";
 import {
   avatar,
   bar,
@@ -69,7 +69,7 @@ import {
   makeTierPill,
   type IntentBadge,
 } from "../draw/intel.js";
-import { hasSprite } from "../sprites.js";
+import { hasSprite, spriteTextureFor } from "../sprites.js";
 
 /* ---------------------------------------------------------------------- */
 /* Small shared helpers                                                    */
@@ -785,12 +785,69 @@ export interface Ribbon {
   update(elapsedMs: number): void;
 }
 
-/** Kit avatar for a combatant (cat portrait / enemy face), fail-soft. */
+/**
+ * A `portrait:<speciesId>` chip face: the same cover-fit sprite behind the
+ * same rounded mask `avatar()` gives a cat portrait, so a 34px enemy chip and
+ * a 34px cat chip are the same picture-in-a-box.
+ *
+ * It is spelled out here rather than in `widgets` because preferring the
+ * portrait is a TURN-STRIP rule: the bestiary plate and the 148px target
+ * portrait have room for the whole creature and still want `enemyAvatar`'s
+ * bust crop of the battle sprite. (`widgets` keeps its avatar shell private,
+ * and its drop shadow is invisible under a chip that already draws its own
+ * bordered plate.)
+ */
+function makeEnemyPortraitFace(
+  tex: Texture,
+  size: number,
+  dead: boolean,
+): Container {
+  const half = size / 2;
+  const r = Math.max(4, size * 0.2); // widgets' 'rounded' avatar radius
+  const view = new Container();
+  // backing plate: the portraits carry a transparent margin, so without this
+  // the chip's own plate shows through the corners of the art
+  view.addChild(
+    new Graphics()
+      .roundRect(-half, -half, size, size, r)
+      .fill({ color: PAL.hpBack, alpha: 0.95 }),
+  );
+  const sp = new Sprite({ texture: tex, anchor: 0.5 });
+  sp.scale.set(size / Math.min(tex.width, tex.height)); // cover-fit
+  if (dead) sp.tint = mix(PAL.textDim, PAL.void, 0.1);
+  const mask = new Graphics()
+    .roundRect(-half, -half, size, size, r)
+    .fill(0xffffff);
+  sp.mask = mask;
+  view.addChild(sp, mask);
+  if (dead) {
+    view.addChild(
+      new Graphics()
+        .roundRect(-half, -half, size, size, r)
+        .fill({ color: PAL.void, alpha: 0.2 }),
+    );
+    view.alpha = 0.85;
+  }
+  return view;
+}
+
+/**
+ * Kit avatar for a combatant (cat portrait / enemy face), fail-soft.
+ *
+ * Enemies and bosses ship the same head-and-shoulders `portrait:*` art the
+ * cats do, and the strip prefers it. `enemyAvatar` otherwise squeezes a bust
+ * crop of the full-body BATTLE sprite into a ~34px tile, which is what made
+ * Crow Shaman and Yarn Golem read as brown smudges next to Bruno and Pixel.
+ * A species with no portrait yet keeps that bust crop as the fallback.
+ */
 export function makeMiniPortrait(c: Combatant, size = 36): Container {
   const opts = { dead: c.ko, frame: false as const, shape: "rounded" as const };
-  return c.side === "cat" && c.classId
-    ? avatar(c.classId, size, opts)
-    : enemyAvatar(c.speciesId ?? "", size, opts);
+  if (c.side === "cat" && c.classId) return avatar(c.classId, size, opts);
+  const species = c.speciesId ?? "";
+  const portrait = spriteTextureFor(`portrait:${species}`);
+  return portrait && portrait.width > 0 && portrait.height > 0
+    ? makeEnemyPortraitFace(portrait, size, c.ko)
+    : enemyAvatar(species, size, opts);
 }
 
 /**
@@ -1309,52 +1366,52 @@ function buildSlot(
   slot.eventMode = "static";
   slot.cursor = spec.ok ? "pointer" : "default";
   padHit(slot, w, h);
-  slot.on("pointertap", onTap);
   const tipText = spec.ok
     ? (spec.skill?.desc ?? "")
     : (spec.reason ?? "unavailable");
-  if (tipText) {
-    let tip: Container | null = null;
-    const raise = (): void => {
-      if (tip) return;
-      const built = makeSlotTooltip(tipText);
-      tip = built.view;
-      tip.position.set(0, -built.height - 6);
-      slot.addChild(tip);
-    };
-    const drop = (): void => {
-      tip?.destroy({ children: true });
-      tip = null;
-    };
-    slot.on("pointerover", () => {
-      if (!isTouch()) raise();
-    });
-    slot.on("pointerout", drop);
-    if (isTouch()) {
-      /*
-       * TOUCH (docs/design/mobile.md §2). A card's tooltip is the only place
-       * a skill's rules text lives, and touch has no hover — but a card is
-       * also the thing you TAP to use the skill, so "tap to reveal" would
-       * cost a tap on every single turn. So:
-       *
-       *  • a USABLE card shows its text while the finger is down and fires on
-       *    release — press-and-read, one gesture, no extra tap;
-       *  • an UNUSABLE card has nothing to fire, so its tap simply toggles
-       *    the reason ("Needs rank 3-4 — Bruno is at rank 1"), which is the
-       *    case where the text actually matters.
-       */
-      if (spec.ok) {
-        slot.on("pointerdown", raise);
-        slot.on("pointerup", drop);
-        slot.on("pointerupoutside", drop);
-      } else {
-        slot.on("pointertap", () => {
-          if (tip) drop();
-          else raise();
-        });
-      }
-    }
+  if (!tipText) {
+    slot.on("pointertap", onTap);
+    return slot;
   }
+
+  let tip: Container | null = null;
+  const raise = (): void => {
+    if (tip) return;
+    const built = makeSlotTooltip(tipText);
+    tip = built.view;
+    tip.position.set(0, -built.height - 6);
+    slot.addChild(tip);
+  };
+  const drop = (): void => {
+    tip?.destroy({ children: true });
+    tip = null;
+  };
+  slot.on("pointerover", () => {
+    if (!isTouch()) raise();
+  });
+  slot.on("pointerout", () => {
+    if (!isTouch()) drop();
+  });
+  /*
+   * THE SAME RULE AS EVERYWHERE ELSE (docs/design/mobile.md §2): a tap picks
+   * the skill, a long press reads its rules text without picking it. A card
+   * is the thing you press every single turn, so it must never cost a
+   * confirming tap — and the rules text is the one place a skill's actual
+   * wording lives, so it must never be unreachable either.
+   *
+   * An UNUSABLE card has nothing to pick, so a tap simply toggles the reason
+   * ("Needs rank 3-4 — Bruno is at rank 1") — the case where the text is
+   * what you came for.
+   */
+  tapAct(slot, {
+    ...(spec.ok ? { act: onTap } : {}),
+    details: raise,
+    hideDetails: drop,
+    detailsShown: () => tip !== null,
+    // the card is 128×112 and the tooltip hangs off its top edge; a ring
+    // inside it reads as a smudge rather than as an acknowledgement
+    ack: false,
+  });
   return slot;
 }
 
@@ -1805,9 +1862,9 @@ const INSPECT = { x: 16, y: 84, w: 372 } as const;
  * is left to learn about this species.
  *
  * It lives in the LEFT gutter on purpose: enemies always stand right of the
- * centre line, so the card can never cover the thing you tapped, and the
- * second tap that commits the attack always lands (docs/design/mobile.md
- * "tap to inspect, tap again to target").
+ * centre line, so the card can never cover the thing you are aiming at — the
+ * tap that commits the attack lands on the enemy, not on the card that
+ * described it (docs/design/mobile.md §2, "tap acts, long press reads").
  */
 export function makeInspectPanel(onClose?: () => void): InspectPanel {
   const view = new Container();
@@ -1940,7 +1997,9 @@ export function makeInspectPanel(onClose?: () => void): InspectPanel {
       /* -- footer ------------------------------------------------------- */
       const foot = label(
         subject.targetable
-          ? "tap it again to attack"
+          ? isTouch()
+            ? "tap it to attack"
+            : "click it to attack"
           : `met ${intel.met}×  ·  felled ${intel.kills}`,
         subject.targetable
           ? { size: TYPE.tiny, mono: true, fill: PAL.gold }

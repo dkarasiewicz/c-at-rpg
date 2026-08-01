@@ -16,7 +16,9 @@
  *   iconTile(id, size, opts)           the one framed art tile
  *   statusGlyph(id, size)              the one status mark
  *   makeStatusChip(id, value, opts)    the one status chip
- *   vignette / scrim / sceneBackdrop   cheap full-screen atmosphere
+ *   wordmark(size) / emblem(size)      the one brand mark (painted first!)
+ *   vignette / scrim / sceneBackdrop   cheap full-screen atmosphere,
+ *                                      painted to the REAL screen edges
  *
  * Rules the kit keeps for you:
  *  • FAIL-SOFT — a missing generated texture never throws; the procedural
@@ -36,9 +38,19 @@ import { BlurFilter, Container, Graphics, Sprite, Text } from "pixi.js";
 import type { ClassId, StatusId } from "../core/types.js";
 import { ENEMIES } from "../content/enemies.js";
 import { PAL, darken, hpColor, mix } from "./palette.js";
-import { RADIUS, SPACE, WRAP } from "./layout.js";
+import {
+  DESIGN_H,
+  DESIGN_W,
+  RADIUS,
+  SPACE,
+  WRAP,
+  bleedRect,
+  onViewBleed,
+  type Rect,
+} from "./layout.js";
 import {
   TYPE,
+  display,
   headingStyle,
   labelStyle,
   mono,
@@ -1278,49 +1290,179 @@ export function button(
 }
 
 /* ---------------------------------------------------------------------- */
-/* Atmosphere: vignette / scrim / sceneBackdrop                            */
+/* Brand: the wordmark and the emblem                                      */
 /* ---------------------------------------------------------------------- */
 
 /**
- * Cheap edge darkening for full-screen art — concentric PAL.void strokes,
- * one Graphics, no filters. `strength` 0..1 (default 0.6). Never eats input.
+ * THE wordmark — "c(at)rpg" with gold parens, on the DISPLAY face, centred
+ * on its own origin so a caller only has to place a point. Two screens show
+ * it (boot and title) and they must never drift apart, so it lives in the
+ * kit rather than in either of them.
  */
-export function vignette(w: number, h: number, strength = 0.6): Container {
+export function wordmark(size: number = TYPE.h1): Container {
   const view = new Container();
-  const g = new Graphics();
-  const steps = 12;
-  const band = Math.max(4, Math.round(Math.min(w, h) / 14 / steps) * steps) / 2;
-  for (let i = 0; i < steps; i++) {
-    const t = i / steps;
-    const inset = i * band;
-    g.rect(inset, inset, w - inset * 2, h - inset * 2).stroke({
-      width: band,
-      color: PAL.void,
-      alpha: clamp01(strength) * 0.1 * (1 - t) * (1 - t),
-      alignment: 0,
+  const parts: [string, number][] = [
+    ["c", PAL.text],
+    ["(at)", PAL.gold],
+    ["rpg", PAL.text],
+  ];
+  const texts = parts.map(
+    ([text, fill]) => new Text({ text, style: display(size, { fill }) }),
+  );
+  const total = texts.reduce((s, t) => s + t.width, 0);
+  let x = -total / 2;
+  for (const t of texts) {
+    t.anchor.set(0, 0.5);
+    t.position.set(x, 0);
+    x += t.width;
+    view.addChild(t);
+  }
+  return view;
+}
+
+/**
+ * THE emblem — the keyed `title:logo` medallion, centred on its own origin
+ * and scaled to `size` tall, over a warm pool so it reads on any backdrop.
+ *
+ * Fail-soft like every other painted-first helper in the kit: with no
+ * generated logo it falls back to the procedural gold paw (draw/cats.ts),
+ * which is what the boot screen drew before the art landed.
+ */
+export function emblem(size: number): Container {
+  const view = new Container();
+
+  // warm pool — concentric goldDark rings, cheapest possible glow
+  const glow = new Graphics();
+  const rings = 9;
+  for (let i = rings; i >= 1; i--) {
+    glow.circle(0, 0, (size * 0.62 * i) / rings).fill({
+      color: PAL.goldDark,
+      alpha: 0.035 * (1 - (i - 1) / rings),
     });
   }
-  view.addChild(g);
+  view.addChild(glow);
+
+  const tex = spriteTextureFor("title:logo");
+  if (tex && tex.height > 0) {
+    const sp = new Sprite({ texture: tex, anchor: 0.5 });
+    sp.scale.set(size / tex.height);
+    view.addChild(sp);
+  } else {
+    // the pre-art mark: drawPaw is a 7-unit glyph at scale 1, and its toes
+    // and pad together stand ~8.6 units tall — so `size` here is the same
+    // optical height the medallion would have had
+    const paw = new Graphics();
+    drawPaw(paw, 0, 0, size / 8.6, true);
+    view.addChild(paw);
+  }
   view.eventMode = "none";
   return view;
 }
 
-/** Flat modal scrim (ui-art §9): PAL.scrim over the whole screen. */
-export function scrim(w: number, h: number, alpha = 0.6): Graphics {
-  return new Graphics().rect(0, 0, w, h).fill({ color: PAL.scrim, alpha });
+/* ---------------------------------------------------------------------- */
+/* Atmosphere: vignette / scrim / sceneBackdrop                            */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * Screen-sized chrome must paint the SCREEN, not the safe area.
+ *
+ * 1280×720 is a contain-fitted safe box (ui/layout.ts): on a 19.5:9 phone
+ * ~139 design px per side of real screen sit outside it, and on a 4:3 tablet
+ * ~90 px above and below. Anything asked to cover the whole design box is
+ * therefore re-fitted to the box GROWN BY the live overhang, and re-fitted
+ * again whenever the window resizes or the phone rotates — that overhang is
+ * what used to be black letterbox.
+ *
+ * Smaller rects (a panel-sized backdrop, a card wash) are laid out exactly as
+ * asked and never subscribe.
+ */
+function bleedFit(
+  view: Container,
+  w: number,
+  h: number,
+  fit: (r: Rect) => void,
+): void {
+  // `>=` not `===`: battle's backdrop asks for the design box plus its
+  // parallax margin, and it is still a full-screen backdrop.
+  if (w < DESIGN_W || h < DESIGN_H) {
+    fit([0, 0, w, h]);
+    return;
+  }
+  const apply = (): void => {
+    const [, , bw, bh] = bleedRect();
+    const dx = (bw - DESIGN_W) / 2;
+    const dy = (bh - DESIGN_H) / 2;
+    fit([-dx, -dy, w + dx * 2, h + dy * 2]);
+  };
+  apply();
+  const off = onViewBleed(apply);
+  // The subscription outlives nothing: scenes destroy their whole view on
+  // unmount, and pixi fires 'destroyed' for every child of that tree.
+  view.on("destroyed", off);
+}
+
+/**
+ * Cheap edge darkening for full-screen art — concentric PAL.void strokes,
+ * one Graphics, no filters. `strength` 0..1 (default 0.6). Never eats input.
+ * Full-screen vignettes hug the REAL screen edge, not the safe-area edge.
+ */
+export function vignette(w: number, h: number, strength = 0.6): Container {
+  const view = new Container();
+  const g = new Graphics();
+  view.addChild(g);
+  view.eventMode = "none";
+  bleedFit(view, w, h, ([x, y, fw, fh]) => {
+    g.clear();
+    const steps = 12;
+    const band =
+      Math.max(4, Math.round(Math.min(fw, fh) / 14 / steps) * steps) / 2;
+    for (let i = 0; i < steps; i++) {
+      const t = i / steps;
+      const inset = i * band;
+      g.rect(x + inset, y + inset, fw - inset * 2, fh - inset * 2).stroke({
+        width: band,
+        color: PAL.void,
+        alpha: clamp01(strength) * 0.1 * (1 - t) * (1 - t),
+        alignment: 0,
+      });
+    }
+  });
+  return view;
+}
+
+/**
+ * Flat modal scrim (ui-art §9): PAL.scrim over the whole screen — the WHOLE
+ * screen, bleed included, or a modal would leave two bright undimmed bands
+ * beside it on a phone. Callers keep the `Graphics` they always got.
+ *
+ * `color` exists for the washes that are not modal scrims — the title's
+ * poster dim is PAL.bgDeep — so they get the same bleed instead of each
+ * hand-rolling a design-sized rect, which leaves a hard seam at the
+ * safe-area edge on any aspect wider than 16:9.
+ */
+export function scrim(
+  w: number,
+  h: number,
+  alpha = 0.6,
+  color: number = PAL.scrim,
+): Graphics {
+  const g = new Graphics();
+  bleedFit(g, w, h, ([x, y, fw, fh]) => {
+    g.clear().rect(x, y, fw, fh).fill({ color, alpha });
+  });
+  return g;
 }
 
 /**
  * Vertical PAL.bgDeep → PAL.void wash, drawn as `steps` bands (no gradient
  * fill needed). The fallback under every scene backdrop.
  */
-function paletteWash(w: number, h: number, steps = 16): Graphics {
-  const g = new Graphics();
+function paintWash(g: Graphics, [x, y, w, h]: Rect, steps = 16): void {
+  g.clear();
   const bh = Math.ceil(h / steps);
   for (let i = 0; i < steps; i++) {
-    g.rect(0, i * bh, w, bh + 1).fill(mix(PAL.bgDeep, PAL.void, i / steps));
+    g.rect(x, y + i * bh, w, bh + 1).fill(mix(PAL.bgDeep, PAL.void, i / steps));
   }
-  return g;
 }
 
 export interface BackdropOpts {
@@ -1335,6 +1477,16 @@ export interface BackdropOpts {
  * an optional dim wash, over a palette gradient that also serves as the
  * fallback when the texture is missing (scene art lands incrementally — a
  * missing id is normal, never an error).
+ *
+ * A backdrop asked to cover the whole design box covers the whole SCREEN
+ * instead (`bleedFit`): the art keeps its aspect and grows past the safe area
+ * into the overhang, so a 19.5:9 phone shows painted alley instead of two
+ * black bars. Generated scene art is 1600×900 against a 1280×720 box, so
+ * there is real image out there to show — and the wash underneath covers the
+ * corners at any aspect regardless.
+ *
+ * The overhang is decoration only. Nothing interactive is ever placed there;
+ * every rect in ui/layout.ts stays inside 1280×720.
  */
 export function sceneBackdrop(
   id: string,
@@ -1343,28 +1495,52 @@ export function sceneBackdrop(
   opts: BackdropOpts = {},
 ): Container {
   const view = new Container();
-  view.addChild(paletteWash(w, h));
+  const wash = new Graphics();
+  view.addChild(wash);
 
   const tex = spriteTextureFor(id);
-  if (tex && tex.width > 0 && tex.height > 0) {
-    const art = makeCoverSprite(id, w, h, { dim: opts.dim });
-    if (art) {
-      if (opts.blur === true) {
-        try {
-          art.filters = [new BlurFilter({ strength: 8, quality: 2 })];
-        } catch {
-          /* blur is decoration only — never let it break the screen */
-        }
+  const art =
+    tex && tex.width > 0 && tex.height > 0
+      ? new Sprite({ texture: tex })
+      : null;
+  if (art) {
+    if (opts.blur === true) {
+      try {
+        art.filters = [new BlurFilter({ strength: 8, quality: 2 })];
+      } catch {
+        /* blur is decoration only — never let it break the screen */
       }
-      view.addChild(art);
     }
-  } else if (opts.dim !== undefined && opts.dim > 0) {
-    view.addChild(
-      new Graphics()
-        .rect(0, 0, w, h)
-        .fill({ color: PAL.bgDeep, alpha: opts.dim }),
-    );
+    view.addChild(art);
   }
+  // The dim rides over the art (it was baked into the cover sprite before)
+  // and, with no art, over the bare wash — same two cases as before.
+  const dim =
+    opts.dim !== undefined && opts.dim > 0
+      ? view.addChild(new Graphics())
+      : null;
+
+  bleedFit(view, w, h, (r) => {
+    paintWash(wash, r);
+    const [x, y, fw, fh] = r;
+    if (art && tex) {
+      // COVER: fill the rect, keep the aspect, centre the overflow. No mask
+      // — the canvas edge is the only crop that matters out here.
+      const s = Math.max(fw / tex.width, fh / tex.height);
+      art.scale.set(s);
+      art.position.set(
+        x + (fw - tex.width * s) / 2,
+        y + (fh - tex.height * s) / 2,
+      );
+    }
+    if (dim) {
+      dim
+        .clear()
+        .rect(x, y, fw, fh)
+        .fill({ color: PAL.bgDeep, alpha: opts.dim ?? 0 });
+    }
+  });
+
   view.eventMode = "none";
   return view;
 }

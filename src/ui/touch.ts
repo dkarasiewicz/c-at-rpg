@@ -1,7 +1,7 @@
 /**
  * Touch runtime (docs/design/mobile.md §§1-3).
  *
- * THREE jobs, and nothing else:
+ * FOUR jobs, and nothing else:
  *
  *  1. **Am I a finger?** `isTouch()` answers once, from the pointer media
  *     query plus `maxTouchPoints`, with a `?touch=1` / `?touch=0` override so
@@ -23,11 +23,20 @@
  *     fine pointer the padding is zero and the hit area is exactly the art —
  *     mouse users get no sloppy overhang.
  *
- * Pixi-light on purpose: only `Container` is imported (for the hit-area
- * helpers), and nothing here touches gameplay.
+ *  4. **What does a finger MEAN?** `tapAct` answers with one rule, used
+ *     everywhere: a TAP ACTS and a LONG PRESS READS. The old model — tap to
+ *     inspect, tap again to commit — made an attack impossible to land the
+ *     moment anything reset the inspect state between the two taps, and it
+ *     charged every single turn an extra tap. A tap now commits, full stop;
+ *     the details you used to get for free from a hover are a 400 ms hold.
+ *
+ * Nothing here touches gameplay: it is pointer plumbing plus the one ring
+ * that acknowledges a held finger.
  */
-import type { Container } from "pixi.js";
+import { Graphics, type Container } from "pixi.js";
 import { DESIGN_H, DESIGN_W } from "./layout.js";
+import { PAL } from "./palette.js";
+import { killTweens, tween } from "./tween.js";
 
 /** The smallest reliable touch target, in CSS pixels. */
 export const MIN_TOUCH_CSS = 44;
@@ -173,59 +182,209 @@ export function padHitBox(
 }
 
 /* ---------------------------------------------------------------------- */
-/* Hover → tap                                                             */
+/* Tap = act, long press = details                                         */
 /* ---------------------------------------------------------------------- */
 
-export interface RevealOpts {
-  /** Show the informational thing (tooltip, nameplate, preview). */
-  show(): void;
-  /** Hide it again. */
-  hide(): void;
+/**
+ * How long a finger must stay down to mean "tell me about this" rather than
+ * "do this". 400 ms is the platform convention (iOS's own callout timer) and
+ * comfortably longer than any tap a player makes on purpose.
+ */
+export const LONG_PRESS_MS = 400;
+
+/**
+ * How far the finger may travel, in CSS px, before the press stops counting
+ * as a press. A long press must never fight a drag or a flick.
+ */
+export const LONG_PRESS_SLOP = 12;
+
+export interface TapActOpts {
   /**
-   * What a COMMITTING tap does. When present the widget is "inspect first,
-   * commit second" on touch: the first tap reveals, a second tap on the same
-   * widget commits. On a mouse, hover reveals and one click commits, exactly
-   * as before.
+   * COMMIT — what the widget is for. A tap fires this immediately, with no
+   * confirmation step: on touch, ambiguity between "inspect" and "act" is
+   * what made an attack impossible to land (docs/design/mobile.md §2).
+   * Omit for a purely informational affordance; then a tap toggles `details`
+   * instead, because there is nothing to commit and the info must stay
+   * reachable.
    */
-  commit?: () => void;
-  /** True while the reveal is already up (the caller owns that state). */
-  isShown(): boolean;
+  act?: () => void;
+  /** Open the details (tooltip, inspect card, nameplate). */
+  details?: () => void;
+  /** Close them again. */
+  hideDetails?: () => void;
+  /** True while the details are up — lets a long press toggle them. */
+  detailsShown?: () => boolean;
+  /**
+   * Also wire `pointerover`/`pointerout` to `details`/`hideDetails` on a fine
+   * pointer. Off by default, for callers that already own their own hover
+   * handlers (battle units sync the targeting preview in theirs).
+   */
+  hover?: boolean;
+  /**
+   * Draw the press ring inside the view. Default true. Turn it off for views
+   * that are clipped, masked, or measured by their children.
+   */
+  ack?: boolean;
+  /**
+   * Close the details before committing. Default true — a tooltip about a
+   * thing that just changed is stale. Set false when `act` owns the details
+   * itself (battle units toggle the inspect card from inside their act).
+   */
+  hideOnAct?: boolean;
 }
 
 /**
- * Wire ONE informational affordance so it works with both a mouse and a
- * finger (docs/design/mobile.md §2).
+ * Wire ONE affordance so it works with both a mouse and a finger.
  *
- *  • mouse — `pointerover` shows, `pointerout` hides, `pointertap` commits.
- *    Byte-identical behaviour to the hover-only code it replaces.
- *  • touch — the first `pointertap` shows (nothing is committed yet), the
- *    second commits. With no `commit` the second tap just hides again, so a
- *    purely informational tooltip is still reachable and still dismissible.
+ *  • **mouse** — unchanged forever: hover reveals (when `hover`), one click
+ *    commits.
+ *  • **touch** — a TAP COMMITS, immediately. A LONG PRESS (`LONG_PRESS_MS`)
+ *    opens the details instead and swallows the tap that follows it, with a
+ *    ring growing under the finger so the wait reads as deliberate rather
+ *    than as lag. Any finger travel past `LONG_PRESS_SLOP`, or a cancelled
+ *    pointer, aborts the press cleanly.
  *
  * The view must already be `eventMode: 'static'`.
  */
-export function tapToReveal(view: Container, opts: RevealOpts): void {
-  view.on("pointerover", () => {
-    if (isTouch()) return; // a synthetic hover from a tap must not double-fire
-    opts.show();
+export function tapAct(view: Container, opts: TapActOpts): void {
+  if (opts.hover === true) {
+    view.on("pointerover", () => {
+      if (isTouch()) return; // a synthetic hover from a tap must not double-fire
+      opts.details?.();
+    });
+    view.on("pointerout", () => {
+      if (isTouch()) return;
+      opts.hideDetails?.();
+    });
+  }
+
+  const commit = (): void => {
+    if (opts.act) {
+      if (opts.hideOnAct !== false) opts.hideDetails?.();
+      opts.act();
+      return;
+    }
+    // informational only: nothing to commit, so a tap toggles the details —
+    // they must stay reachable, and there is no action for it to shadow
+    if (opts.detailsShown?.() === true) opts.hideDetails?.();
+    else opts.details?.();
+  };
+
+  if (!isTouch()) {
+    view.on("pointertap", commit);
+    return;
+  }
+
+  /* ---- the finger --------------------------------------------------- */
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let ring: Container | null = null;
+  let from: { x: number; y: number } | null = null;
+  /** The long press already fired; the `pointertap` behind it is not an act. */
+  let consumed = false;
+
+  const stop = (): void => {
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    from = null;
+    const r = ring;
+    ring = null;
+    if (r) fadeRing(r);
+  };
+
+  const fire = (): void => {
+    timer = null;
+    from = null;
+    if (view.destroyed) return;
+    consumed = true;
+    popRing(ring);
+    ring = null;
+    buzz();
+    if (opts.detailsShown?.() === true) opts.hideDetails?.();
+    else opts.details?.();
+  };
+
+  view.on("pointerdown", (e) => {
+    consumed = false;
+    stop();
+    if (opts.details === undefined) return;
+    from = { x: e.global.x, y: e.global.y };
+    ring =
+      opts.ack === false ? null : pressRing(view, e.getLocalPosition(view));
+    timer = setTimeout(fire, LONG_PRESS_MS);
   });
-  view.on("pointerout", () => {
-    if (isTouch()) return;
-    opts.hide();
+  view.on("globalpointermove", (e) => {
+    if (from === null) return;
+    const dx = e.global.x - from.x;
+    const dy = e.global.y - from.y;
+    if (dx * dx + dy * dy > LONG_PRESS_SLOP * LONG_PRESS_SLOP) stop();
+  });
+  view.on("pointerup", stop);
+  view.on("pointerupoutside", () => {
+    stop();
+    consumed = false;
+  });
+  view.on("pointercancel", () => {
+    stop();
+    consumed = true; // an interrupted press must not fall through to an act
   });
   view.on("pointertap", () => {
-    if (!isTouch()) {
-      opts.hide();
-      opts.commit?.();
+    if (consumed) {
+      consumed = false;
       return;
     }
-    if (opts.isShown()) {
-      opts.hide();
-      opts.commit?.();
-      return;
-    }
-    opts.show();
+    commit();
   });
+}
+
+/* ---- press acknowledgement ------------------------------------------- */
+
+/**
+ * The ring that grows under a held finger. It exists so a 400 ms wait reads
+ * as a gesture in progress instead of as a dropped tap: the moment the ring
+ * is full, the details are open.
+ */
+function pressRing(view: Container, at: { x: number; y: number }): Container {
+  const g = new Graphics()
+    .circle(0, 0, 34)
+    .stroke({ width: 3, color: PAL.gold, alpha: 1 });
+  g.position.set(at.x, at.y);
+  g.scale.set(0.3);
+  g.alpha = 0;
+  g.eventMode = "none";
+  view.addChild(g);
+  tween(g, { alpha: 0.7 }, 130);
+  tween(g.scale, { x: 1, y: 1 }, LONG_PRESS_MS, "quadOut");
+  return g;
+}
+
+function fadeRing(g: Container): void {
+  if (g.destroyed) return;
+  killTweens(g);
+  killTweens(g.scale);
+  tween(g, { alpha: 0 }, 90, "linear", () => {
+    if (!g.destroyed) g.destroy();
+  });
+}
+
+function popRing(g: Container | null): void {
+  if (!g || g.destroyed) return;
+  killTweens(g);
+  killTweens(g.scale);
+  tween(g.scale, { x: 1.4, y: 1.4 }, 150, "quadOut");
+  tween(g, { alpha: 0 }, 150, "linear", () => {
+    if (!g.destroyed) g.destroy();
+  });
+}
+
+/** Haptic tick where the platform has one. Silently absent on iOS Safari. */
+function buzz(): void {
+  try {
+    (navigator as { vibrate?: (ms: number) => boolean }).vibrate?.(10);
+  } catch {
+    /* a missing haptic is never worth a frame */
+  }
 }
 
 /* ---------------------------------------------------------------------- */

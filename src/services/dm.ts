@@ -300,6 +300,63 @@ export function collectToolCalls(
   }
 }
 
+/** One `subagent.completed` seen on the parent stream. */
+export interface DmSubagentOutput {
+  name: string;
+  /** The child's answer, serialised by eve (`output: string`). */
+  output: string;
+}
+
+/**
+ * Harvest a `subagent.completed` event.
+ *
+ * eve lowers every delegation into a child session whose result comes back up
+ * the PARENT stream as `{ type: "subagent.completed", data: { subagentName,
+ * output } }` (eve `subagents` §"What the parent sees"). When the child ran in
+ * task mode — which is what a declared `outputSchema` means — `output` is that
+ * structured object, JSON-stringified by the runtime.
+ *
+ * This is the only channel a structured one-shot has. The client cannot address
+ * a subagent directly (the eve HTTP channel routes to the root session and
+ * nowhere else), and the parent will not answer a schema itself, so the answer
+ * has to be read in transit.
+ */
+export function collectSubagentOutput(
+  d: Record<string, unknown>,
+  out: DmSubagentOutput[],
+): void {
+  const name = typeof d.subagentName === "string" ? d.subagentName : "";
+  const output = typeof d.output === "string" ? d.output : "";
+  if (name === "" || output === "") return;
+  out.push({ name, output });
+}
+
+/**
+ * The LAST answer `name` returned this turn, parsed. Undefined when it was
+ * never called, answered with prose, or answered with something unparseable.
+ *
+ * Last wins for the same reason eve's own `result()` takes the most recent
+ * `result.completed`: if the parent delegated twice, the retry is the answer.
+ * `parseEmbeddedJson` rather than a bare `JSON.parse` because a child that
+ * failed its own schema falls back to text, and an object wrapped in prose is
+ * still worth more than nothing — the caller re-lints either way.
+ */
+export function subagentResult(
+  outputs: readonly DmSubagentOutput[],
+  name: string,
+): unknown {
+  for (let i = outputs.length - 1; i >= 0; i--) {
+    const entry = outputs[i];
+    if (entry === undefined || entry.name !== name) continue;
+    try {
+      return JSON.parse(entry.output) as unknown;
+    } catch {
+      return parseEmbeddedJson(entry.output);
+    }
+  }
+  return undefined;
+}
+
 /** Does this schema describe an encounter verdict (allowed + narration)? */
 export function wantsVerdict(schema: Record<string, unknown>): boolean {
   const props = schema.properties;
@@ -393,6 +450,18 @@ export interface DmTurn {
   message: string;
   /** JSON Schema for the structured result (`result.completed`). */
   outputSchema?: unknown;
+  /**
+   * The declared subagent this turn's answer is expected to come from.
+   *
+   * Set it and the turn's payload is read off the parent stream's
+   * `subagent.completed` for that name (see `subagentResult`) instead of the
+   * parent's own `result.completed` — the route every structured ONE-SHOT
+   * takes, because the parent cannot be made to answer a schema itself.
+   * A turn that names a subagent should NOT also pass an `outputSchema`: the
+   * specialist declares its own, and asking the parent for one on top only
+   * buys a second, slower copy of the same object.
+   */
+  subagent?: string;
   /** Streamed assistant text, delta by delta. */
   onDelta?: (delta: string, soFar: string) => void;
   timeoutMs?: number;
@@ -405,6 +474,8 @@ export interface DmTurnResult {
   text: string;
   /** The advanced session handle; persist it on the run. */
   session: DmSessionHandle;
+  /** Every delegation that finished during the turn, in order. */
+  subagents: readonly DmSubagentOutput[];
 }
 
 /**
@@ -471,10 +542,13 @@ export async function sendDmTurn(
     let text = "";
     let read = 0;
     const toolCalls: DmToolCall[] = [];
+    const subagentOutputs: DmSubagentOutput[] = [];
     for await (const ev of ndjson(stream)) {
       read += 1;
       const d = ev.data ?? {};
       collectToolCalls(d, toolCalls);
+      if (ev.type === "subagent.completed")
+        collectSubagentOutput(d, subagentOutputs);
       switch (ev.type) {
         case "message.appended": {
           const delta =
@@ -503,6 +577,15 @@ export async function sendDmTurn(
       if (isBoundary(ev.type)) break;
     }
     next.streamIndex += read;
+    // A turn routed to a subagent takes its answer from the delegation, not
+    // from the parent. The parent is a relay: it never had the schema, and
+    // whatever it says afterwards is a slower copy at best. Prefer the child's
+    // output whenever it exists, and fall back to the parent's own result only
+    // if the delegation never happened.
+    if (turn.subagent !== undefined) {
+      const fromChild = subagentResult(subagentOutputs, turn.subagent);
+      if (fromChild !== undefined) data = fromChild;
+    }
     // A turn that asked for a schema and got no `result.completed` is not
     // necessarily a failed turn: the model sometimes answers the schema in the
     // ASSISTANT TEXT instead of through the structured channel (observed once
@@ -510,7 +593,10 @@ export async function sendDmTurn(
     // the object back out of the prose is strictly better than discarding a
     // correct answer — the caller re-lints it either way, so a wrong guess
     // costs exactly what a missing result costs.
-    if (data === undefined && turn.outputSchema !== undefined) {
+    if (
+      data === undefined &&
+      (turn.outputSchema !== undefined || turn.subagent !== undefined)
+    ) {
       data = parseEmbeddedJson(text);
       // The tool-call reconstruction below can only produce a VERDICT, so it
       // must only run for a verdict request. A party or resonance one-shot
@@ -525,7 +611,7 @@ export async function sendDmTurn(
       }
     }
     markDmAlive(); // a turn came back: forgive any earlier stumble
-    return { data, text, session: next };
+    return { data, text, session: next, subagents: subagentOutputs };
   } catch {
     return null;
   } finally {

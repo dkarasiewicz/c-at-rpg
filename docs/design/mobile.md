@@ -106,7 +106,7 @@ takes the route.
 | Pointer detection | `src/ui/touch.ts` | `(pointer: coarse)` + `maxTouchPoints`, `?touch=1/0` override, stamped on `<html data-touch>` for CSS |
 | Hit-target growth | `src/ui/touch.ts`, applied in `widgets.ts` `button()` + the small tappables | kit buttons, skill cards, map medallions, inventory cells, Den rows, shop rows, belt cells, status chips, battle units |
 | Esc parity | `index.html` `#sys-menu` → `main.ts` → `manager.handleKey("esc")` | ONE control reaches every Esc affordance: pause, close overlay, back out of the Den/sell panel, cancel targeting, shut the inspect card. Lives in the letterbox gutter (measured at x 792 on a 844px viewport, gutter starts at 769) |
-| Hover → tap | `battle.ts`, `runMap.ts`, `battleWidgets.ts`, `inventoryPanel.ts`, `progressPanel.ts`, `touch.ts#tapToReveal` | enemy inspect (tap→read, tap→attack), map node blurbs (tap→read, tap→walk), cat nameplates, skill-card rules text (press-and-hold on a usable card, tap-toggle on a disabled one), equip chips, status chips. Hover is untouched on a mouse |
+| Hover → tap | `battle.ts`, `runMap.ts`, `battleWidgets.ts`, `inventoryPanel.ts`, `progressPanel.ts`, `touch.ts#tapAct` | **TAP ACTS, LONG PRESS READS — one rule, everywhere.** A tap on a legal target commits the attack; a tap on a map medallion takes the route; a tap on a skill card picks it; a tap on an equip chip takes the piece off. A 400 ms hold (`LONG_PRESS_MS`) opens the details instead and swallows the tap behind it: the enemy intel card, a cat's nameplate, a route's blurb, a skill's rules text. A gold ring grows under the finger so the wait reads as a gesture, not as lag, and any travel past 12 CSS px (`LONG_PRESS_SLOP`) or a `pointercancel` aborts it, so a hold never fights a drag. Where there is nothing to commit (a status chip, an enemy outside targeting) a tap toggles the details, because it can shadow no action. Hover and click are untouched on a mouse |
 | In-flow targeting cancel | `battle.ts` `onSlotPressed` | tapping the LIT skill card backs out — right-click and Esc do not exist on a phone |
 | Inspect card Close | `battleWidgets.ts` `makeInspectPanel(onClose)` | a real kit button, not an "Esc closes" hint |
 | No dead key names | `widgets.ts` `button()` — the chip is not built when `isTouch()` | A hotkey chip names a KEY, and a phone has none: "Esc", "Enter", "E", "T" beside a button a finger is about to press is dead chrome, and worse, it sends the player looking for an Escape key a virtual keyboard does not have. On a coarse pointer the chip is skipped and the label centres in the full width; nothing moves on a mouse. The skill cards' `1-6` are drawn elsewhere and deliberately stay — those read as slot numbers, not as keys |
@@ -126,6 +126,32 @@ menu button                          44x44 CSS px, in the gutter
 typed-action field                   390x40 CSS px, font-size 16px
 offline reload after one online visit: boots to `boot`
 ```
+
+### Why a tap acts (the fight this cost)
+
+The first cut of §2 was "tap to inspect, tap again to commit" — an extra tap
+bought as a confirmation step. It cost a run. On a real iPhone, round 2, one
+sewer bat left, the gold ring on it and the damage plate reading
+`≈12 / 11-13 / LETHAL`, tapping the bat would not attack. Two things were
+true at once and only the pair explains it:
+
+* **Ranks compact on a kill**, so the survivor slides into the dead unit's
+  slot — while pixi hit-tests on `visible`, never on `alpha`. Two invisible
+  rat corpses sat stacked on the bat with *bigger* boxes than its own (a rat
+  is 190 design px tall to the bat's 156, ±65 wide to its ±53). Every tap in
+  that halo was answered by a corpse, whose only effect was to close the
+  inspect card — so the "second" tap was forever the first one, and the run
+  was unwinnable. Corpses are now `eventMode: 'none'` the frame they drop
+  (`battle.ts#setUnitTappable`); only a revive target lights one up again.
+* **The hit box was narrower than the art.** `h * 0.34` describes a rat; a
+  bat is short and wide, and both wingtips answered to nothing. The box now
+  follows the art's own width, clamped to half the rank pitch so a fat target
+  can never eat the slot next door.
+
+Both were real. Neither would have mattered if a tap had simply attacked.
+That is the ruling: **an interaction that needs a confirming tap has two
+failure modes stacked on one gesture**, and on a phone you cannot see which
+one you hit. Details moved to a long press, where a mistake costs nothing.
 
 ### Known gap
 

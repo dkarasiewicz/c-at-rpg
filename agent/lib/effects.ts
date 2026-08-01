@@ -29,13 +29,13 @@ import type {
 import {
   EFFECT_CAPS,
   POWER_FRAMEWORK_VERSION,
-  STATUS_COST,
   powerBudget,
   validatePowerScript,
 } from "../../src/core/combat/powers.js";
 import {
   MAX_FLOOR,
   MIN_FLOOR,
+  STATUS_IDS as AUTHORABLE_STATUS_IDS,
   floorDamageCap,
   floorHealCap,
   floorRamp,
@@ -47,10 +47,25 @@ import {
 /* ------------------------------------------------------------------------ */
 
 /**
- * The six shipped statuses, read off the engine's own price table (which is
- * typed `Record<StatusId, number>`, so this list cannot drift).
+ * The statuses the DM may AUTHOR — `src/services/caps.ts`, the same list the
+ * browser's `contentLint`/`powerLint` accept.
+ *
+ * NOT `Object.keys(STATUS_COST)`, which is what this was and which was wrong.
+ * The price table is a superset: it prices `braced` too, because the engine
+ * applies that one itself. Offering it here made it authorable, and every kit
+ * or power that used it was rejected on arrival by a browser lint that has
+ * only ever known six — measured live, a generated party came back with
+ * `unknown status 'braced'` in a skill AND in a Stand power, from a model doing
+ * exactly what its schema said it could. A menu the consumer will refuse is not
+ * a menu.
+ *
+ * Typed through `StatusId`, so a seventh AUTHORABLE status is still one edit in
+ * `caps.ts` and nothing here.
  */
-export const STATUS_IDS = Object.keys(STATUS_COST) as [StatusId, ...StatusId[]];
+export const STATUS_IDS = [...AUTHORABLE_STATUS_IDS] as [
+  StatusId,
+  ...StatusId[],
+];
 
 /** `PowerTargetSel` is a type-only union; this is its runtime spelling. */
 export const TARGET_SELS: [PowerTargetSel, ...PowerTargetSel[]] = [
@@ -69,6 +84,25 @@ const targetSel = z
   .describe(
     "who it lands on: self, other (the trigger counterpart), allies, enemies",
   );
+
+/**
+ * An integer in ±`cap` that CANNOT be zero — as a union of two ranges rather
+ * than `.min().max().refine(d => d !== 0)`.
+ *
+ * The refinement version was a comment with no teeth. What the runtime shows
+ * the model is the JSON Schema projection of this zod schema, and a `.refine()`
+ * has no JSON Schema spelling, so it is simply dropped: measured live, a
+ * generated Stand power came back with `move` `delta: 0`, was rejected by
+ * `powerLint` ("move delta 0 outside ±3"), and cost the party a whole
+ * regeneration round over a rule the model was never shown. Two ranges survive
+ * the projection as an `anyOf`, and the model is held to them.
+ */
+function nonZeroInt(cap: number): z.ZodType<number> {
+  return z.union([
+    z.int().min(-cap).max(-1),
+    z.int().min(1).max(cap),
+  ]) as z.ZodType<number>;
+}
 
 /**
  * `EffectSpec`, as the model sees it. Numeric bounds are the SHIPPED
@@ -108,22 +142,16 @@ export const effectSpecSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("move"),
     target: targetSel,
-    delta: z
-      .int()
-      .min(-EFFECT_CAPS.moveDelta)
-      .max(EFFECT_CAPS.moveDelta)
-      .refine((d) => d !== 0, "delta must be non-zero")
-      .describe("forced movement in ranks; negative pulls, positive shoves"),
+    delta: nonZeroInt(EFFECT_CAPS.moveDelta).describe(
+      "forced movement in ranks; negative pulls, positive shoves",
+    ),
   }),
   z.object({
     kind: z.literal("energy"),
     target: targetSel,
-    amount: z
-      .int()
-      .min(-EFFECT_CAPS.energyAbs)
-      .max(EFFECT_CAPS.energyAbs)
-      .refine((a) => a !== 0, "amount must be non-zero")
-      .describe("cat energy gain or drain; a no-op on enemies"),
+    amount: nonZeroInt(EFFECT_CAPS.energyAbs).describe(
+      "cat energy gain or drain; a no-op on enemies",
+    ),
   }),
   z.object({
     kind: z.literal("cleanse"),

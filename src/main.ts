@@ -1,13 +1,14 @@
 /**
  * WP-09 — bootstrap (ARCHITECTURE.md §0.4, §3.4): pixi Application.init,
- * the 1280×720 design-resolution root with uniform letterbox scaling and
+ * the 1280×720 design-resolution root — a contain-scaled SAFE AREA that the
+ * painted backdrop bleeds past to the real screen edges — and
  * the 7-layer stack (bg·world·fx·hud·floaters·modal·flash), one input
  * listener, SceneManager construction with the full scene/overlay registry,
  * localStorage probe (MetaFile), and the first scene push → 'boot'.
  */
 import { Application, Container } from "pixi.js";
 import { PAL } from "./ui/palette.js";
-import { DESIGN_H, DESIGN_W } from "./ui/layout.js";
+import { DESIGN_H, DESIGN_W, setViewBleed } from "./ui/layout.js";
 import { installFonts } from "./ui/textStyles.js";
 import { initInput, setSceneKeyHandler } from "./ui/input.js";
 import { initTouch, isTouch, setViewScale } from "./ui/touch.js";
@@ -66,22 +67,90 @@ const RUN_SCENES: readonly SceneId[] = [
   // manifest just leaves the procedural renderers in charge). Never throws.
   await initSprites();
 
-  /* ---- root + letterbox scaling (ui-art §1) ------------------------ */
+  /* ---- root + frame (ui-art §1, docs/design/mobile.md §6) ---------- */
+  //
+  // 1280×720 is the SAFE AREA, not the screen. The box is CONTAIN-scaled, so
+  // every interactive rect is on screen at any aspect from 4:3 to 21:9 — but
+  // on a 19.5:9 phone that leaves ~76 CSS px per side, which used to be black
+  // letterbox and is now painted: `setViewBleed` tells the backdrop widgets
+  // how far past the safe area they must reach (see ui/layout.ts).
+  //
+  // The box is centred inside the SAFE-INSET part of the window rather than
+  // the raw window, so a notch never lands on a corner of the HUD and the
+  // DOM chrome docked to the real edge (the menu button) keeps its lane.
   const root = new Container();
   app.stage.addChild(root);
+
+  // env(safe-area-inset-*) is only readable through a resolved property:
+  // reading the custom property back hands you the literal `env(...)` token.
+  // A 0×0 probe whose padding is those four vars resolves them for pixi —
+  // and lets a desktop test rehearse a notch by overriding the vars.
+  const probe = document.createElement("div");
+  probe.id = "safe-probe";
+  document.body.appendChild(probe);
+  const px = (v: string): number => {
+    const n = Number.parseFloat(v);
+    return Number.isFinite(n) ? n : 0;
+  };
+  const setVar = (name: string, value: number): void =>
+    document.documentElement.style.setProperty(name, `${value}px`);
+  /**
+   * The band beside the safe box that #sys-menu parks in: a 44 CSS px target
+   * (docs/design/mobile.md §1) plus 2px of air on each side.
+   */
+  const MENU_LANE = 48;
+
   const layout = (): void => {
-    const scale = Math.min(
-      app.screen.width / DESIGN_W,
-      app.screen.height / DESIGN_H,
-    );
+    const vw = app.screen.width;
+    const vh = app.screen.height;
+    const scale = Math.min(vw / DESIGN_W, vh / DESIGN_H);
+    const boxW = DESIGN_W * scale;
+    const boxH = DESIGN_H * scale;
+
+    const s = getComputedStyle(probe);
+    const insT = px(s.paddingTop);
+    const insR = px(s.paddingRight);
+    const insB = px(s.paddingBottom);
+    const insL = px(s.paddingLeft);
+    // Centre in the inset-free window, but NEVER outside the window itself:
+    // the box already fills one axis exactly (contain fit), so on that axis
+    // an inset would otherwise push a HUD row off the top of the screen.
+    // The clamp turns that into "as far from the inset as the axis allows".
+    const clamp = (v: number, hi: number): number =>
+      Math.min(Math.max(v, 0), Math.max(0, hi));
+    let x = clamp(insL + (vw - insL - insR - boxW) / 2, vw - boxW);
+    const y = clamp(insT + (vh - insT - insB - boxH) / 2, vh - boxH);
+    // …then give #sys-menu its lane. On a notched iPhone the notch eats most
+    // of the right-hand slack and the button ends up ON the Scatter! chip
+    // (the reported bug). Sliding the box a few px LEFT — never past the
+    // left inset, never right — buys the lane back, and with the backdrop
+    // bleeding to both edges the shift is invisible.
+    const need = MENU_LANE - (vw - insR - (x + boxW));
+    if (need > 0) x -= Math.min(need, Math.max(0, x - insL));
+
     root.scale.set(scale);
-    root.position.set(
-      (app.screen.width - DESIGN_W * scale) / 2,
-      (app.screen.height - DESIGN_H * scale) / 2,
-    );
+    root.position.set(x, y);
     // Publish it: every touch hit-area asks this to convert 44 CSS px into
     // design px, and it moves on every resize and every rotate.
     setViewScale(scale);
+    // The overhang the painted backdrop must cover, design px per side. The
+    // WIDER side wins on both axes — an off-centre box would otherwise leave
+    // the far edge unpainted; overshoot on the near side is off screen.
+    setViewBleed(
+      Math.max(x, vw - x - boxW) / scale,
+      Math.max(y, vh - y - boxH) / scale,
+    );
+
+    // Hand the page chrome the real geometry of the box. #sys-menu parks in
+    // whichever gutter can actually hold a 44px target (public/style.css).
+    setVar("--box-left", x);
+    setVar("--box-top", y);
+    setVar("--box-right", vw - x - boxW);
+    setVar("--box-bottom", vh - y - boxH);
+    const freeRight = vw - x - boxW - insR;
+    const freeTop = y - insT;
+    document.documentElement.dataset.menuDock =
+      freeRight >= MENU_LANE ? "right" : freeTop >= MENU_LANE ? "top" : "inset";
   };
   layout();
   app.renderer.on("resize", layout);

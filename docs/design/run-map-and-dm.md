@@ -99,6 +99,12 @@ agent/
     encounter/             one fight's adjudicator: gets the battle snapshot
       agent.ts             (ranks, HP, statuses, powers), narrower toolset
       instructions.md      returns a structured verdict via outputSchema
+    party/                 the party forge: 1-4 descriptions in, four legal
+      agent.ts             kits out. NO tools/ directory at all
+      instructions.ts      declares outputSchema: partyOutputSchema
+    resonance/             the Stand-pair judge, same shape and same reason
+      agent.ts             declares outputSchema: resonanceOutputSchema
+      instructions.ts
   channels/eve.ts          HTTP channel: CORS to the game origin, auth
 ```
 
@@ -110,9 +116,16 @@ Why eve rather than more endpoints:
 - **Subagents** (`agent/subagents/*`) are the natural unit for "this fight's
   DM": fresh context, narrower tools, its own identity, delegated with
   `{ message, outputSchema }` and returning typed data.
-- **One-shot still works.** `session.send({ message, outputSchema })` returns
-  schema-valid typed data, so party generation, item generation and resonance
-  compilation stay exactly as structured as they are today — no loss.
+- **One-shot works — through a subagent, not through the DM.** The plan said
+  `session.send({ message, outputSchema })` would carry party and resonance
+  generation unchanged. It does not: the DM's own "you may only change the world
+  through your tools" outranks a per-message schema, and 0 of 5 measured
+  structured turns produced a result on either haiku or Sonnet 5. What works is
+  giving the structured job to an agent with **nothing to call but the answer**
+  — a declared subagent with no `tools/` directory, declaring the `outputSchema`
+  itself — and reading its answer off the parent stream's `subagent.completed`.
+  Same typed data, one architectural move away. See docs/DM-DEPLOY.md
+  "Structured (one-shot) calls".
 - Model calls resolve through **AI Gateway** with the deployment's OIDC token,
   so there is no provider secret to manage.
 
@@ -125,8 +138,8 @@ agent is the only back end, and there is no endpoint fallback behind it.
 
 The client seam is now two files: `src/services/dm.ts` (transport, combat and
 encounter verdicts, the presence layer) and `src/services/oneshot.ts` (the
-schema'd party and resonance one-shots, including the lint → regenerate →
-salvage loop the endpoints used to run server-side). The shared bounds live in
+party and resonance one-shots — routing to their subagents, plus the lint →
+regenerate → salvage loop the endpoints used to run server-side). The shared bounds live in
 `src/services/caps.ts`, imported by BOTH the browser and `agent/`, so there is
 one copy of `EVENT_CAPS` and the floor ramp rather than the three there were.
 

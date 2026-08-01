@@ -10,6 +10,68 @@ export type Rect = [x: number, y: number, w: number, h: number];
 export const DESIGN_W = 1280;
 export const DESIGN_H = 720;
 
+/* ---------------------------------------------------------------------- */
+/* Live frame: the SAFE AREA and the screen that bleeds around it           */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * 1280×720 is the SAFE AREA, not the screen.
+ *
+ * `src/main.ts` scales the design box to CONTAIN it in the window, so every
+ * interactive rect above is always fully on screen at any aspect. What is
+ * left over — 139 design px per side on a 19.5:9 phone, ~90 px top and
+ * bottom on a 4:3 tablet — used to be black letterbox. It is now painted:
+ * the backdrop layer (`sceneBackdrop`/`vignette` in ui/widgets.ts) extends
+ * into it so the game reaches the physical edges of the device.
+ *
+ * `bleedX`/`bleedY` are that overhang in DESIGN pixels on EACH side, and
+ * they change on every resize and rotate — so the widgets that paint the
+ * bleed subscribe rather than sample once.
+ */
+export interface ViewBleed {
+  x: number;
+  y: number;
+}
+
+let bleed: ViewBleed = { x: 0, y: 0 };
+const bleedListeners = new Set<(b: ViewBleed) => void>();
+
+/** Publish a new overhang (main.ts's `layout()` owns this). */
+export function setViewBleed(x: number, y: number): void {
+  const nx = Math.max(0, x);
+  const ny = Math.max(0, y);
+  if (nx === bleed.x && ny === bleed.y) return;
+  bleed = { x: nx, y: ny };
+  for (const fn of bleedListeners) fn(bleed);
+}
+
+/** The current overhang, design px per side. */
+export function viewBleed(): ViewBleed {
+  return bleed;
+}
+
+/**
+ * Subscribe to overhang changes; returns the unsubscribe. Callers that own
+ * a display object should drop the subscription on `destroyed`.
+ */
+export function onViewBleed(fn: (b: ViewBleed) => void): () => void {
+  bleedListeners.add(fn);
+  return () => bleedListeners.delete(fn);
+}
+
+/**
+ * The whole painted screen in design coords: the safe area grown by the
+ * current overhang. `[-bx, -by, DESIGN_W + 2bx, DESIGN_H + 2by]`.
+ */
+export function bleedRect(): Rect {
+  return [
+    -bleed.x,
+    -bleed.y,
+    DESIGN_W + bleed.x * 2,
+    DESIGN_H + bleed.y * 2,
+  ] as Rect;
+}
+
 /** Corner radii (ui-art §1) + the shared chrome kit's avatar/bar radii. */
 export const RADIUS = {
   panel: 8,

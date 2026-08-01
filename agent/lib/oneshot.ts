@@ -1,23 +1,41 @@
 /**
  * One-shot output schemas — the capabilities the `api/gm/*` endpoints used to
- * serve, as schemas a caller passes to a single agent turn.
+ * serve, as the shapes their answers must satisfy.
  *
- * docs/design/run-map-and-dm.md §4: "One-shot still works.
- * `session.send({ message, outputSchema })` returns schema-valid typed data, so
- * party generation, item generation and resonance compilation stay exactly as
- * structured as they are today — no loss."
+ * WHO HOLDS THESE. `partyOutputSchema` and `resonanceOutputSchema` are declared
+ * on the subagents that answer them (`agent/subagents/party/agent.ts`,
+ * `agent/subagents/resonance/agent.ts`), so a delegation runs in task mode and
+ * the runtime enforces the schema on the child. They are NOT passed per-message
+ * by the browser any more: a schema handed to the root DM lost to the root DM's
+ * own instructions every single time it was measured (see
+ * `src/services/oneshot.ts`). The remaining schemas here are still per-call
+ * shapes for `agent/skills/{item,event}.ts`.
  *
- * These are the schemas a caller passes as `outputSchema`. They are zod mirrors
- * of the SHIPPED contracts in `src/core/types.ts` and `src/services/gmTypes.ts`
- * (the same types `src/services/oneshot.ts` re-validates on receipt),
- * each with a compile-time parity assertion at the bottom of its section: if a
- * core contract changes shape and this file does not, it stops compiling.
+ * They are zod mirrors of the SHIPPED contracts in `src/core/types.ts` and
+ * `src/services/gmTypes.ts` (the same types `src/services/oneshot.ts`
+ * re-validates on receipt), each with a compile-time parity assertion at the
+ * bottom of its section: if a core contract changes shape and this file does
+ * not, it stops compiling.
  *
- * Nothing here validates BUDGETS. The numeric budgets (role stat totals, skill
- * costs, event effect caps, item hook menu) stay where they already are —
- * `src/services/caps.ts` and `src/core/combat/powers.ts` — and are stated to
- * the model by the matching skill under `agent/skills/`. Schemas constrain
- * shape; lints constrain power.
+ * WHAT A SCHEMA IS ALLOWED TO SAY. It used to say only "shape", and everything
+ * numeric was left to the prose brief plus the client lint. That was a mistake
+ * with a measured cost: `growth` rows were typed over all six `STAT_KEYS`, so
+ * the model was formally permitted to put `enMax` in a growth row — which
+ * `contentLint` has never accepted — and a live party came back with the
+ * illegal key in all 28 rows. The schema was the only authority the runtime
+ * actually enforces, and it was pointing the wrong way.
+ *
+ * So every bound that is EXPRESSIBLE in a schema is now expressed here, from
+ * the shipped tables in `src/services/caps.ts`: the growth key menu, the
+ * per-stat bounds, `enMax`, skill costs and powers, the authorable statuses.
+ * The runtime holds the answering subagent to them, which is strictly earlier
+ * and cheaper than a regeneration round.
+ *
+ * What a schema still cannot say stays where it already was: relationships
+ * between fields (a role's stat SUM, the total skill cost, a growth row's
+ * total) and BUDGETS (`powerBudget`). Those remain the client lint's job in
+ * `src/services/oneshot.ts`, and the retry loop's. Schemas constrain what is
+ * sayable; lints constrain what is fair.
  */
 import { z } from "zod";
 import type {
@@ -36,6 +54,20 @@ import type {
   PowerScript,
 } from "../../src/services/gmTypes.js";
 import { POWER_FRAMEWORK_VERSION } from "../../src/core/combat/powers.js";
+import {
+  CLASS_IDS,
+  GROWTH_KEYS,
+  GROWTH_ROWS,
+  MAX_GROWTH_ROW_TOTAL,
+  MAX_POWER_HEAL,
+  MAX_POWER_ROW,
+  MAX_POWER_SINGLE_DAMAGE,
+  MAX_SKILL_COST,
+  MEW_HOOKS,
+  SKILLS_PER_KIT,
+  STAT_BOUNDS,
+  STAT_KEYS,
+} from "../../src/services/caps.js";
 import { STATUS_IDS, TARGET_SELS, effectSpecSchema } from "./effects.js";
 
 /** `never` unless A and B are the same type — the strict parity guard. */
@@ -54,20 +86,8 @@ type Satisfies<A, B> = [A] extends [B] ? true : never;
 /* Shared leaves                                                             */
 /* ------------------------------------------------------------------------ */
 
-const STAT_KEYS = ["hp", "atk", "def", "spd", "crt", "enMax"] as const;
 const RARITIES = ["stray", "sleek", "pedigree", "mewthical"] as const;
 const EQUIP_SLOTS = ["weapon", "trinket", "collar"] as const;
-const CLASS_IDS = ["bruiser", "trickster", "hexer", "medic"] as const;
-const MEW_HOOKS = [
-  "poiseChip2",
-  "critOffBalance",
-  "appliesAlwaysHit",
-  "healsGrantMending",
-  "moverOffBalance",
-  "ninthBell",
-  "catPileDouble",
-  "startEnergy6",
-] as const;
 const ROLES = ["tank", "striker", "control", "support"] as const;
 
 export const statsSchema = z.object({
@@ -80,9 +100,41 @@ export const statsSchema = z.object({
 });
 export const STATS_PARITY: Same<z.infer<typeof statsSchema>, Stats> = true;
 
+/**
+ * The four stats a generated kit AUTHORS — bounded, and deliberately without
+ * `hp` or `enMax`.
+ *
+ * WHY hp IS MISSING. `contentLint` requires hp+atk+def+spd+crt to equal the
+ * role's `ROLE_STAT_TOTALS` entry EXACTLY, and no schema can express a sum, so
+ * that was the one bound left for prose to enforce. It did not hold: across
+ * live generations, "stat total 63 != 64" was the single most common lint
+ * failure, and each one cost a ~90s regeneration for an off-by-one.
+ *
+ * It is also arithmetic that matters, which the DM is told in the first line of
+ * its hard bounds never to do. So it does not: the model picks the four stats
+ * that express the cat's character, and `completeBaseStats` in
+ * `src/services/oneshot.ts` derives `hp` from the role's total. The sum is then
+ * correct by construction rather than by luck, and there is nothing left to
+ * regenerate.
+ *
+ * `enMax` is dropped for the same reason in miniature — it is always
+ * `START_EN_MAX`, so asking for it only creates a way to get it wrong.
+ */
+const authoredStatsSchema = z.object({
+  atk: z.int().min(STAT_BOUNDS.atk[0]).max(STAT_BOUNDS.atk[1]),
+  def: z.int().min(STAT_BOUNDS.def[0]).max(STAT_BOUNDS.def[1]),
+  spd: z.int().min(STAT_BOUNDS.spd[0]).max(STAT_BOUNDS.spd[1]),
+  crt: z.int().min(STAT_BOUNDS.crt[0]).max(STAT_BOUNDS.crt[1]),
+});
+export const AUTHORED_STATS_ARE_PARTIAL_STATS: Satisfies<
+  z.infer<typeof authoredStatsSchema>,
+  Omit<Stats, "hp" | "enMax">
+> = true;
+
 const statusApplicationSchema = z.object({
   status: z.enum(STATUS_IDS),
-  chance: z.number().min(0).max(1),
+  // (0, 1]: a zero-chance application is not a thing, and `contentLint` says so.
+  chance: z.number().gt(0).max(1),
   value: z.int().optional(),
   to: z.enum(["target", "self", "allEnemies"]).optional(),
 });
@@ -91,30 +143,84 @@ export const STATUS_APPLICATION_PARITY: Same<
   StatusApplication
 > = true;
 
+/**
+ * Ranks are 1..5 front-to-back for enemies and 1..4 for a four-cat party;
+ * `usableFrom` is where the ACTOR may stand, so it is always the party's four.
+ * All three are `contentLint` bounds, stated here so they cannot be broken.
+ */
+const RANKS = { party: 4, enemy: 5 } as const;
+
 export const skillSchema = z.object({
-  id: z.string(),
+  // `contentLint#CAMEL_ID`. Stated here because it is trivially expressible and
+  // was not: one live party came back with `crush_swipe`, `pip_nudge` and
+  // fourteen more snake_case ids — sixteen lint errors and a whole regeneration
+  // round for a naming convention the model was never shown in a form it could
+  // be held to.
+  id: z.string().regex(/^[a-z][a-zA-Z0-9]{1,30}$/),
   name: z.string(),
   desc: z.string(),
-  cost: z.int(),
+  cost: z.int().min(0).max(MAX_SKILL_COST),
   cooldown: z.int().optional(),
-  usableFrom: z.array(z.int()),
+  usableFrom: z.array(z.int().min(1).max(RANKS.party)).min(1),
   target: z.object({
     side: z.enum(["enemy", "ally", "self"]),
-    ranks: z.array(z.int()),
+    ranks: z.array(z.int().min(1).max(RANKS.enemy)).min(1),
     pattern: z.enum(["single", "row"]),
   }),
-  power: z.int(),
+  // The widest of the three ceilings (single-target damage). The two narrower
+  // ones depend on sibling fields, so they are branched in `partySkillSchema`
+  // below rather than stated here.
+  power: z.int().min(0).max(MAX_POWER_SINGLE_DAMAGE),
   kind: z.enum(["damage", "heal", "utility"]),
-  moveTarget: z.int().optional(),
-  moveSelf: z.int().optional(),
+  moveTarget: z.int().min(-3).max(3).optional(),
+  moveSelf: z.int().min(-2).max(2).optional(),
   applies: z.array(statusApplicationSchema).optional(),
   cleanses: z.array(z.enum(STATUS_IDS)).optional(),
-  revivePct: z.number().optional(),
+  revivePct: z.number().gt(0).max(0.5).optional(),
   oncePerBattle: z.boolean().optional(),
   energyGain: z.int().optional(),
   aiWeight: z.number().optional(),
 });
 export const SKILL_PARITY: Same<z.infer<typeof skillSchema>, Skill> = true;
+
+/**
+ * A GENERATED skill: `skillSchema` with the two power ceilings that depend on
+ * sibling fields branched out, so they are enforceable rather than merely
+ * mentioned.
+ *
+ * `contentLint` prices a skill three ways — `MAX_POWER_ROW` for any `row`
+ * pattern, `MAX_POWER_HEAL` for a heal, `MAX_POWER_SINGLE_DAMAGE` for
+ * single-target damage — and only the widest of those fits in a flat `max`.
+ * A union does fit: it projects to a JSON Schema `anyOf`, which the runtime
+ * enforces on the answering subagent. Measured live, "row-pattern power above
+ * 60" was the LAST remaining first-pass lint failure once the growth keys and
+ * stat bounds were fixed, on a rule the model could only ever have read in
+ * prose.
+ *
+ * `skillSchema` itself stays the flat, strict mirror of `Skill`, because that
+ * is what `SKILL_PARITY` is for: a union cannot be `Same<>`-compared with the
+ * engine's type, and losing that guard to gain a bound would be a bad trade.
+ * Hence a second schema instead of a replacement.
+ */
+const partySkillSchema = z.union([
+  skillSchema.extend({
+    target: skillSchema.shape.target.extend({ pattern: z.literal("row") }),
+    power: z.int().min(0).max(MAX_POWER_ROW),
+  }),
+  skillSchema.extend({
+    target: skillSchema.shape.target.extend({ pattern: z.literal("single") }),
+    kind: z.literal("heal"),
+    power: z.int().min(0).max(MAX_POWER_HEAL),
+  }),
+  skillSchema.extend({
+    target: skillSchema.shape.target.extend({ pattern: z.literal("single") }),
+    kind: z.enum(["damage", "utility"]),
+  }),
+]);
+export const PARTY_SKILL_PARITY: Satisfies<
+  z.infer<typeof partySkillSchema>,
+  Skill
+> = true;
 
 /* ------------------------------------------------------------------------ */
 /* Power Script (stand-powers.md — the DSL core/combat owns)                 */
@@ -179,9 +285,19 @@ const catKitSchema = z.object({
   catName: z.string().min(1).max(40),
   className: z.string().min(1).max(40),
   epithet: z.string().min(1).max(80),
-  base: statsSchema,
-  growth: z.array(z.partialRecord(z.enum(STAT_KEYS), z.int())).length(7),
-  skills: z.array(skillSchema).length(4),
+  base: authoredStatsSchema,
+  // GROWTH_KEYS, not STAT_KEYS. `enMax` does not grow, and a growth row that
+  // mentions it is rejected outright by `contentLint` — this schema used to
+  // permit it, and every live party spent all 28 of its growth rows saying so.
+  growth: z
+    .array(
+      z.partialRecord(
+        z.enum(GROWTH_KEYS),
+        z.int().min(0).max(MAX_GROWTH_ROW_TOTAL),
+      ),
+    )
+    .length(GROWTH_ROWS),
+  skills: z.array(partySkillSchema).length(SKILLS_PER_KIT),
   trait: z.object({ name: z.string(), desc: z.string() }),
   stand: z.object({ name: z.string(), visualPrompt: z.string() }),
   power: powerScriptSchema.extend({ budget: z.number() }),
@@ -201,9 +317,17 @@ export const partyOutputSchema = z.object({
 
 export const ROLE_PARITY: Same<z.infer<typeof catKitSchema>["role"], GmRole> =
   true;
+
+/**
+ * An authored kit is a `GeneratedCatKit` MINUS the two stats the client
+ * derives: `completeBaseStats` in `src/services/oneshot.ts` fills `hp` from
+ * `ROLE_STAT_TOTALS` and `enMax` from the shipped start value, and only then is
+ * the payload a `GeneratedCatKit`. Everything else still has to match the
+ * shipped contract exactly, which is what this assertion is for.
+ */
 export const CAT_KIT_PARITY: Satisfies<
   z.infer<typeof catKitSchema>,
-  GeneratedCatKit
+  Omit<GeneratedCatKit, "base"> & { base: Omit<Stats, "hp" | "enMax"> }
 > = true;
 
 /* ------------------------------------------------------------------------ */

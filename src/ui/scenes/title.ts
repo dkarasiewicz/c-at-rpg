@@ -21,14 +21,17 @@ import type { ClassId, RunState } from "../../core/types.js";
 import { loadRun } from "../../core/run/save.js";
 import { PAL } from "../palette.js";
 import { DESIGN_H, DESIGN_W, R, SPACE } from "../layout.js";
-import { TYPE, display } from "../textStyles.js";
+import { TYPE } from "../textStyles.js";
 import {
   button,
+  emblem,
   heading,
   label,
   panel,
   sceneBackdrop,
+  scrim,
   vignette,
+  wordmark,
 } from "../widgets.js";
 import { createDomInput, type DomInput } from "../domInput.js";
 import { isTouch } from "../touch.js";
@@ -54,8 +57,10 @@ const CAT_ORDER: readonly ClassId[] = [
 ];
 
 /* ---- screen geometry (design px) ------------------------------------- */
-const LOGO_Y = 168;
-const SUBTITLE_Y = 224;
+const EMBLEM_Y = 82;
+const EMBLEM_H = 116;
+const LOGO_Y = 186;
+const SUBTITLE_Y = 234;
 const MENU_X = 460;
 const MENU_W = 360;
 const MENU_TOP = 288;
@@ -164,18 +169,33 @@ export function createTitleScene(): Scene {
 
       const heroTex = spriteTextureFor("title:hero");
       if (heroTex && heroTex.height > 0) {
-        // CONTAIN-fit (not cover): the hero art is a group staging and
-        // cropping it would decapitate the cast. Its flat PAL.bgDeep field
-        // blends into the wash on both sides.
+        // TWO copies of the same art, because 1280×720 is a safe area and
+        // not the screen (ui/layout.ts): the kit's backdrop COVER-fits the
+        // hero across the whole device, bleed included, so a 19.5:9 phone
+        // has no black bars — and the crisp CONTAIN-fitted copy sits on top
+        // at the safe-area height, because cropping this one to fill would
+        // decapitate the cast. The dim between them keeps the bled copy as
+        // atmosphere rather than a second, wrongly-scaled picture, and the
+        // blur is what stops the join at the safe-area edge from reading as
+        // a mirrored duplicate: soft, it is the room the poster hangs in.
+        view.addChild(
+          sceneBackdrop("title:hero", DESIGN_W, DESIGN_H, {
+            // darker than the crisp copy on purpose: the bleed should read
+            // as the shadow the poster hangs in, never as a brighter halo
+            // around it
+            dim: 0.8,
+            blur: true,
+          }),
+        );
         const hero = new Sprite({ texture: heroTex, anchor: 0.5 });
         hero.scale.set(DESIGN_H / heroTex.height);
         hero.position.set(DESIGN_W / 2, DESIGN_H / 2);
         view.addChild(hero);
-        view.addChild(
-          new Graphics()
-            .rect(0, 0, DESIGN_W, DESIGN_H)
-            .fill({ color: PAL.bgDeep, alpha: 0.55 }),
-        );
+        // The readability wash goes over the SCREEN, bleed included. Drawn
+        // at DESIGN_W×DESIGN_H it only dimmed the safe box, so the bled
+        // copy stayed undimmed beside it and the join read as a hard bright
+        // seam down both sides of the poster on any phone aspect.
+        view.addChild(scrim(DESIGN_W, DESIGN_H, 0.55, PAL.bgDeep));
       } else {
         buildProceduralSky();
       }
@@ -332,27 +352,19 @@ export function createTitleScene(): Scene {
 
   /* ---- wordmark, menu, records (over hero or procedural sky) -------- */
   function buildLogoAndMenu(gameCtx: GameCtx): void {
-    // The wordmark is the one bespoke type on the shared scale: 2 × h1.
-    const logoParts: { text: string; fill: number }[] = [
-      { text: "c", fill: PAL.text },
-      { text: "(at)", fill: PAL.gold },
-      { text: "rpg", fill: PAL.text },
-    ];
-    const texts = logoParts.map(
-      (p) =>
-        new Text({
-          text: p.text,
-          style: display(TYPE.h1 * 2, { fill: p.fill }),
-        }),
-    );
-    const totalW = texts.reduce((s, x) => s + x.width, 0);
-    let lx = DESIGN_W / 2 - totalW / 2;
-    for (const txt of texts) {
-      txt.anchor.set(0, 0.5);
-      txt.position.set(lx, LOGO_Y);
-      lx += txt.width;
-      view.addChild(txt);
-    }
+    // The crest: the keyed `title:logo` emblem over the wordmark, the pair
+    // reading as one mark. The kit's `emblem()` is painted-first and falls
+    // back to the procedural gold paw, so a missing texture costs the screen
+    // nothing (widgets.ts).
+    const crest = emblem(EMBLEM_H);
+    crest.position.set(DESIGN_W / 2, EMBLEM_Y);
+    view.addChild(crest);
+
+    // The wordmark is the one bespoke type on the shared scale: 1.75 × h1.
+    const mark = wordmark(TYPE.h1 * 1.75);
+    mark.position.set(DESIGN_W / 2, LOGO_Y);
+    view.addChild(mark);
+    const totalW = mark.width;
     // whisker flourish: 3 lines per side, angled off the logo baseline
     const wg = new Graphics();
     for (const side of [-1, 1]) {

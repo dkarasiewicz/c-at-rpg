@@ -30,6 +30,32 @@
     --safe-right: env(safe-area-inset-right, 0px);
     --safe-bottom: env(safe-area-inset-bottom, 0px);
     --safe-left: env(safe-area-inset-left, 0px);
+
+    /* Where the 1280×720 safe box actually landed, in CSS px per edge.
+       src/main.ts republishes these on every resize/rotate; they are the
+       only way the page chrome can dock to the GAME's edge rather than the
+       window's. 0 until the first layout — a sane letterbox-free default. */
+    --box-top: 0px;
+    --box-right: 0px;
+    --box-bottom: 0px;
+    --box-left: 0px;
+}
+
+/*
+ * Resolves env(safe-area-inset-*) for src/main.ts: reading a custom property
+ * back hands you the literal `env(...)` token, but a resolved `padding` is a
+ * number. 0×0, hidden, inert.
+ */
+#safe-probe {
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 0;
+    visibility: hidden;
+    pointer-events: none;
+    padding: var(--safe-top) var(--safe-right) var(--safe-bottom)
+        var(--safe-left);
 }
 
 html,
@@ -95,47 +121,102 @@ body {
  * `handleKey`), so touch needs exactly ONE control — this one — to reach
  * every Esc-shaped affordance in the game.
  *
- * It lives in the DOM rather than on the pixi stage because the letterbox
- * gutter it sits in is outside the design rect, and because 44 CSS px must be
- * 44 CSS px at any scale.
+ * It lives in the DOM rather than on the pixi stage because it docks to the
+ * REAL screen edge — outside the 1280×720 safe box, which pixi knows in
+ * design px and CSS does not — and because 44 CSS px must be 44 CSS px at
+ * any letterbox scale.
+ *
+ * QUIET BY DESIGN. It is a system affordance, not a move you make in the
+ * game: the tap target stays the full 44px, but the PLATE inside it is 34px
+ * of translucent PAL.void with a PAL.border hairline and PAL.textDim strokes,
+ * so it never competes with a gold primary button or the Scatter! chip. It
+ * only takes colour when your finger is on it.
  */
 #sys-menu {
     display: none;
     position: fixed;
-    top: calc(var(--safe-top) + 8px);
-    right: calc(var(--safe-right) + 8px);
     z-index: 30;
+    /* the target: a full 44 CSS px, always */
     width: 44px;
     height: 44px;
     padding: 0;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    background: rgba(38, 32, 56, 0.82);
-    color: var(--text);
+    border: 0;
+    background: none;
+    color: var(--text-dim);
     cursor: pointer;
     touch-action: manipulation;
     -webkit-tap-highlight-color: transparent;
+    /* docking: see the three [data-menu-dock] rules below */
+    top: calc(var(--safe-top) + 8px);
+    right: calc(var(--safe-right) + 8px);
+}
+
+/* the plate: 34px inside the 44px target */
+#sys-menu::before {
+    content: "";
+    position: absolute;
+    inset: 5px;
+    border-radius: 9px;
+    border: 1px solid rgba(74, 63, 102, 0.7);
+    background: rgba(14, 12, 22, 0.5);
     backdrop-filter: blur(3px);
 }
 
 #sys-menu svg {
-    width: 22px;
-    height: 22px;
+    position: relative;
+    width: 16px;
+    height: 16px;
     stroke: currentColor;
     stroke-width: 2;
     stroke-linecap: round;
     fill: none;
+    opacity: 0.9;
 }
 
 #sys-menu:active {
-    background: rgba(74, 63, 102, 0.95);
-    border-color: var(--gold);
     color: var(--gold);
+}
+
+#sys-menu:active::before {
+    background: rgba(38, 32, 56, 0.92);
+    border-color: var(--gold);
 }
 
 :root[data-touch="1"] #sys-menu {
     display: grid;
     place-items: center;
+}
+
+/*
+ * A REAL HOME, not the corner of the HUD.
+ *
+ * The safe box is contain-fitted, so on a phone (19.5:9 and wider) there is
+ * always a band of painted backdrop beside it with nothing interactive in
+ * it — the button parks in the middle of that band and can no longer land on
+ * the Scatter! chip or the run map's header. `--box-*` is the measured gutter
+ * per edge and main.ts picks the dock (src/main.ts `layout`):
+ *
+ *   right  — a side band wide enough for the target (every phone)
+ *   top    — a 4:3 tablet: the bands are above and below instead
+ *   inset  — a window at exactly 16:9 has no band at all; hug the right edge
+ *            at mid-height, the one column of the HUD that is always art.
+ */
+:root[data-menu-dock="right"] #sys-menu {
+    top: calc(var(--safe-top) + 8px);
+    right: calc(
+        var(--safe-right) + (var(--box-right) - var(--safe-right) - 44px) / 2
+    );
+}
+
+:root[data-menu-dock="top"] #sys-menu {
+    top: calc(var(--safe-top) + (var(--box-top) - var(--safe-top) - 44px) / 2);
+    right: calc(var(--safe-right) + 8px);
+}
+
+:root[data-menu-dock="inset"] #sys-menu {
+    top: 50%;
+    right: calc(var(--safe-right) + 4px);
+    transform: translateY(-50%);
 }
 
 /* ---------------------------------------------------------------------- */

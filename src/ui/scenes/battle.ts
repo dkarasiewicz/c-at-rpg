@@ -139,7 +139,7 @@ import {
 } from "../draw/spriteFrame.js";
 import { catTexture, enemyTexture } from "../sprites.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
-import { isTouch, padHit, padHitBox } from "../touch.js";
+import { isTouch, padHit, padHitBox, tapAct } from "../touch.js";
 import type { EventWinContext, LootOverlayParams } from "../overlays/loot.js";
 import { makeIntentBadge, type IntentBadge } from "../draw/intel.js";
 import {
@@ -775,14 +775,22 @@ export function createBattleScene(): Scene {
     // above its knees, and phone-scale taps need the whole silhouette
     // (docs/design/mobile.md §3).
     root.eventMode = "static";
-    const halfW = Math.max(46, h * 0.34);
+    // WIDTH IS THE ONE A FINGER MISSES. `h * 0.34` describes a rat; a sewer
+    // bat is 156px tall and paints 162px of WINGSPAN, so ±53 design px of hit
+    // box left both wingtips answering to nothing at all — measured on a
+    // phone, a tap on the bat's wing reached no unit. So take the art's own
+    // width, and clamp it to half the rank pitch so a fat target can never
+    // eat the slot next door.
+    const artHalf = artHalfWidth(gfx);
+    const slotHalf = (c.side === "cat" ? pitch.cat : pitch.enemy) / 2 - 4;
+    const halfW = Math.max(46, h * 0.34, Math.min(artHalf, slotHalf));
     // The silhouette IS the target, grown to 44 CSS px under a finger — a
     // rat is 146px tall at design scale, which is 79 CSS px on a phone, but
     // only 31 px WIDE (docs/design/mobile.md §3).
     padHitBox(root, -halfW, -(h + 18), halfW * 2, h + 38);
     root.cursor = "pointer";
     root.on("pointerover", () => {
-      if (isTouch()) return; // the tap path owns inspection on touch
+      if (isTouch()) return; // the finger has its own gestures, below
       if (u.dead || !bs) return;
       const cc = bs.combatants.find((x) => x.id === u.id);
       if (!cc || u.nameplate) return;
@@ -795,14 +803,65 @@ export function createBattleScene(): Scene {
       }
     });
     root.on("pointerout", () => {
+      // Touch has no hover, but pixi still emits `pointerout` when the finger
+      // lifts — unguarded, it tore down a nameplate the same gesture had just
+      // asked for.
+      if (isTouch()) return;
       u.nameplate?.destroy({ children: true });
       u.nameplate = null;
     });
-    root.on("pointertap", () => onUnitTap(u));
+    /*
+     * ONE RULE (docs/design/mobile.md §2): TAP ACTS, LONG PRESS READS.
+     *
+     * A tap on a legal target commits the attack, immediately. The old model
+     * — tap to inspect, tap again to attack — is what made a fight
+     * unwinnable on a phone: anything that reset the inspect state between
+     * the two taps (and a corpse stacked in the same slot did exactly that,
+     * silently) put the player in a loop where the second tap never arrived.
+     */
+    tapAct(root, {
+      act: () => onUnitAct(u),
+      details: () => onUnitDetails(u),
+      hideDetails: () => hideUnitDetails(u),
+      detailsShown: () => unitDetailsShown(u),
+      // `onUnitAct` owns the card: it closes it when it commits, and on a
+      // MOUSE, outside targeting, a click still toggles it as it always did.
+      hideOnAct: false,
+    });
     return u;
   };
 
+  /**
+   * Half the painted width of a unit's art, in root-local design px. The
+   * battle sprites are a character inside an aura-padded frame; the frame is
+   * what a finger sees coming, so the frame is what the target follows.
+   */
+  const artHalfWidth = (gfx: Container): number => {
+    const b = gfx.getLocalBounds();
+    if (!(b.width > 0)) return 0;
+    const sx = Math.abs(gfx.scale.x);
+    return Math.max(Math.abs(b.x), Math.abs(b.x + b.width)) * sx;
+  };
+
   const unitOf = (id: string): UnitView | undefined => units.get(id);
+
+  /**
+   * Does this unit answer the pointer?
+   *
+   * A KO'd unit fades to `alpha 0` but pixi hit-tests on `visible`, never on
+   * alpha, so a corpse kept a live hit box — and because ranks COMPACT on a
+   * kill, the survivor slides into the dead unit's slot and inherits its
+   * stack of invisible boxes. A rat's box is 190 design px tall to a sewer
+   * bat's 156, so the last enemy standing wore a halo of corpse that
+   * swallowed every tap aimed at it. Measured on a phone: a tap on the bat's
+   * outline was answered by `e1:ratThug`, dead. Corpses go dark; only a
+   * revive target lights one up again (`refreshTargeting`).
+   */
+  const setUnitTappable = (u: UnitView, on: boolean): void => {
+    if (u.root.destroyed) return;
+    u.root.eventMode = on ? "static" : "none";
+    u.root.cursor = on ? "pointer" : "default";
+  };
 
   /* ---------------- intel: telegraphs, threat, inspection ---------------- */
 
@@ -1629,6 +1688,7 @@ export function createBattleScene(): Scene {
     targetFx = null;
     for (const u of units.values()) {
       u.root.alpha = u.dead ? 0 : 1;
+      setUnitTappable(u, !u.dead);
       if (u.ring) {
         u.ring.destroy();
         u.ring = null;
@@ -1648,6 +1708,9 @@ export function createBattleScene(): Scene {
 
     for (const u of units.values()) {
       const isTarget = targeting.targetIds.includes(u.id);
+      // A corpse answers the pointer again ONLY while a revive is aimed at
+      // it (see `setUnitTappable`).
+      setUnitTappable(u, !u.dead || isTarget);
       // KO'd allies become visible ghosts while a revive skill targets them
       if (u.dead && !isTarget) continue;
       u.root.alpha = u.dead ? 0.5 : isTarget || u.id === actorId ? 1 : 0.6;
@@ -1763,83 +1826,98 @@ export function createBattleScene(): Scene {
   };
 
   /**
-   * TAP TO INSPECT, TAP AGAIN TO TARGET (docs/design/mobile.md §2 — touch has
-   * no hover, so every hover-only affordance needs a two-tap equivalent).
+   * A TAP ON A UNIT IS THE ACTION (docs/design/mobile.md §2).
    *
-   * First tap on an enemy opens its inspect card and, while targeting, makes
-   * it the previewed target — you see the damage numbers and what you know
-   * about it BEFORE committing. The second tap on the same enemy commits.
-   * Away from targeting the second tap just closes the card.
+   * While targeting, a tap on a legal target commits — no confirmation step,
+   * no second tap. The board already says what will happen: the target wears
+   * the gold ring and the damage plate over its head reads the expected
+   * number, the roll band and LETHAL. Asking for a second tap on top of that
+   * bought nothing and cost a fight: with the corpses of two dead rats
+   * stacked in the survivor's slot (ranks compact on a KO), a tap on the
+   * survivor's outline was answered by a corpse, whose only effect was to
+   * close the inspect card — so the "second" tap was forever the first one.
+   *
+   * The details a mouse gets from a hover are a LONG PRESS here, and nothing
+   * else opens them. See `onUnitDetails`.
    */
-  const onUnitTap = (u: UnitView): void => {
-    if (u.side === "enemy" && !u.dead) {
-      const already = inspect.openId === u.id;
-      if (phase === "targeting" && targeting?.targetIds.includes(u.id)) {
-        if (already) {
-          closeInspect();
-          targeting.idx = targeting.targetIds.indexOf(u.id);
-          confirmTargeting();
-          return;
-        }
-        targeting.idx = targeting.targetIds.indexOf(u.id);
-        refreshTargeting();
-        showInspect(u.id);
-        return;
-      }
-      if (already) closeInspect();
-      else showInspect(u.id);
+  const onUnitAct = (u: UnitView): void => {
+    if (phase === "targeting" && targeting?.targetIds.includes(u.id)) {
+      closeInspect();
+      targeting.idx = targeting.targetIds.indexOf(u.id);
+      confirmTargeting();
       return;
     }
-    closeInspect();
-    if (phase === "targeting" && targeting) {
-      if (targeting.targetIds.includes(u.id)) {
-        targeting.idx = targeting.targetIds.indexOf(u.id);
-        confirmTargeting();
+    if (u.dead) return; // a corpse is scenery, not a control
+    if (u.side === "enemy") {
+      // Nothing to commit. A MOUSE still toggles the card on click, exactly
+      // as it always did; a finger opens it with a long press instead, so a
+      // stray tap can never leave the player somewhere they did not ask for.
+      if (!isTouch()) {
+        if (inspect.openId === u.id) closeInspect();
+        else showInspect(u.id);
       }
       return;
     }
     if (phase === "input" && legal?.actorId && bs) {
       // clicking an adjacent cat = move-swap (ui-art §8)
       const actor = byId(bs, legal.actorId);
-      if (u.side === "cat" && !u.dead && u.id !== actor.id) {
+      if (u.id !== actor.id) {
         const other = bs.combatants.find((x) => x.id === u.id);
         if (!other) return;
         if (other.rank === actor.rank - 1 && legal.canMoveForward) {
+          closeInspect();
           resolvePlayer({ type: "move", dir: "forward" });
           return;
         }
         if (other.rank === actor.rank + 1 && legal.canMoveBack) {
+          closeInspect();
           resolvePlayer({ type: "move", dir: "back" });
           return;
         }
       }
     }
-    // A cat's nameplate is hover-only, and a cat has no inspect card, so on
-    // touch a tap that could not move anybody toggles the plate instead —
-    // otherwise the party's own names and levels are unreachable by finger
-    // (docs/design/mobile.md §2).
-    if (isTouch() && u.side === "cat" && !u.dead) toggleNameplate(u);
   };
 
-  /** Show/hide a unit's hover nameplate. The touch path for §2. */
-  const toggleNameplate = (u: UnitView): void => {
-    if (u.nameplate) {
-      u.nameplate.destroy({ children: true });
-      u.nameplate = null;
+  /**
+   * LONG PRESS = WHAT IS THIS? An enemy answers with its intel card, a cat
+   * with the nameplate a mouse gets from hovering. Touch only: on a fine
+   * pointer this is what `pointerover` above already does, for free.
+   */
+  const onUnitDetails = (u: UnitView): void => {
+    if (u.dead) return;
+    if (u.side === "enemy") {
+      showInspect(u.id);
       return;
     }
-    if (!bs) return;
+    showNameplate(u);
+  };
+
+  const hideUnitDetails = (u: UnitView): void => {
+    if (u.side === "enemy") {
+      if (inspect.openId === u.id) closeInspect();
+      return;
+    }
+    hideNameplate(u);
+  };
+
+  const unitDetailsShown = (u: UnitView): boolean =>
+    u.side === "enemy" ? inspect.openId === u.id : u.nameplate !== null;
+
+  /** Raise a unit's nameplate, alone — only one is ever up. */
+  const showNameplate = (u: UnitView): void => {
+    if (!bs || u.nameplate) return;
     const cc = bs.combatants.find((x) => x.id === u.id);
     if (!cc) return;
-    for (const other of units.values()) {
-      if (other.nameplate) {
-        other.nameplate.destroy({ children: true });
-        other.nameplate = null;
-      }
-    }
+    for (const other of units.values()) hideNameplate(other);
     u.nameplate = makeNameplate(cc);
     u.nameplate.position.set(0, u.headY - 46);
     u.root.addChild(u.nameplate);
+  };
+
+  const hideNameplate = (u: UnitView): void => {
+    if (!u.nameplate) return;
+    u.nameplate.destroy({ children: true });
+    u.nameplate = null;
   };
 
   const tryFlee = (): void => {
@@ -2200,6 +2278,10 @@ export function createBattleScene(): Scene {
           u.dead = true;
           u.statuses.clear();
           u.intent?.set(null);
+          // the corpse stops answering the pointer the instant it drops —
+          // the survivor is about to slide into this exact slot
+          setUnitTappable(u, false);
+          hideNameplate(u);
           if (inspect.openId === e.id) closeInspect();
           rebuildStatusRow(u);
           setTilt(u, false);
@@ -2724,7 +2806,19 @@ export function createBattleScene(): Scene {
             y: u.root.y,
             headY: u.headY,
             dead: u.dead,
+            taps: u.root.eventMode !== "none",
           }));
+        // What the SCENE thinks is going on. A touch smoke that aims at a
+        // unit needs to know whether a tap there would commit anything, and
+        // "the hp did not change" is not an answer — it cannot tell a broken
+        // gesture from a turn that was never the player's. DEV-only.
+        (window as unknown as { __ui?: () => unknown }).__ui = () => ({
+          phase,
+          actor: legal?.actorId ?? null,
+          targets: targeting?.targetIds ?? null,
+          targetIdx: targeting?.idx ?? null,
+          inspecting: inspect.openId,
+        });
       }
       // battleRng stream (§4): re-engaging a fled pack restarts the stream
       rng = mulberry32(
@@ -2770,6 +2864,7 @@ export function createBattleScene(): Scene {
       if (import.meta.env?.DEV === true) {
         delete (window as unknown as { __battle?: () => unknown }).__battle;
         delete (window as unknown as { __units?: () => unknown }).__units;
+        delete (window as unknown as { __ui?: () => unknown }).__ui;
       }
       // the tabletop card owns a DOM <input>: it must go before the pixi
       // layers below it are destroyed (and before the element is orphaned)

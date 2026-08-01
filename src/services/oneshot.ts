@@ -3,23 +3,30 @@
  *
  * These were `POST /api/gm/party` and `POST /api/gm/resonance` — two stateless
  * Vercel functions that owned a model credential, a prompt, a lint and a
- * memo store. The agent owns the prompt now (`agent/skills/party.ts`,
- * `agent/skills/resonance.ts`) and the model credential with it, so what is
- * left for the client is exactly the half that was never the model's job:
+ * memo store. Two declared subagents own the prompt now
+ * (`agent/subagents/party/`, `agent/subagents/resonance/`) and the model
+ * credential with it, so what is left for the client is exactly the half that
+ * was never the model's job:
  *
- *   1. the **output schema** the answer must satisfy
- *      (`session.send({ outputSchema })`, DM-DEPLOY.md "Structured calls");
+ *   1. the **routing** — which specialist owns this shape, and reading its
+ *      answer off the parent stream (`sendDmTurn({ subagent })`). The SCHEMA
+ *      itself is no longer here: it is declared on the subagent that answers,
+ *      because a schema the root DM was asked for was a schema the root DM
+ *      ignored (see "THE SHAPE IS NOT HERE ANY MORE" below);
  *   2. the **lint** — `contentLint.ts` + `powerLint.ts`, the same functions
  *      the endpoints ran server-side, now run in the browser before a single
  *      generated number reaches the engine;
- *   3. the **regenerate-on-invalid loop** that `api/_lib/generate.ts` used to
- *      own. Nothing in the agent checks its own arithmetic, so a failed lint
- *      is handed back as the next turn of the same session, up to
- *      `PARTY_RETRIES` times, and only then salvaged;
- *   4. the **budget stamp** — `normalizePower()`. A model never computes its
+ *   3. the **derivation** — `completeBaseStats` and `trimGrowthRow`. Sums are
+ *      arithmetic, and arithmetic that matters is never the model's: `hp` is
+ *      not even in the party schema, and a growth row over budget is trimmed
+ *      rather than sent back;
+ *   4. the **salvage and regenerate-on-invalid loop** that
+ *      `api/_lib/generate.ts` used to own — powers over budget become stock
+ *      powers in place, and only a kit-level failure spends one retry;
+ *   5. the **budget stamp** — `normalizePower()`. A model never computes its
  *      own budget; whoever consumes the payload recomputes it. That used to be
  *      the endpoint and is now this module.
- *   5. the **art-style composition** — the DM returns a subject, the house
+ *   6. the **art-style composition** — the DM returns a subject, the house
  *      style is appended here (`artPrompt.ts`).
  *
  * Offline-first is unchanged: every function returns `null` on ANY failure (no
@@ -36,9 +43,7 @@ import { composeArtPrompt } from "./artPrompt.js";
 import { lintParty } from "./contentLint.js";
 import {
   BUDGET_CAPS,
-  INTERACTION_RULE_SCHEMA,
   POWER_FRAMEWORK_VERSION,
-  POWER_SCHEMA,
   lintInteractionRule,
   lintPowerScript,
   normalizePower,
@@ -46,82 +51,103 @@ import {
   STOCK_POWERS,
 } from "./powerLint.js";
 import { markDmUnreachable, probeDm, sendDmTurn } from "./dm.js";
-import type { DmSessionHandle } from "./tabletop.js";
+import type { Stats } from "../core/types.js";
+import { MAX_GROWTH_ROW_TOTAL, ROLE_STAT_TOTALS, STAT_BOUNDS } from "./caps.js";
 
 export { resonancePairKey };
 
 /**
- * PER TURN of party generation — and a party is up to `1 + PARTY_RETRIES`
- * turns, so the worst case is three times this.
+ * PER TURN of party generation. A party is at most `1 + PARTY_RETRIES` turns,
+ * so two of these is the worst case — and in measurement it is one.
  *
- * It is deliberately enormous next to `DM_TURN_TIMEOUT_MS`. Four kits × four
- * skills × a Power Script is a lot of schema-constrained tokens: measured
- * against the deployed haiku agent, ONE turn came in at 39s, 60s, 68s and once
- * over 90s. `src/services/gm.ts` used a flat 8s for every call, which the old
- * `/api/gm/party` (Sonnet, `maxDuration: 60`) cannot ever have beaten — the
- * creator's "GM offline, using the Strays" path was doing double duty as its
- * timeout path, silently.
+ * SIZED FROM THE TAIL, NOT FROM OPTIMISM. Four kits × four skills × a Power
+ * Script is a lot of schema-constrained tokens and the forge takes as long as
+ * it takes: twenty timed turns against the deployed subagent ran 41, 43, 45,
+ * 65, 71, 71, 72, 72, 75, 75, 77, 77, 79, 79, 81, 82, 93, 95, 96, 105, 106 and
+ * 116 seconds. 150s sits ~30% above the worst of those.
  *
- * Overrunning this is not a bug, it is the offline path: the creator toasts and
- * starts a normal run with the four canonical strays.
+ * It is a REDUCTION from the 180s this briefly needed, and the reduction was
+ * bought rather than wished for: with `hp` and growth rows derived client-side
+ * and powers salvaged in place, a party is one turn, so the budget only has to
+ * cover one. What a player actually waits is the median — 65s.
+ *
+ * Do not tighten it to the median. At 120s, two of five end-to-end runs were
+ * not slow answers but the offline path: the creator said "GM offline, using
+ * the Strays" for a party the forge was still writing — the same class of bug
+ * as the flat 8s budget `src/services/gm.ts` used to use.
+ *
+ * Overrunning this is still not a bug, it is the offline path: the creator
+ * toasts and starts a normal run with the four canonical strays.
  */
-export const DM_PARTY_TIMEOUT_MS = 120_000;
+export const DM_PARTY_TIMEOUT_MS = 150_000;
 
 /** Compiling one resonance is a small ask, and nobody is waiting for it. */
 export const DM_RESONANCE_TIMEOUT_MS = 25_000;
 
 /* ------------------------------------------------------------------------ */
-/* The one-shot session                                                      */
+/* The one-shot queue                                                        */
 /* ------------------------------------------------------------------------ */
 
 /**
- * One eve session for every one-shot in this browser session.
+ * One-shots are SERIALISED but not CONVERSATIONAL.
  *
- * A run's conversational session lives on the run (`run.dm`); these calls
- * happen either BEFORE a run exists (party generation, from the creator) or
- * beside one, dozens at a time (resonance, once per cross-side power pair at
- * battle setup). Opening a session per call would strand a durable session per
- * pair, so they share one and are SERIALISED through it: eve advances a
- * session a turn at a time, and the queue doubles as the rate limit on a
- * battle that fans out twenty pairs at once.
+ * They used to share one durable eve session, so that a retry could be "the
+ * next turn of the same conversation". That is no longer what a retry is: the
+ * answer comes from a subagent, and a subagent starts every delegation with an
+ * empty context, so there is no conversation to continue. What the shared
+ * session did carry was the previous answer — a ~10 kB party arrives in the
+ * ROOT's history as the delegation's tool result — and it made every subsequent
+ * turn slower. Measured: first turns 78-106s, retries on the same session over
+ * 120s, i.e. straight past the budget and into the offline path. Two of five
+ * end-to-end runs failed that way and neither failure was the model's.
+ *
+ * So each one-shot turn opens a fresh session. The queue stays: it is what
+ * keeps a battle that fans out twenty resonance pairs from opening twenty
+ * requests at once.
  */
-let oneshotSession: DmSessionHandle | null = null;
 let queue: Promise<unknown> = Promise.resolve();
 
-/** Test hook: forget the shared one-shot session. */
+/** Test hook: drain the one-shot queue. */
 export function resetOneshotSession(): void {
-  oneshotSession = null;
   queue = Promise.resolve();
 }
 
-/** One turn on the shared session. `null` = the DM did not answer. */
-type Turn = (
-  message: string,
-  outputSchema: Record<string, unknown>,
-  timeoutMs: number,
-) => Promise<unknown>;
+/**
+ * One one-shot turn, answered by a declared subagent.
+ * `null` = the DM did not answer at all.
+ *
+ * NO `outputSchema` GOES OVER THE WIRE HERE, and that is the whole fix. Asking
+ * the root DM for a schema loses to its own "you may only change the world
+ * through your tools" — 0 of 5 measured, on two model tiers. The schema now
+ * lives on the specialist (`agent/subagents/party`, `agent/subagents/resonance`
+ * declare it in their `agent.ts`), the root's only job is to relay the brief it
+ * is handed, and the answer is read off the parent stream as
+ * `subagent.completed`. Passing a schema on top would just make the relay
+ * re-type four cat kits it has no schema for.
+ */
+type Turn = (req: {
+  message: string;
+  /** The declared subagent that owns this shape. */
+  subagent: string;
+  timeoutMs: number;
+}) => Promise<unknown>;
 
-const turn: Turn = async (message, outputSchema, timeoutMs) => {
-  const res = await sendDmTurn(oneshotSession, {
-    message,
-    outputSchema,
-    timeoutMs,
-  });
+const turn: Turn = async ({ message, subagent, timeoutMs }) => {
+  const res = await sendDmTurn(null, { message, subagent, timeoutMs });
   if (!res) {
     markDmUnreachable();
     return null;
   }
-  oneshotSession = res.session;
   return res.data;
 };
 
 /**
- * Run `job` after every earlier one-shot has finished, on the shared session.
- * Failures never poison the queue — the next job still runs.
+ * Run `job` after every earlier one-shot has finished. Failures never poison
+ * the queue — the next job still runs.
  *
- * `job` gets the turn function rather than a single message because party
- * generation is a CONVERSATION: answer, lint, and if the lint failed, hand the
- * violations back on the same session and let it fix them (below).
+ * `job` gets the turn function rather than a single message because a party is
+ * up to two turns: answer, lint, and if the lint found something a retry can
+ * actually fix, brief the forge again (below).
  */
 async function enqueue<T>(
   job: (send: Turn) => Promise<T | null>,
@@ -133,170 +159,143 @@ async function enqueue<T>(
 }
 
 /* ------------------------------------------------------------------------ */
-/* Party — the shape (was api/gm/party.ts PARTY_SCHEMA)                      */
+/* Party — the shape                                                         */
 /* ------------------------------------------------------------------------ */
 
-const STATS_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: ["hp", "atk", "def", "spd", "crt", "enMax"],
-  properties: {
-    hp: { type: "integer" },
-    atk: { type: "integer" },
-    def: { type: "integer" },
-    spd: { type: "integer" },
-    crt: { type: "integer" },
-    enMax: { type: "integer" },
-  },
-};
-
-const GROWTH_ROW_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  properties: {
-    hp: { type: "integer" },
-    atk: { type: "integer" },
-    def: { type: "integer" },
-    spd: { type: "integer" },
-    crt: { type: "integer" },
-  },
-};
-
-const STATUS_ENUM = [
-  "scratched",
-  "frazzled",
-  "offBalance",
-  "guarded",
-  "provoked",
-  "mending",
-];
-
-const SKILL_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "id",
-    "name",
-    "desc",
-    "cost",
-    "usableFrom",
-    "target",
-    "power",
-    "kind",
-  ],
-  properties: {
-    id: { type: "string" },
-    name: { type: "string" },
-    desc: { type: "string" },
-    cost: { type: "integer" },
-    usableFrom: { type: "array", items: { type: "integer" } },
-    target: {
-      type: "object",
-      additionalProperties: false,
-      required: ["side", "ranks", "pattern"],
-      properties: {
-        side: { enum: ["enemy", "ally", "self"] },
-        ranks: { type: "array", items: { type: "integer" } },
-        pattern: { enum: ["single", "row"] },
-      },
-    },
-    power: { type: "integer" },
-    kind: { enum: ["damage", "heal", "utility"] },
-    moveTarget: { type: "integer" },
-    moveSelf: { type: "integer" },
-    applies: {
-      type: "array",
-      items: {
-        type: "object",
-        additionalProperties: false,
-        required: ["status", "chance"],
-        properties: {
-          status: { enum: STATUS_ENUM },
-          chance: { type: "number" },
-          value: { type: "integer" },
-          to: { enum: ["target", "self", "allEnemies"] },
-        },
-      },
-    },
-    cleanses: { type: "array", items: { enum: STATUS_ENUM } },
-    revivePct: { type: "number" },
-    oncePerBattle: { type: "boolean" },
-    energyGain: { type: "integer" },
-  },
-};
-
-const KIT_SCHEMA = {
-  type: "object",
-  additionalProperties: false,
-  required: [
-    "role",
-    "catName",
-    "className",
-    "epithet",
-    "base",
-    "growth",
-    "skills",
-    "trait",
-    "stand",
-    "power",
-    "flavor",
-  ],
-  properties: {
-    role: { enum: ["tank", "striker", "control", "support"] },
-    catName: { type: "string" },
-    className: { type: "string" },
-    epithet: { type: "string" },
-    base: STATS_SCHEMA,
-    growth: { type: "array", items: GROWTH_ROW_SCHEMA },
-    skills: { type: "array", items: SKILL_SCHEMA },
-    trait: {
-      type: "object",
-      additionalProperties: false,
-      required: ["name", "desc"],
-      properties: { name: { type: "string" }, desc: { type: "string" } },
-    },
-    stand: {
-      type: "object",
-      additionalProperties: false,
-      required: ["name", "visualPrompt"],
-      properties: {
-        name: { type: "string" },
-        visualPrompt: { type: "string" },
-      },
-    },
-    power: POWER_SCHEMA,
-    flavor: {
-      type: "object",
-      additionalProperties: false,
-      required: ["bio", "barks"],
-      properties: {
-        bio: { type: "string" },
-        barks: {
-          type: "object",
-          additionalProperties: false,
-          required: ["crit", "ko", "catPile"],
-          properties: {
-            crit: { type: "string" },
-            ko: { type: "string" },
-            catPile: { type: "string" },
-          },
-        },
-      },
-    },
-  },
-};
-
-/** Mirrors `partyOutputSchema` in `agent/lib/oneshot.ts`. */
-export const PARTY_SCHEMA: Record<string, unknown> = {
-  type: "object",
-  additionalProperties: false,
-  required: ["kits"],
-  properties: { kits: { type: "array", items: KIT_SCHEMA } },
-};
+/**
+ * THE SHAPE IS NOT HERE ANY MORE, AND THAT IS THE POINT.
+ *
+ * This module used to carry a hand-written JSON Schema (`PARTY_SCHEMA`) and
+ * send it with every turn, because `session.send({ outputSchema })` is how a
+ * client asks the root DM for structured data. That never worked: the DM's own
+ * instructions outrank a per-message schema, so the turn ended on a tool call
+ * and eve failed it with OUTPUT_SCHEMA_NOT_FULFILLED — 0 of 5, on haiku and on
+ * Sonnet 5 alike.
+ *
+ * The schema now lives on the agent that answers, `agent/subagents/party/
+ * agent.ts`, as `partyOutputSchema` from `agent/lib/oneshot.ts` — a zod schema
+ * with compile-time parity assertions against `src/core/types.ts` and
+ * `src/services/gmTypes.ts`, which the duplicate here never had. One schema, on
+ * the side that can be held to it.
+ *
+ * What stays on this side is the half that was never the model's job: the lint,
+ * the retry, the salvage, and the budget stamp, all below.
+ */
 
 /* ------------------------------------------------------------------------ */
 /* Party — lint, retry, salvage (was api/gm/party.ts + generateValidated)    */
 /* ------------------------------------------------------------------------ */
+
+/**
+ * Every L1 cat starts with the same energy ceiling (`contentLint`: "enMax must
+ * be exactly 10"). Derived, never authored.
+ */
+const START_EN_MAX = 10;
+
+/**
+ * Fill in the two stats the DM does not author: `hp` and `enMax`.
+ *
+ * `hp` is whatever makes the role's total come out EXACTLY right —
+ * `ROLE_STAT_TOTALS[role] − (atk + def + spd + crt)`. The model picks the four
+ * stats that say something about the cat; the sum is arithmetic, and arithmetic
+ * that matters is the engine's job (docs/design/run-map-and-dm.md §3). Doing it
+ * here rather than asking for it made "stat total 63 != 64" — the most common
+ * lint failure across live generations, and a ~90s regeneration every time —
+ * structurally impossible.
+ *
+ * If the four authored stats leave `hp` outside its own bound, points are moved
+ * through the other four rather than through a ~80s regeneration — `crt` first
+ * (the widest band and the least load-bearing at level 1), then `def`, `spd`
+ * and finally `atk`, which is the last thing about a cat worth quietly
+ * rewriting. Repairing through `crt` ALONE was not enough: measured, three of
+ * six live parties landed a kit on `base.hp=23` — one point under the floor,
+ * with `crt` already sitting on its own — and each of those cost the whole
+ * party. Only when all four donors are exhausted is the kit left as-is for
+ * `lintParty` to reject in the ordinary way.
+ */
+const HP_DONORS = ["crt", "def", "spd", "atk"] as const;
+
+function completeBaseStats(kit: GeneratedCatKit): GeneratedCatKit {
+  const authored = kit.base as Partial<Stats> | undefined;
+  const total = ROLE_STAT_TOTALS[kit.role];
+  if (!authored || total === undefined) return kit;
+  const base: Record<(typeof HP_DONORS)[number], number> = {
+    crt: authored.crt ?? 0,
+    def: authored.def ?? 0,
+    spd: authored.spd ?? 0,
+    atk: authored.atk ?? 0,
+  };
+  const [hpMin, hpMax] = STAT_BOUNDS.hp;
+  const hp = (): number => total - (base.crt + base.def + base.spd + base.atk);
+
+  for (const stat of HP_DONORS) {
+    const [lo, hi] = STAT_BOUNDS[stat];
+    // hp too high ⇒ too little spent elsewhere ⇒ spend more (donor goes up)
+    if (hp() > hpMax) base[stat] += Math.min(hp() - hpMax, hi - base[stat]);
+    // hp too low ⇒ too much spent elsewhere ⇒ spend less (donor comes down)
+    else if (hp() < hpMin)
+      base[stat] -= Math.min(hpMin - hp(), base[stat] - lo);
+    else break;
+  }
+
+  return {
+    ...kit,
+    base: { ...(authored as Stats), ...base, hp: hp(), enMax: START_EN_MAX },
+  };
+}
+
+/**
+ * Trim a growth row to the shipped `1..MAX_GROWTH_ROW_TOTAL` budget.
+ *
+ * Same principle as `hp`, one level down: WHICH stats a cat grows is character
+ * and belongs to the DM; HOW MUCH it may grow per level is a budget and belongs
+ * here. The schema bounds each entry but cannot bound their sum, and measured,
+ * a live party came back with three rows totalling 7 against a cap of 6 — one
+ * point over, three times, and it cost the whole party.
+ *
+ * Over-budget rows lose from their biggest entry first (the smaller ones are
+ * what make the row read as a character); an empty row gets a point of hp so
+ * the cat still levels.
+ */
+function trimGrowthRow(row: Record<string, number>): Record<string, number> {
+  const out = { ...row };
+  const keys = Object.keys(out);
+  let sum = keys.reduce((n, k) => n + (out[k] ?? 0), 0);
+  while (sum > MAX_GROWTH_ROW_TOTAL) {
+    const biggest = keys.reduce((a, b) =>
+      (out[b] ?? 0) > (out[a] ?? 0) ? b : a,
+    );
+    if ((out[biggest] ?? 0) <= 0) break;
+    out[biggest] = (out[biggest] ?? 0) - 1;
+    sum -= 1;
+  }
+  if (sum <= 0) out.hp = (out.hp ?? 0) + 1;
+  return out;
+}
+
+/**
+ * The four kits out of a raw payload, with everything derivable derived — or
+ * undefined when the payload is not a party at all.
+ *
+ * Completion happens HERE, before the lint, so `lintParty` judges the numbers
+ * the engine will actually receive rather than the ones the model typed.
+ */
+function readKits(raw: unknown): GeneratedCatKit[] | undefined {
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const root = raw as { kits?: unknown };
+  if (!Array.isArray(root.kits)) return undefined;
+  return (root.kits as GeneratedCatKit[]).map((kit) => {
+    const complete = completeBaseStats(kit);
+    return Array.isArray(complete.growth)
+      ? {
+          ...complete,
+          growth: complete.growth.map((row) =>
+            trimGrowthRow(row as Record<string, number>),
+          ),
+        }
+      : complete;
+  });
+}
 
 /** Stamp server-computed budgets and compose the house art style. */
 function finishKits(kits: GeneratedCatKit[]): GeneratedCatKit[] {
@@ -325,14 +324,8 @@ export interface PartyLint {
  * The errors are returned, not swallowed, because they are the retry prompt.
  */
 export function lintPartyPayload(raw: unknown): PartyLint {
-  if (typeof raw !== "object" || raw === null) {
-    return { errors: ['root must be {"kits": [...]}'] };
-  }
-  const root = raw as { kits?: unknown };
-  if (!Array.isArray(root.kits)) {
-    return { errors: ['root must be {"kits": [...]}'] };
-  }
-  const kits = root.kits as GeneratedCatKit[];
+  const kits = readKits(raw);
+  if (!kits) return { errors: ['root must be {"kits": [...]}'] };
   const errors = lintParty(kits);
   kits.forEach((kit, i) => {
     errors.push(
@@ -347,19 +340,30 @@ export function lintPartyPayload(raw: unknown): PartyLint {
 }
 
 /**
- * Last-resort repair for the SECOND invalid answer (stand-powers.md Layer 2:
- * "Invalid → one regenerate → fallback to a stock power"): when the kits
- * themselves are legal and only the powers failed the budget, swap each failing
- * power for the stock power of the kit's role instead of losing the party the
- * player just described. A KIT-level failure is unsalvageable.
+ * Repair an answer whose KITS are legal and whose only failures are Stand
+ * POWERS over budget: swap each offending power for the stock power of that
+ * kit's role (stand-powers.md Layer 2, "Invalid → fallback to a stock power").
+ * A kit-level failure is unsalvageable and returns undefined.
+ *
+ * WHEN THIS RUNS IS THE POINT. It used to be the last resort, reached only
+ * after every retry was spent. But a power budget is a product of trigger
+ * frequency, effect costs and condition discounts — arithmetic no model does in
+ * its head, and the measured failure was not marginal (budget 25.2, 32, 27
+ * against a cap of 12). Regenerating the whole party to fix it costs another
+ * ~90s and lands on the same arithmetic, while the player watches a spinner.
+ *
+ * So `requestDmParty` reaches for this FIRST whenever the kits themselves came
+ * back clean. The player keeps the four cats they described — names, Stands,
+ * skills, stats, flavour, all of it — and the one thing they lose is a bespoke
+ * Stand power, replaced by the role's stock power, which is exactly the
+ * documented fallback. A retry is spent only on failures a retry can actually
+ * fix.
  */
 export function salvagePartyPowers(
   raw: unknown,
 ): GeneratedCatKit[] | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const root = raw as { kits?: unknown };
-  if (!Array.isArray(root.kits)) return undefined;
-  const kits = root.kits as GeneratedCatKit[];
+  const kits = readKits(raw);
+  if (!kits) return undefined;
   if (lintParty(kits).length > 0) return undefined;
   return finishKits(
     kits.map((kit) =>
@@ -370,53 +374,107 @@ export function salvagePartyPowers(
   );
 }
 
+/**
+ * The subagent that owns the party shape, and the marker the root DM relays on.
+ *
+ * `agent/instructions.md` §"Briefs" says: a message opening with this line is
+ * not the player talking — pass the WHOLE thing to `party` unchanged and add
+ * nothing. Every party message below therefore starts with it.
+ */
+export const PARTY_SUBAGENT = "party";
+const PARTY_BRIEF = "PARTY BRIEF — pass this whole message to `party`.";
+
+function describedCats(descriptions: string[]): string {
+  return descriptions.map((d, i) => `${i + 1}. ${d}`).join("\n");
+}
+
 function buildPartyMessage(descriptions: string[]): string {
-  const lines = descriptions.map((d, i) => `${i + 1}. ${d}`).join("\n");
   return [
+    PARTY_BRIEF,
+    "",
     "Build a party. Player-described cats (invent the rest yourself so all",
     "four roles are covered; keep player intent for the ones they described):",
     "",
-    lines,
-    "",
-    "Answer the party output schema and nothing else.",
+    describedCats(descriptions),
   ].join("\n");
 }
 
 /**
- * How many regenerate-on-invalid turns a party gets before the salvage.
+ * How many regenerate-on-invalid turns a party gets.
  *
- * `/api/gm/party` allowed exactly one, because each was a fresh, stateless
- * generation on a Sonnet-class model. Here every retry is the NEXT TURN of a
- * conversation with a haiku-class DM that can see its own answer and the exact
- * arithmetic it got wrong, which is both cheaper and a different failure mode:
- * the first answer is usually near-legal, and what it misses is a sum.
+ * ONE, down from two, because a retry is now the LAST thing tried rather than
+ * the reflex. The failures a retry used to exist for are gone at the source:
+ * every bound a schema can express is on the answering subagent, `hp` is
+ * derived instead of authored, and a power over budget is salvaged in place.
+ * What is left for a retry is a kit-level failure — a duplicate skill id, a
+ * skill-cost total — which is rare and which a fresh generation genuinely does
+ * fix.
+ *
+ * It is also what the player is paying for. A party turn measures 78-106s
+ * against the deployed forge; two retries meant a five-minute spinner for a
+ * result that, measured, was no likelier to be legal than the first.
  */
-export const PARTY_RETRIES = 2;
+export const PARTY_RETRIES = 1;
+
+/** The identity of one kit — everything a retry must NOT change. */
+function kitIdentity(kit: unknown, i: number): string {
+  const k = (kit ?? {}) as Partial<GeneratedCatKit>;
+  const stand = k.stand?.name ?? "?";
+  return (
+    `${i + 1}. role ${k.role ?? "?"} — ${k.catName ?? "?"}, ` +
+    `the ${k.className ?? "?"} (${k.epithet ?? "?"}), Stand \u300c${stand}\u300d`
+  );
+}
 
 /**
- * The regenerate-on-invalid turn — the piece of `api/_lib/generate.ts` the
- * agent has no equivalent for. `agent/skills/party.ts` states the budgets, but
- * nothing makes the DM check its own arithmetic (only the `encounter` subagent
- * has a self-correcting tool). Measured against the deployed agent, a first
- * party answer routinely busts a per-stat bound or prices a power over
- * `BUDGET_CAPS.cat`; WITHOUT these turns, party generation is worse than the
- * endpoint it replaced.
+ * The regenerate-on-invalid brief.
+ *
+ * IT REPEATS THE WHOLE JOB, because the forge is a subagent and a subagent
+ * "never sees the parent's history" (eve `subagents` §"The isolation
+ * boundary"): every delegation starts from an empty context, so "fix what you
+ * just wrote" would be addressed to somebody who never wrote anything. The
+ * original descriptions come back, the identities the last attempt invented
+ * come back so the player keeps the cats they were shown, and the violations
+ * are stated as the thing to fix.
+ *
+ * Only the identities are carried over, never the whole rejected party: the
+ * root DM has to relay this message verbatim, and a 10 kB JSON blob is not
+ * something a relay copies reliably. Names are cheap to carry; numbers are
+ * exactly what needs redoing anyway.
  */
-function retryNote(errors: string[]): string {
+function retryNote(
+  descriptions: string[],
+  previous: unknown,
+  errors: string[],
+): string {
+  const kits = (previous as { kits?: unknown } | null)?.kits;
+  const identities = Array.isArray(kits) ? kits.map(kitIdentity) : [];
   return [
-    "That party violates these HARD mechanical constraints:",
+    PARTY_BRIEF,
+    "",
+    "A previous attempt at this party violated these HARD mechanical",
+    "constraints:",
     ...errors.slice(0, 12).map((e) => `- ${e}`),
     "",
-    "Answer the party output schema again with the COMPLETE party, fixing",
-    "every violation and INTRODUCING NO NEW ONES. Keep the cats, the names,",
-    "the Stands and the flavour you already wrote — change only numbers.",
+    "Build the party AGAIN, complete, fixing every violation and introducing",
+    "no new ones. The player-described cats were:",
+    "",
+    describedCats(descriptions),
+    ...(identities.length > 0
+      ? [
+          "",
+          "Keep these four cats exactly as they are — same roles, names,",
+          "classes, epithets and Stands. Only the numbers were wrong:",
+          "",
+          ...identities,
+        ]
+      : []),
     "",
     "Before you answer, check each kit yourself:",
-    "1. add up hp+atk+def+spd+crt and compare it to the total its role",
-    "   requires — it must be EXACTLY equal, not close;",
-    "2. every stat inside its own bound (hp 24..40, atk 9..12, def 0..3,",
-    "   spd 4..8, crt 5..15), and enMax exactly 10;",
-    "3. any skill whose target pattern is `row` has power <= 60;",
+    "1. skill ids are camelCase and unique WITHIN the kit;",
+    "2. exactly one cost-0 skill per kit, and the other three costs sum to 16",
+    "   or less;",
+    "3. each growth row's values sum to between 1 and 6;",
     "4. the Power Script is cheap enough: fewer effects, smaller numbers, or",
     "   a rarer trigger / a `chance` condition / `perBattle` charges.",
   ].join("\n");
@@ -437,24 +495,26 @@ export async function requestDmParty(
   if (clean.length === 0) return null;
   if (!(await probeDm())) return null;
   return enqueue(async (send) => {
-    let raw = await send(
-      buildPartyMessage(clean),
-      PARTY_SCHEMA,
-      DM_PARTY_TIMEOUT_MS,
-    );
+    let raw = await send({
+      message: buildPartyMessage(clean),
+      subagent: PARTY_SUBAGENT,
+      timeoutMs: DM_PARTY_TIMEOUT_MS,
+    });
     for (let attempt = 0; ; attempt++) {
       if (raw === null) return null; // the DM stopped answering
       const lint = lintPartyPayload(raw);
       if (lint.value) return lint.value;
-      if (attempt >= PARTY_RETRIES) {
-        // out of turns: keep the party if only its POWERS are illegal
-        return salvagePartyPowers(raw) ?? null;
-      }
-      raw = await send(
-        retryNote(lint.errors),
-        PARTY_SCHEMA,
-        DM_PARTY_TIMEOUT_MS,
-      );
+      // A party whose KITS are legal and whose only fault is a Stand power over
+      // budget is a party, not a failure. Take it now with the stock power
+      // rather than spending ~90s of the player's spinner regenerating four
+      // cats to fix arithmetic the model cannot do either way.
+      const salvaged = salvagePartyPowers(raw);
+      if (salvaged || attempt >= PARTY_RETRIES) return salvaged ?? null;
+      raw = await send({
+        message: retryNote(clean, raw, lint.errors),
+        subagent: PARTY_SUBAGENT,
+        timeoutMs: DM_PARTY_TIMEOUT_MS,
+      });
     }
   });
 }
@@ -463,19 +523,11 @@ export async function requestDmParty(
 /* Resonance (was api/gm/resonance.ts)                                       */
 /* ------------------------------------------------------------------------ */
 
-/** Mirrors `resonanceOutputSchema` in `agent/lib/oneshot.ts`. */
-export const RESONANCE_SCHEMA: Record<string, unknown> = {
-  type: "object",
-  additionalProperties: false,
-  required: ["hasResonance", "rule", "flavor", "announce"],
-  properties: {
-    hasResonance: { type: "boolean" },
-    /** null when the pair does not resonate (the common case). */
-    rule: { anyOf: [INTERACTION_RULE_SCHEMA, { type: "null" }] },
-    flavor: { type: "string" },
-    announce: { type: "string" },
-  },
-};
+/**
+ * The subagent that owns the resonance shape (`resonanceOutputSchema` in
+ * `agent/lib/oneshot.ts`, declared on `agent/subagents/resonance/agent.ts`).
+ */
+export const RESONANCE_SUBAGENT = "resonance";
 
 /**
  * A definitive verdict for one power pair. `rule: null` means "these two
@@ -547,11 +599,12 @@ function buildResonanceMessage(
   powers: [PowerScript, PowerScript],
 ): string {
   return [
+    "RESONANCE BRIEF — pass this whole message to `resonance`.",
+    "",
     "Judge this Stand power pair for resonance.",
     `Pair key: ${pairKey}`,
     `Power A: ${JSON.stringify(powers[0])}`,
     `Power B: ${JSON.stringify(powers[1])}`,
-    "Answer the resonance output schema and nothing else.",
   ].join("\n");
 }
 
@@ -564,11 +617,11 @@ export async function requestDmResonance(
   powers: [PowerScript, PowerScript],
 ): Promise<ResonanceVerdict | null> {
   return enqueue(async (send) => {
-    const data = await send(
-      buildResonanceMessage(pairKey, powers),
-      RESONANCE_SCHEMA,
-      DM_RESONANCE_TIMEOUT_MS,
-    );
+    const data = await send({
+      message: buildResonanceMessage(pairKey, powers),
+      subagent: RESONANCE_SUBAGENT,
+      timeoutMs: DM_RESONANCE_TIMEOUT_MS,
+    });
     return data === null ? null : readResonanceVerdict(data, pairKey);
   });
 }

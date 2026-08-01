@@ -30,11 +30,25 @@
 import { eveChannel } from "eve/channels/eve";
 import { localDev, none, vercelOidc } from "eve/channels/auth";
 
-/** Origins the game is served from. Override per environment. */
+/**
+ * Origins the game is served from. Override per environment.
+ *
+ * The local entries cover a RANGE because Vite hops to the next free port when
+ * 5173 is taken — two dev servers, or a stray one from an earlier session, and
+ * the game lands on 5174 with no warning. The DM then fails CORS on the
+ * reachability probe, and because this game is offline-first that failure is
+ * indistinguishable from "no DM configured": the typed-action UI simply is not
+ * built, and party generation silently falls back to the Strays. It cost a
+ * debugging session to notice, and localhost was already trusted, so the extra
+ * ports change nothing about who can reach this deployment.
+ */
+const DEV_PORTS = [5173, 5174, 5175, 5176, 5177, 5178, 5179];
 const DEFAULT_ORIGINS = [
   "https://c-at-rpg.vercel.app",
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
+  ...DEV_PORTS.flatMap((p) => [
+    `http://localhost:${p}`,
+    `http://127.0.0.1:${p}`,
+  ]),
 ];
 
 function allowedOrigins(): string[] {

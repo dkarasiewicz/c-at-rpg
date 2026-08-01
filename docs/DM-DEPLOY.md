@@ -36,8 +36,10 @@ chose not to use the DM".
 | `agent/tools/adjust_shinies.ts` | currency, capped by `EVENT_CAPS.shiniesMax(floor)` |
 | `agent/tools/remember.ts` | write a fact to run state for a later callback |
 | `agent/tools/offer_encounter.ts` | advisory bias for the next run-map node |
-| `agent/skills/{party,item,event,resonance}.ts` | the one-shot procedures, with budgets interpolated from the shipped lint tables |
+| `agent/skills/{item,event}.ts` | the remaining one-shot procedures, with budgets interpolated from the shipped lint tables. **`party` and `resonance` are not skills any more** — they are subagents, below |
 | `agent/subagents/encounter/` | the fight adjudicator: battle snapshot in, structured verdict out |
+| `agent/subagents/party/` | the party forge. **No `tools/` directory**: brief in, four kits out, nothing else to call |
+| `agent/subagents/resonance/` | the Stand-pair judge. Same shape, same reason |
 | `agent/tsconfig.json` | standalone typecheck (`npm run typecheck:agent`) — the app's root tsconfig still includes only `src/` |
 
 ## The bounds, and where they are actually enforced
@@ -192,38 +194,106 @@ keep the ordering.
 
 ## Structured (one-shot) calls
 
-Everything `api/gm/*` did survives as a schema'd one-shot. A server-side caller
-passes the matching zod schema from `agent/lib/oneshot.ts` as `outputSchema`
-and reads `result.data`:
+**A one-shot is answered by a subagent, never by the DM itself.** That is the
+whole design and it was learned the hard way.
 
-```ts
-import { Client } from "eve/client";
+The obvious thing — `session.send({ message, outputSchema })` against the root
+DM — does not work, and no amount of prompting made it work. `agent/
+instructions.md` says *"you may only change the world through your tools"*,
+which is correct and load-bearing for play, and it beats a per-message
+`outputSchema` every time: measured against this deployment, **0 of 5**
+structured turns produced a `result.completed`. Each ended on `narrate` or an
+effect tool and eve failed the turn with `OUTPUT_SCHEMA_NOT_FULFILLED`.
+Swapping haiku for `anthropic/claude-sonnet-5` was **also 0 of 5**, and twice as
+slow — a stronger model follows the dominant instruction *more* reliably. It was
+never a model problem.
 
-const session = new Client({ host: DM_URL }).session();
+So the structured work moved to agents that have no such instruction and, by
+construction, nothing else to do:
 
-const response = await session.send({
-  message: "Build a party. The player described: a fat orange menace ...",
-  outputSchema: partyOutputSchema,
-});
-const { data } = await response.result();   // GeneratedCatKit[4], schema-valid
+| Subagent | Answers | Declares |
+|---|---|---|
+| `agent/subagents/party/` | four cat kits | `outputSchema: partyOutputSchema` |
+| `agent/subagents/resonance/` | one Stand-pair verdict | `outputSchema: resonanceOutputSchema` |
+| `agent/subagents/encounter/` | one in-battle verdict | `outputSchema: verdictSchema` |
+
+**Neither `party/` nor `resonance/` has a `tools/` directory at all.** A declared
+subagent inherits nothing from the root (eve `subagents` §"The isolation
+boundary") — not `narrate`, not `apply_effect`, not the DM's instructions — so
+there is no wrong action left to take. Their instructions say the only thing
+they can do is return the object, and that is also the only thing they can do.
+
+`outputSchema` is declared on the subagent rather than passed per message
+because a delegation is a **task-mode run** (eve `agent-config` §`outputSchema`),
+so the runtime holds the child to the schema and the parent needs no schema of
+its own.
+
+### How the browser gets the answer
+
+The eve HTTP channel routes to the root session and nowhere else — a client
+cannot address a subagent directly. It does not need to. eve reports every
+delegation on the **parent** stream:
+
+```json
+{"type":"subagent.completed","data":{"subagentName":"party","output":"{\"kits\":[…]}"}}
 ```
 
-Each schema carries a compile-time parity assertion against the shipped core
-contract, so the payload shape cannot drift from what the browser re-validates.
+`output` is the child's structured answer, JSON-stringified by the runtime. So:
 
-**The browser does not use `eve/client`.** It would drag zod and a
-server-and-tooling SDK into the game bundle for four routes, so
-`src/services/dm.ts` speaks the HTTP protocol with `fetch` and
-`src/services/oneshot.ts` passes the same schemas **as raw JSON Schema**
-(`PARTY_SCHEMA`, `RESONANCE_SCHEMA`) — eve rehydrates them server-side. The two
-spellings are the same contract; the zod ones carry the compile-time assertions.
+1. `src/services/oneshot.ts` opens the message with a marker line —
+   `PARTY BRIEF —` / `RESONANCE BRIEF —` — and sends **no `outputSchema`**;
+2. `agent/instructions.md` §"Briefs" tells the root exactly one thing to do with
+   such a message: pass it to that subagent **unchanged**, call nothing else,
+   and answer with one short line;
+3. `src/services/dm.ts#sendDmTurn` takes `subagent: "party"`, harvests
+   `subagent.completed`, and returns the parsed child output as `data`
+   (`collectSubagentOutput` / `subagentResult`).
+
+The root is a relay. It never sees the schema, and asking it for one on top
+would only buy a second, slower copy of an object it cannot type.
+
+A server-side caller with `eve/client` can do the same thing more directly:
+
+```ts
+const response = await session.send({
+  message: "PARTY BRIEF — pass this whole message to `party`.\n\n…",
+});
+// the party arrives on the stream as subagent.completed
+```
+
+### Schemas carry every bound they can express
+
+`agent/lib/oneshot.ts` used to describe shape only, and left every number to the
+prose brief plus the client lint. That cost real generations. The first party
+generated through the new subagent came back with **32 lint errors**, 29 of
+which were the schema's fault rather than the model's:
+
+- `growth` rows were typed over all six `STAT_KEYS`, so `enMax` in a growth row
+  was formally legal — `contentLint` has never accepted it, and the model put it
+  in all 28 rows;
+- `agent/lib/effects.ts` derived its status menu from `STATUS_COST`, which
+  prices **seven** statuses because the engine applies `braced` itself. The
+  browser's lints accept the **six** in `caps.ts#STATUS_IDS`. Every `braced` the
+  DM authored was rejected on arrival;
+- `move.delta` / `energy.amount` said "non-zero" with a zod `.refine()`, which
+  has no JSON Schema spelling and is silently dropped in the projection the
+  model actually sees. A live Stand power came back with `delta: 0`.
+
+All three are fixed at the source, and every remaining expressible bound —
+per-stat `STAT_BOUNDS`, `enMax`, `GROWTH_KEYS`, skill costs, the three power
+ceilings (as a `union` → `anyOf`, since the narrow two depend on sibling
+fields) — is now in the schema. What a schema *cannot* say (a role's stat SUM,
+total skill cost, `powerBudget`) stays with the client lint and the retry loop.
+
+Result, measured on the same brief: **32 lint errors → 4 → 0** on the first
+answer.
 
 ### Where the endpoints went
 
 | Retired | Where it lives now |
 |---|---|
-| `POST /api/gm/party` | `services/oneshot.ts#requestDmParty` → `session.send({ outputSchema: PARTY_SCHEMA })` + the `party` skill, then **lint → regenerate → salvage** (see below), budget stamping via `normalizePower()`, and `stand.visualPrompt` composed through `artPrompt.ts`. Every one of those steps used to happen inside the function |
-| `POST /api/gm/resonance` | `services/oneshot.ts#requestDmResonance` + the `resonance` skill. `readResonanceVerdict` stamps `pairKey` / `version` / recomputed `budget` and lints at `BUDGET_CAPS.resonance`. **The memo store did not survive — see below** |
+| `POST /api/gm/party` | `services/oneshot.ts#requestDmParty` → a `PARTY BRIEF —` relayed to the `party` subagent, then **lint → regenerate → salvage** (see below), budget stamping via `normalizePower()`, and `stand.visualPrompt` composed through `artPrompt.ts`. Every one of those steps used to happen inside the function |
+| `POST /api/gm/resonance` | `services/oneshot.ts#requestDmResonance` → a `RESONANCE BRIEF —` relayed to the `resonance` subagent. `readResonanceVerdict` stamps `pairKey` / `version` / recomputed `budget` and lints at `BUDGET_CAPS.resonance`. **The memo store did not survive — see below** |
 | `POST /api/gm/eventResolve` | a conversational beat: `services/dm.ts#requestEncounterVerdict`, re-linted by `tabletop.ts#validateEncounterVerdict` against the same `EVENT_CAPS`, now with run memory behind it |
 | `POST /api/gm/item` | `session.send({ outputSchema: itemOutputSchema })` + the `item` skill. **No game caller** — loot rolls from the static tables |
 | `POST /api/gm/event` | `session.send({ outputSchema: eventOutputSchema })` + the `event` skill. **No game caller** — events draw from `content/events.ts` |
@@ -236,65 +306,98 @@ and `src/services/powerLint.ts` are imported by the browser AND by the agent's
 `contribute_content` tool, so a payload is checked by the same function
 wherever it lands.
 
-### The regenerate-on-invalid turn is load-bearing
+### The lint pipeline: derive, salvage, and only then regenerate
 
 `api/_lib/generate.ts` wrapped every generation in *generate → lint →
-regenerate once with the violations → salvage*. The agent has no equivalent:
-`agent/skills/party.ts` states the budgets, but nothing makes it check its own
-arithmetic (only the `encounter` subagent has a self-correcting tool,
-`check_effect_budget`). Measured against the deployed DM, a first party answer
-routinely breaks them — a representative run:
+regenerate once → salvage*. That loop is still here, but it is now the LAST
+resort rather than the first, because a regeneration costs the player ~80s of
+spinner and lands on the same arithmetic. In order:
 
-```
-kit 0 (Sparks): base.crt=3 outside 5..15
-kit 2 (Velocity): base.crt=17 outside 5..15
-kit 0 (Sparks) skill 3 ('staticBurst'): row-pattern power above 60
-power 'power:staticWhispers': budget 16.5 exceeds cap 12      (3 of 4 powers over cap)
-```
+1. **The schema stops what a schema can stop** (above). Growth keys, per-stat
+   bounds, skill-id case, skill costs, the three power ceilings, the six
+   statuses, non-zero move/energy — all enforced by the runtime on the forge,
+   before the answer is ever sent.
+2. **`completeBaseStats` derives what the model should never have authored.**
+   `hp` is not in the party schema at all: the client computes
+   `ROLE_STAT_TOTALS[role] − (atk + def + spd + crt)` and moves the slack
+   through `crt` if that lands outside 24..40. `enMax` is likewise stamped, not
+   asked for. "stat total 63 != 64" was the most common single lint failure in
+   live measurement and it is now unrepresentable — which is also just the
+   house rule (*"you never do arithmetic that matters"*) applied to the DM's own
+   output.
+3. **`salvagePartyPowers` runs BEFORE the retry.** If the kits are legal and
+   only Stand powers are over budget, the offending powers become
+   `STOCK_POWERS[role]` and the party ships. The player keeps every cat they
+   described; they lose one bespoke power, which is exactly stand-powers.md
+   Layer 2's documented fallback. Regenerating four cats to fix a budget product
+   the model cannot evaluate is not a trade worth ~80s.
+4. **Then, and only then, one retry** (`PARTY_RETRIES` = 1, down from 2). It is
+   a fresh, self-contained brief — the forge is a subagent and sees no history,
+   so the retry repeats the descriptions and carries over the four identities
+   (name / class / epithet / Stand) so the player keeps the cats they were
+   shown. Failing that, the creator falls back to the four canonical strays,
+   exactly as it always did.
 
-So `requestDmParty` sends the violation list back as **the next turn of the
-same session** — the model sees its own answer and the exact arithmetic it got
-wrong, which is cheaper and more effective than a fresh generation. It gets
-`PARTY_RETRIES` (2) of those, one more than the endpoint's single regenerate,
-because the endpoint's retry was a Sonnet-class re-roll and these are haiku-class
-corrections that tend to fix one thing and break another. Only when the turns
-run out does `salvagePartyPowers` swap the offending powers for
-`STOCK_POWERS[role]`; only a kit-level failure loses the party, and then the
-creator falls back to the four canonical strays exactly as it always did.
+**Budget the wait from the tail.** Twenty-two timed party turns against the
+deployed forge: 41, 43, 45, 65, 71, 71, 72, 72, 75, 75, 77, 77, 79, 79, 81, 82,
+92, 93, 95, 96, 105, 106, 116s. `DM_PARTY_TIMEOUT_MS` is **150s per turn** —
+about 30% above the worst measured turn. It briefly had to go UP to 180s (from 120s)
+because at 120s two of five end-to-end runs were not slow answers but the
+offline path; it came back down only once derivation and salvage had made a
+party a ONE-turn job, so the budget covers one turn rather than three. What a
+player waits is the median: **51s**.
 
-**Budget the wait accordingly.** Measured turn latencies against the deployed
-agent: 39s, 60s, 68s, and once over 90s. `DM_PARTY_TIMEOUT_MS` is therefore
-**120s per turn**, and a party is minutes, not seconds. Two consecutive
-end-to-end runs of `requestDmParty` at the 90s setting:
+### Measured, end to end, against the live deployment
 
-```
-run 0: 155053ms -> OK    (2 turns; lintParty clean; 3 powers kept,
-                          1 salvaged to the stock control power; all
-                          budgets stamped, all art prompts composed)
-run 1:  90012ms -> NULL  (first turn exceeded the timeout → the Strays)
-```
+Every row is `requestDmParty` against `https://c-at-rpg-dm.vercel.app`, five
+runs, distinct briefs, through the real client.
 
-A `NULL` there is not a bug, it is the offline path: the creator toasts and
-starts a normal run. (`src/services/gm.ts` used a flat 8s for every call — which
-the old Sonnet-backed `/api/gm/party` with `maxDuration: 60` cannot ever have
-beaten. The creator's "GM offline, using the Strays" path was quietly doubling
-as its timeout path.)
+| Build | Result | Latency |
+|---|---|---|
+| Schema passed to the root DM | **0 / 5** — every turn `OUTPUT_SCHEMA_NOT_FULFILLED`; no result at all | 121, 121, 121s: the whole budget, then the spinner |
+| Subagent route, first cut | 3 / 5 | 48-251s |
+| + tightened schema, 180s budget, early salvage | 3 / 5 | 72-150s |
+| + derived `hp`, trimmed growth rows (180s budget) | **5 / 5** | 43, 46, 65, 79, 82s — median 65s |
+| **the same, with the budget cut back to 150s** | **5 / 5** | 45, 46, 51, 79, 92s — median **51s**, every one a single turn |
 
-**If party generation needs to be more reliable, change the model, not the
-prompt.** The endpoint ran party on `GM_PARTY_MODEL`
-(`anthropic/claude-sonnet-5`) precisely because it is the hard creative ask;
-`agent/agent.ts` runs everything on `anthropic/claude-haiku-4.5`. A party
-subagent with its own stronger model is the clean fix, and it is an `agent/`
-change, not a client one.
+First-answer lint failures on the same briefs went 32 errors → 0-3 → 0. The
+three classes that survived the schema were all arithmetic, and all three moved
+to the client rather than to a regeneration: the stat sum (`hp` derived), the
+growth-row budget (trimmed), the Power Script budget (salvaged to
+`STOCK_POWERS[role]`).
+
+And under a finger, on the real game (Playwright chromium, 844x390 landscape,
+`hasTouch`, taps only): title → *Create your party* → two typed cats → *Summon
+the GM* → the preview showed four generated Stands in **114s** — Marmalade the
+Wandering Bladebeast with 「SEPPUKU SATISFACTION」, Static the Nervous Disruptor
+with 「WHITE NOISE WATCHER」 — and *Take them in* started the run with them.
+Every stat total landed exactly on `ROLE_STAT_TOTALS`.
 
 ## What the agent does not cover
 
 Two things. Neither is a reason to bring an endpoint back; both are recorded
 here so the next person does not rediscover them by accident.
 
-**1. Self-correcting arithmetic on the one-shots.** Covered above — the client
-now owns the regenerate loop `api/_lib/generate.ts` used to. The proper fix
-lives in `agent/`.
+**1. A party is still ONE ~65s generation, and the next fix is parallelism.**
+Five of five is where it stands, but the sample is five and a single bad kit
+still costs the whole answer. The shape that improves both the tail and the
+latency is a `cat` subagent that forges ONE kit for one
+named role, fanned out FOUR TIMES IN PARALLEL from the client (four sessions,
+`Promise.all`) rather than one `party` call:
+
+- latency becomes the max of four ~25s answers instead of the sum of one long
+  one;
+- a bad kit costs one ~25s regeneration, not a whole party;
+- "party is missing the 'support' role" and "exactly 4 kits" stop being lint
+  rules at all, because the client assigns the roles;
+- cross-kit rules that remain (unique names) are cheap to check and cheap to
+  redo.
+
+The cost is that four cats designed independently have no party-level
+composition, which the brief can partly buy back by giving each call the other
+three descriptions as context. This is an `agent/` + `src/services/oneshot.ts`
+change and nothing else; the routing, harvesting and lint machinery it needs
+already exists.
 
 **2. Global resonance memoisation.** `POST /api/gm/resonance` kept a keyed
 `interactions` row per pair, so a verdict compiled by one player was reused by
@@ -315,7 +418,7 @@ Two things make this a smaller regression than it reads:
 The right home for it is the agent, not another endpoint: `agent/lib/pool.ts`
 already offers `getEntry`/`setEntry` on a keyed `interactions` table and the DM
 already writes to the pool via `contribute_content`. A `resonance_memo` tool (or
-a pool read inside the `resonance` skill) restores the global codex without
+a pool read from the `resonance` subagent) restores the global codex without
 bringing back a serverless function or a second model credential. Provision
 Upstash first, or it will be exactly as inert as it was.
 

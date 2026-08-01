@@ -45,6 +45,7 @@ import {
   sceneBackdrop,
   vignette,
 } from "../widgets.js";
+import { campNotePast, campSection, splitRoster } from "../roster.js";
 import { tween } from "../tween.js";
 import { randomSeed } from "./title.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
@@ -219,9 +220,21 @@ export function createResultsScene(): Scene {
       // SPREAD: `rowH` grows (up to ROW_H_MAX) until the table fills the
       // space it has been given, and TOTAL + the time line stay pinned to the
       // foot where they belong.
+      // The roll-call is SPLIT (roster.ts): full rows for the cats who walked
+      // the floors, a compact strip for the ones who never left Cat Town. The
+      // strip is built (and measured) up here because the panel must be tall
+      // enough for both halves, whatever the split happens to be.
+      const { party, camp } = splitRoster(run);
+      const camped = campSection(run, ROLL_W - SPACE.lg * 2, {
+        note: campNotePast(run),
+      });
       const rows = summary.lines.length;
       const scoreH = 56 + rows * ROW_H + TOTAL_BAND + FOOT_BAND + SPACE.lg;
-      const rollH = 56 + run.cats.length * CAT_ROW_H + SPACE.md;
+      const rollH =
+        52 +
+        party.length * CAT_ROW_H +
+        (camped.height > 0 ? SPACE.sm + camped.height : 0) +
+        SPACE.md;
       const bodyH = Math.max(scoreH, rollH);
 
       const score = panel(SCORE_W, bodyH, { variant: "glass", accent });
@@ -312,50 +325,37 @@ export function createResultsScene(): Scene {
       roll.addChild(rollTitle);
 
       // A run FIELDS a subset of the four slots (balance-and-meta.md §2), and
-      // the roll-call used to render all four identically — so a run that
-      // ended "overwhelmed on floor 4" showed two cats at a full nine Lives
-      // beside the cats that fell, reading as a flat contradiction. They were
-      // never down there. Three states, said out loud:
-      //   FELL      0 Lives — grey portrait, "out of lives"
-      //   WALKED    fielded and alive — survivor ring, Lives left
-      //   BENCHED   alive, never in the marching order — dimmed + tagged
-      const fielded = new Set(run.marchingOrder);
-      const descended = run.cats.filter(
-        (c) => c.lives <= 0 || fielded.has(c.classId),
-      ).length;
-      const benchedCount = run.cats.length - descended;
+      // the roll-call used to render all four the same size — so a run that
+      // ended "overwhelmed on floor 4" showed two cats at a full nine Lives,
+      // as large and as bright as the cats that fell, reading as a flat
+      // contradiction. They were never down there. The roll-call is now the
+      // party that WALKED (roster.ts `splitRoster`) — portraits, survivor
+      // rings, Lives paw rows — and the cats who stayed home are a compact
+      // strip below a rule, with the reason written out.
       const rollSub = label(
-        benchedCount > 0
-          ? `${descended} went down · ${benchedCount} stayed in town`
-          : `${descended} went down`,
+        camp.length > 0
+          ? `${party.length} went down · ${camp.length} stayed in town`
+          : `${party.length} went down`,
         { dim: true, size: TYPE.tiny, mono: true },
       );
       rollSub.position.set(SPACE.lg, SPACE.md + 24);
       roll.addChild(rollSub);
 
-      run.cats.forEach((cat, i) => {
+      party.forEach((cat, i) => {
         const dead = cat.lives <= 0;
-        const benched = !dead && !fielded.has(cat.classId);
         const rowY = 52 + i * CAT_ROW_H;
         const row = new Container();
-        row.alpha = benched ? 0.5 : 1;
         roll.addChild(row);
 
         const face = avatar(cat.classId, 56, {
           dead,
-          // the survivor ring means "came back up", so a cat that never went
-          // down does not get one
-          ...(dead || benched ? {} : { ring: PAL.heal }),
+          // the survivor ring means "came back up"
+          ...(dead ? {} : { ring: PAL.heal }),
         });
         face.position.set(SPACE.lg + 28, rowY + 30);
         row.addChild(face);
         // only the cats that actually walked the floors bob
-        cats.push({
-          c: face,
-          baseY: face.y,
-          phase: i * 0.9,
-          dead: dead || benched,
-        });
+        cats.push({ c: face, baseY: face.y, phase: i * 0.9, dead });
 
         const name = label(CLASSES[cat.classId].catName, {
           bold: true,
@@ -363,37 +363,26 @@ export function createResultsScene(): Scene {
           fill: dead ? PAL.textDim : PAL.text,
         });
         name.position.set(SPACE.lg + 68, rowY + 8);
-        const state = label(
-          dead
-            ? "out of lives"
-            : benched
-              ? "never left the bench"
-              : `${cat.lives} lives left`,
-          { dim: true, size: TYPE.tiny, mono: true },
-        );
+        const state = label(dead ? "out of lives" : `${cat.lives} lives left`, {
+          dim: true,
+          size: TYPE.tiny,
+          mono: true,
+        });
         state.position.set(SPACE.lg + 68, rowY + 30);
         row.addChild(name, state);
 
-        if (benched) {
-          const tag = label("BENCHED", {
-            dim: true,
-            size: TYPE.tiny,
-            bold: true,
-          });
-          tag.anchor.set(1, 0);
-          tag.position.set(ROLL_W - SPACE.lg, rowY + 8);
-          row.addChild(tag);
-        }
-
-        // the paw row is a record of Lives SPENT; a benched cat spent none,
-        // so printing nine full paws next to the fallen is the contradiction
-        // itself — it is simply not drawn for them
-        if (!benched) {
-          const paws = makePawRow(cat.lives);
-          paws.view.position.set(SPACE.lg + 68, rowY + 46);
-          row.addChild(paws.view);
-        }
+        // the paw row is a record of Lives SPENT — only the descent spends
+        const paws = makePawRow(cat.lives);
+        paws.view.position.set(SPACE.lg + 68, rowY + 46);
+        row.addChild(paws.view);
       });
+
+      // …and everyone who never left town, small and quiet, under a rule
+      camped.view.position.set(
+        SPACE.lg,
+        52 + party.length * CAT_ROW_H + SPACE.sm,
+      );
+      roll.addChild(camped.view);
 
       /* ---- records line -------------------------------------------- */
       const rec = ctx.meta;

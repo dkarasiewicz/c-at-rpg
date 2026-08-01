@@ -65,6 +65,81 @@
       "w": 320,
       "h": 320
     },
+    "portrait:ratThug": {
+      "file": "portrait-ratThug.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:sewerBat": {
+      "file": "portrait-sewerBat.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:dustBunny": {
+      "file": "portrait-dustBunny.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:crowShaman": {
+      "file": "portrait-crowShaman.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:roombaScout": {
+      "file": "portrait-roombaScout.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:sprinklerImp": {
+      "file": "portrait-sprinklerImp.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:yarnGolem": {
+      "file": "portrait-yarnGolem.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:porcelainHound": {
+      "file": "portrait-porcelainHound.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:laserGhost": {
+      "file": "portrait-laserGhost.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:trashPanda": {
+      "file": "portrait-trashPanda.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:sockWraith": {
+      "file": "portrait-sockWraith.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:elderStray": {
+      "file": "portrait-elderStray.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:vacuumKing": {
+      "file": "portrait-vacuumKing.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:dogfather": {
+      "file": "portrait-dogfather.png",
+      "w": 320,
+      "h": 320
+    },
+    "portrait:ratPrince": {
+      "file": "portrait-ratPrince.png",
+      "w": 320,
+      "h": 320
+    },
     "enemy:ratThug": {
       "file": "enemy-ratThug.png",
       "w": 703,

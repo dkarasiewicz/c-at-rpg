@@ -75,6 +75,7 @@ import {
   totalUnspentPoints,
   type ProgressPanelApi,
 } from "../overlays/progressPanel.js";
+import { campSection, partyCountLabel, splitRoster } from "../roster.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
 
 /** Factory used by main.ts's scene table. */
@@ -151,6 +152,10 @@ export class LandingScene implements Scene {
   private stock: ShopStock | null = null;
   private stockLayer: Container | null = null;
   private cards: CatCard[] = [];
+  /** run.cats index → card top Y inside the clowder panel (heal floaters). */
+  private cardY = new Map<number, number>();
+  /** Host for the compact "back in Cat Town" strip (roster.ts). */
+  private campHost: Container | null = null;
   private fxLayer: Container | null = null;
   private marchLayer: Container | null = null;
   private marchSelected: number | null = null;
@@ -247,28 +252,60 @@ export class LandingScene implements Scene {
     const clowderTitle = heading("THE CLOWDER", 3);
     clowderTitle.position.set(SPACE.lg, SPACE.md + 2);
     clowder.addChild(clowderTitle);
+    // The count answers the question the four cards used to raise: a run
+    // FIELDS a subset of the slots, so say how many out of how many.
+    const partyCount = label(partyCountLabel(run), {
+      size: TYPE.tiny,
+      mono: true,
+      dim: true,
+    });
+    partyCount.anchor.set(1, 0);
+    partyCount.position.set(LEFT_W - SPACE.lg, SPACE.md + 4);
+    clowder.addChild(partyCount);
 
+    // THE SPLIT (roster.ts): the party gets the cards; everyone else gets
+    // the compact camp strip underneath, which cannot be mistaken for a
+    // fifth of the fighting force.
     this.cards = [];
     this.fxLayer = new Container();
     const cardTop = 44;
-    const cardH = 72;
-    run.cats.forEach((_cat, i) => {
-      const card = this.makeCatCard(
-        run,
-        i,
-        SPACE.md,
-        cardTop + i * cardH,
-        LEFT_W - SPACE.md * 2,
-      );
+    const innerW = LEFT_W - SPACE.md * 2;
+    const { party } = splitRoster(run);
+    // The strip is measured first and PINNED to the foot of the panel, so a
+    // 3-cat party with one cat at home still fits: the cards take whatever
+    // is left, down to their own 64px height, instead of running off the
+    // bottom edge.
+    const campH = campSection(run, innerW).height;
+    const campTop = campH > 0 ? CLOWDER_H - campH - SPACE.sm : CLOWDER_H;
+    const cardH =
+      party.length > 0
+        ? Math.min(
+            72,
+            Math.floor((campTop - cardTop - SPACE.sm) / party.length),
+          )
+        : 72;
+    const cardY = this.cardY;
+    cardY.clear();
+    party.forEach((cat, i) => {
+      const catIndex = run.cats.indexOf(cat);
+      const y = cardTop + i * cardH;
+      cardY.set(catIndex, y);
+      const card = this.makeCatCard(run, catIndex, SPACE.md, y, innerW);
       clowder.addChild(card.view);
       this.cards.push(card);
     });
+    this.campHost = new Container();
+    this.campHost.position.set(SPACE.md, campTop);
+    clowder.addChild(this.campHost);
+    this.refreshCamp();
+
     view.addChild(this.fxLayer);
     healed.forEach((amount, i) => {
-      if (amount > 0) {
+      const y = cardY.get(i);
+      if (amount > 0 && y !== undefined) {
         this.floatText(
           MARGIN + LEFT_W - 60,
-          CONTENT_Y + cardTop + i * cardH + 24,
+          CONTENT_Y + y + 24,
           `+${amount}`,
           PAL.heal,
           i * 150,
@@ -393,6 +430,8 @@ export class LandingScene implements Scene {
     this.view?.destroy({ children: true });
     this.view = null;
     this.cards = [];
+    this.cardY.clear();
+    this.campHost = null;
     this.stockLayer = null;
     this.marchLayer = null;
     this.fxLayer = null;
@@ -412,11 +451,10 @@ export class LandingScene implements Scene {
     const cat = run.cats[catIndex];
     const cls = CLASSES[cat.classId];
     const dead = cat.lives <= 0;
-    // A run now FIELDS a subset of the four slots (balance-and-meta.md §2):
-    // `marchingOrder` is the roster, everyone else is on the bench levelling
-    // quietly. Without this the panel shows four healthy cats while two of
-    // them are not in the fight — which reads as a four-cat party.
-    const benched = !dead && !run.marchingOrder.includes(cat.classId);
+    // Cards are for the PARTY only now — the cats this run actually fields,
+    // plus the ones who fell doing it. Everybody else is drawn by
+    // `campSection` (roster.ts) as a compact strip, because a full-size card
+    // with a small grey tag on it is still read as a party member.
     const h = 64;
     const viewC = new Container();
     viewC.position.set(x, y);
@@ -453,12 +491,6 @@ export class LandingScene implements Scene {
       gone.anchor.set(1, 0);
       gone.position.set(w - SPACE.md, SPACE.sm);
       viewC.addChild(gone);
-    } else if (benched) {
-      viewC.alpha = 0.62;
-      const tag = label("BENCHED", { dim: true, size: TYPE.tiny });
-      tag.anchor.set(1, 0);
-      tag.position.set(w - SPACE.md, SPACE.sm + 1);
-      viewC.addChild(tag);
     }
 
     const badgeHost = new Container();
@@ -573,9 +605,24 @@ export class LandingScene implements Scene {
     card.addChild(this.stockLayer);
   }
 
+  /**
+   * Repaint the camp strip. It is cheap and it is not static: the Warm Lap
+   * heals EVERY living cat, the ones at home included, and a strip that
+   * still printed the old HP would be exactly the kind of quiet lie this
+   * split exists to kill.
+   */
+  private refreshCamp(): void {
+    const host = this.campHost;
+    const run = this.ctx?.run;
+    if (!host || !run) return;
+    for (const c of host.removeChildren()) c.destroy({ children: true });
+    host.addChild(campSection(run, LEFT_W - SPACE.md * 2).view);
+  }
+
   private refreshAll(): void {
     const run = this.ctx?.run;
     if (!run) return;
+    this.refreshCamp();
     if (this.shiniesText) {
       this.shiniesText.text = `${run.inventory.shinies} ✦`;
     }
@@ -794,10 +841,11 @@ export class LandingScene implements Scene {
       if (cat.lives <= 0) return cat;
       const max = maxHp(cat, run.level);
       const hp = Math.min(max, cat.hp + warmLapHeal(max));
-      if (hp > cat.hp) {
+      const y = this.cardY.get(i);
+      if (hp > cat.hp && y !== undefined) {
         this.floatText(
           MARGIN + LEFT_W - 60,
-          CONTENT_Y + 44 + i * 72 + 24,
+          CONTENT_Y + y + 24,
           `+${hp - cat.hp}`,
           PAL.heal,
         );

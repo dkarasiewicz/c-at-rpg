@@ -684,15 +684,25 @@ export class CatTownScene implements Scene {
     for (const c of host.removeChildren()) c.destroy({ children: true });
     this.cats = [];
 
-    // Who LIVES here: the cats the town has. Bruno always goes down; the
-    // others are drawn into the formation (§2 — the clowder is earned), so
-    // the town shows them present but waiting.
+    // Who LIVES here: the cats the town has. A descent takes
+    // STARTING_PARTY_SIZE of them — Bruno plus one drawn at the door
+    // (`startingRoster`) — so the town must not draw the cats who stay as
+    // the same size and brightness as the ones who go.
+    //
+    // The old rule here was "index 0 sets out, everyone else is dim". With a
+    // fresh town that houses exactly two cats, BOTH set out, and dimming the
+    // second one contradicted the caption right above it.
     const known = eligibleClasses(this.overlay).filter(
       (id): id is ClassId => CLASSES[id as ClassId] !== undefined,
     );
+    const shown = known.slice(0, MAX_PARTY_CAPACITY);
+    /** Every cat in town comes along only when the town is exactly a party. */
+    const allGo = shown.length <= STARTING_PARTY_SIZE;
 
-    known.slice(0, MAX_PARTY_CAPACITY).forEach((classId, i) => {
-      const descends = i === 0;
+    shown.forEach((classId, i) => {
+      // the anchor always walks; the others are the draw (or, when the town
+      // is only a party's worth, all of them walk)
+      const descends = allGo || i === 0;
       const c = new Container();
       c.position.set(CLOWDER_X0 + i * CLOWDER_DX, CLOWDER_FEET_Y);
       const tex = catTexture(classId);
@@ -705,9 +715,13 @@ export class CatTownScene implements Scene {
         drawCat(g, classId, "sit", 0.9);
         c.addChild(g);
       }
-      // Benched cats are dimmer, not invisible: at 0.55 over the dark town
-      // floor the grey ones (Pixel especially) read as failed-to-load art.
-      if (!descends) c.alpha = 0.75;
+      // A cat who is only a CANDIDATE stands further back: smaller and
+      // dimmer, but never invisible — at 0.55 over the dark town floor the
+      // grey ones (Pixel especially) read as failed-to-load art.
+      if (!descends) {
+        c.alpha = 0.72;
+        c.scale.set(0.82); // feet are the anchor, so it plants correctly
+      }
       host.addChild(c);
       this.cats.push({ view: c, baseY: CLOWDER_FEET_Y, phase: i * 0.9 });
 
@@ -719,11 +733,27 @@ export class CatTownScene implements Scene {
       });
       name.position.set(CLOWDER_X0 + i * CLOWDER_DX, CLOWDER_FEET_Y + SPACE.xs);
       host.addChild(name);
+
+      const role = label(descends ? "sets out" : "may be drawn", {
+        size: TYPE.tiny,
+        center: true,
+        dim: true,
+      });
+      role.alpha = descends ? 0.9 : 0.7;
+      role.position.set(
+        CLOWDER_X0 + i * CLOWDER_DX,
+        CLOWDER_FEET_Y + SPACE.xs + 14,
+      );
+      host.addChild(role);
     });
 
     const caption = label(
-      `THE CLOWDER — ${known.length} live here · ${STARTING_PARTY_SIZE} set ` +
-        `out together · room for ${this.overlay.partyCapacity}`,
+      allGo
+        ? `THE CLOWDER — ${known.length} live here · all ${known.length} set ` +
+            `out together · the party can grow to ${this.overlay.partyCapacity}`
+        : `THE CLOWDER — ${known.length} live here · only ` +
+            `${STARTING_PARTY_SIZE} set out (Bruno plus one, drawn at the ` +
+            `door) · the party can grow to ${this.overlay.partyCapacity}`,
       { size: TYPE.tiny, dim: true, bold: true },
     );
     caption.position.set(CLOWDER_X0 - 48, CLOWDER_FEET_Y - CAT_H - 18);

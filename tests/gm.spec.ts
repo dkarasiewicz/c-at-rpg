@@ -50,7 +50,12 @@ import {
   readResonanceVerdict,
   salvagePartyPowers,
 } from "../src/services/oneshot.js";
-import { parseEmbeddedJson } from "../src/services/dm.js";
+import {
+  collectSubagentOutput,
+  parseEmbeddedJson,
+  subagentResult,
+  type DmSubagentOutput,
+} from "../src/services/dm.js";
 import { ART_STYLE } from "../src/content/artStyle.js";
 import type { BattleSetup, ClassId } from "../src/core/types.js";
 import type {
@@ -390,9 +395,67 @@ describe("lintPartyPayload (client-side re-lint and stamp)", () => {
     expect(kits?.[0].power.budget).toBeGreaterThan(0.01);
   });
 
+  it("DERIVES hp so the role's stat total is right by construction", () => {
+    // The DM authors atk/def/spd/crt and never hp: the sum is arithmetic, and
+    // arithmetic that matters belongs to the engine. Whatever four stats come
+    // back, the total lands exactly on ROLE_STAT_TOTALS.
+    const party = makeParty().map((kit) => ({
+      ...kit,
+      base: { ...kit.base, atk: kit.base.atk, hp: 0, enMax: 0 },
+    }));
+    party[0].base.atk = 12; // three points off the canonical tank line
+    const kits = lintPartyPayload({ kits: party }).value;
+    expect(kits).toBeDefined();
+    for (const kit of kits ?? []) {
+      const { hp, atk, def, spd, crt } = kit.base;
+      expect(hp + atk + def + spd + crt).toBe(ROLE_STAT_TOTALS[kit.role]);
+      expect(kit.base.enMax).toBe(10);
+    }
+    expect(kits?.[0].base.hp).toBe(62 - (12 + 3 + 4 + 5));
+  });
+
+  it("moves the difference through crt when derived hp lands out of bounds", () => {
+    // crt has the widest band and the least to say at level 1, so it absorbs
+    // the slack rather than a ~90s regeneration doing it.
+    const spend = (kit: GeneratedCatKit): number =>
+      kit.base.atk + kit.base.def + kit.base.spd + kit.base.crt;
+
+    // tank total 62 with everything at its floor ⇒ hp 44, over the 40 ceiling
+    const low = makeParty();
+    low[0].base = { hp: 0, atk: 9, def: 0, spd: 4, crt: 5, enMax: 0 };
+    const tank = lintPartyPayload({ kits: low }).value?.[0];
+    expect(tank?.base.hp).toBe(40); // the ceiling
+    expect(tank?.base.crt).toBe(9); // crt took the other 4
+    expect(tank!.base.hp + spend(tank!)).toBe(ROLE_STAT_TOTALS.tank);
+
+    // control total 46 with a generous crt ⇒ hp 21, under the 24 floor
+    const high = makeParty();
+    high[2].base = { hp: 0, atk: 9, def: 0, spd: 4, crt: 12, enMax: 0 };
+    const control = lintPartyPayload({ kits: high }).value?.[2];
+    expect(control?.base.hp).toBe(24); // the floor
+    expect(control?.base.crt).toBe(9); // crt gave up 3
+    expect(control!.base.hp + spend(control!)).toBe(ROLE_STAT_TOTALS.control);
+  });
+
+  it("trims an over-budget growth row instead of rejecting the party", () => {
+    // Which stats grow is character and belongs to the DM; how much they may
+    // grow per level is a budget and belongs here. A row one point over used to
+    // cost the whole party a regeneration.
+    const party = makeParty();
+    party[0].growth[0] = { hp: 4, atk: 2, spd: 1 }; // 7, cap is 6
+    party[0].growth[3] = {}; // 0, floor is 1
+    const kit = lintPartyPayload({ kits: party }).value?.[0];
+    const row = kit?.growth[0] ?? {};
+    const total = Object.values(row).reduce((a, b) => a + b, 0);
+    expect(total).toBe(6);
+    expect(row.hp).toBe(3); // the biggest entry gave up the point
+    expect(row.atk).toBe(2);
+    expect(kit?.growth[3]).toEqual({ hp: 1 }); // an empty row still levels
+  });
+
   it("REPORTS the violations rather than swallowing them — they are the retry", () => {
     const party = makeParty();
-    party[0].base.atk += 3; // tank stat total no longer 62
+    party[0].base.atk = 99; // outside atk 9..12 by far more than hp can absorb
     party[1].power = {
       ...makePower("striker"),
       effects: [{ kind: "damage", target: "enemies", pct: 999 }],
@@ -400,7 +463,7 @@ describe("lintPartyPayload (client-side re-lint and stamp)", () => {
     const { value, errors } = lintPartyPayload({ kits: party });
     expect(value).toBeUndefined();
     const joined = errors.join("\n");
-    expect(joined).toMatch("stat total");
+    expect(joined).toMatch(/base\.atk=\d+ outside 9\.\.12/);
     expect(joined).toMatch("damage pct");
     // the failing power is named, so the DM knows which kit to fix
     expect(joined).toMatch("power:strikerTestPower");
@@ -518,6 +581,67 @@ describe("powerBudget + lintPowerScript", () => {
     const key = resonancePairKey("power:b", "power:a");
     expect(key).toBe(`power:a+power:b@v${POWER_FRAMEWORK_VERSION}`);
     expect(resonancePairKey("power:a", "power:b")).toBe(key);
+  });
+});
+
+/* ------------------------------------------------------------------------ */
+/* one-shot routing: the answer arrives from a SUBAGENT, not from the DM     */
+/* ------------------------------------------------------------------------ */
+
+describe("subagent output harvesting (how a one-shot answer gets home)", () => {
+  it("collects a well-formed subagent.completed", () => {
+    const out: DmSubagentOutput[] = [];
+    collectSubagentOutput(
+      { subagentName: "party", output: '{"kits":[]}' },
+      out,
+    );
+    expect(out).toEqual([{ name: "party", output: '{"kits":[]}' }]);
+  });
+
+  it("ignores events missing a name or an output", () => {
+    const out: DmSubagentOutput[] = [];
+    collectSubagentOutput({ subagentName: "party" }, out);
+    collectSubagentOutput({ output: '{"kits":[]}' }, out);
+    collectSubagentOutput({ subagentName: "party", output: "" }, out);
+    collectSubagentOutput({ subagentName: 7, output: "{}" }, out);
+    expect(out).toEqual([]);
+  });
+
+  it("parses the named subagent's answer, and only that one", () => {
+    const outputs: DmSubagentOutput[] = [
+      { name: "encounter", output: '{"allowed":true}' },
+      { name: "party", output: '{"kits":[1]}' },
+    ];
+    expect(subagentResult(outputs, "party")).toEqual({ kits: [1] });
+    expect(subagentResult(outputs, "encounter")).toEqual({ allowed: true });
+    expect(subagentResult(outputs, "resonance")).toBeUndefined();
+    expect(subagentResult([], "party")).toBeUndefined();
+  });
+
+  it("takes the LAST answer when the DM delegated twice", () => {
+    // A retry inside one turn: the second delegation is the answer, for the
+    // same reason eve's own `result()` takes the most recent result.completed.
+    expect(
+      subagentResult(
+        [
+          { name: "party", output: '{"kits":["first"]}' },
+          { name: "party", output: '{"kits":["second"]}' },
+        ],
+        "party",
+      ),
+    ).toEqual({ kits: ["second"] });
+  });
+
+  it("digs the object out of a child that answered in prose", () => {
+    expect(
+      subagentResult(
+        [{ name: "party", output: 'Here: {"kits":[]} — enjoy' }],
+        "party",
+      ),
+    ).toEqual({ kits: [] });
+    expect(
+      subagentResult([{ name: "party", output: "nothing at all" }], "party"),
+    ).toBeUndefined();
   });
 });
 

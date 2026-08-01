@@ -55,7 +55,7 @@ import {
   panel,
   scrim,
 } from "../widgets.js";
-import { isTouch, padHit, tapToReveal } from "../touch.js";
+import { isTouch, padHit, tapAct } from "../touch.js";
 
 /* ---------------------------------------------------------------------- */
 /* Shared item-presentation helpers (also used by the loot overlay)        */
@@ -559,7 +559,7 @@ export function makeInventoryPanel(
             if (tip) return;
             tip = makeTooltip(
               `${slotTooltipText(item, false)}\n${
-                isTouch() ? "(tap again to unequip)" : "(click to unequip)"
+                isTouch() ? "(tap to unequip)" : "(click to unequip)"
               }`,
             );
             tip.position.set(rightLayer.x + 180, rightLayer.y + y + CARD_H);
@@ -573,14 +573,19 @@ export function makeInventoryPanel(
           chip.eventMode = "static";
           chip.cursor = "pointer";
           padHit(chip, CHIP, CHIP);
-          // Unequipping is destructive-ish and the chip is tiny, so touch
-          // gets the §2 two-tap: the first shows what it is, the second
-          // takes it off.
-          tapToReveal(chip, {
-            show: raise,
-            hide: drop,
-            isShown: () => tip !== null,
-            commit: () => unequip(catIndex, slotName),
+          // ONE RULE (docs/design/mobile.md §2): a tap takes the piece off,
+          // a long press says what it is first. The chip is tiny, but the
+          // grown hit box is what makes it hittable — an extra confirming
+          // tap never did.
+          tapAct(chip, {
+            act: () => unequip(catIndex, slotName),
+            details: raise,
+            hideDetails: drop,
+            detailsShown: () => tip !== null,
+            hover: true,
+            // the tooltip is parented elsewhere and the chip is 22px: a ring
+            // drawn inside it would be bigger than the chip
+            ack: false,
           });
         }
       } else {

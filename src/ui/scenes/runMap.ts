@@ -133,7 +133,8 @@ import {
   vignette,
   type ValueBar,
 } from "../widgets.js";
-import { isTouch, padHit, padHitCircle } from "../touch.js";
+import { isTouch, padHit, padHitCircle, tapAct } from "../touch.js";
+import { campCard, splitRoster } from "../roster.js";
 import { drawChest, drawStairs } from "../draw/glyphs.js";
 import { catNameColor } from "../overlays/inventoryPanel.js";
 import { hasSprite, spriteTextureFor } from "../sprites.js";
@@ -371,7 +372,7 @@ export class RunMapScene implements Scene {
   private toastC: Container | null = null;
   private toastMs = 0;
   private tooltip: Container | null = null;
-  /** Which node the open tooltip belongs to — the touch two-tap needs it. */
+  /** Which node the open tooltip belongs to — the long-press toggle reads it. */
   private tooltipFor: number | null = null;
   /** What Enter does when the party is standing on the terminal node. */
   private enterFn: (() => void) | null = null;
@@ -771,33 +772,35 @@ export class RunMapScene implements Scene {
       if (isTouch()) return;
       this.hideTooltip();
     });
-    view.on("pointertap", () => {
-      const opt = this.options.find((o) => o.id === node.id);
-      /*
-       * TAP TO READ, TAP AGAIN TO WALK (docs/design/mobile.md §2).
-       *
-       * A route is meant to be "a legible gamble", and what makes it legible
-       * is the blurb — which on a mouse lives in a hover tooltip. Committing
-       * to a fight with a boss on the other side because your thumb landed on
-       * a 36px disc is not a gamble, it is an accident. So on touch the first
-       * tap selects the node and opens its card; only a second tap on the
-       * SAME node walks. The route chips under the board stay one-tap for
-       * players who already know what they want.
-       */
-      if (isTouch()) {
-        if (this.tooltipFor !== node.id) {
-          if (opt) this.select(this.options.indexOf(opt));
-          this.showTooltip(nv);
-          return;
-        }
+    /*
+     * TAP GOES, LONG PRESS READS (docs/design/mobile.md §2) — the same rule
+     * the battle board uses, because two different rules for "what does a tap
+     * mean" is the actual problem.
+     *
+     * A route is meant to be "a legible gamble", and what makes it legible is
+     * the blurb, which on a mouse lives in a hover tooltip. The old answer
+     * was to charge a tap for it: tap to read, tap again to walk. That reads
+     * as a broken button — you tap the thing you chose and the game does not
+     * move — and it is the same shape of ambiguity that made an attack
+     * impossible to land in a fight. So a tap on a medallion takes the route,
+     * and holding one reads it first without committing to anything.
+     */
+    tapAct(view, {
+      act: () => {
+        const opt = this.options.find((o) => o.id === node.id);
+        if (!opt) return;
         this.hideTooltip();
-        if (opt) this.take(opt);
-        return;
-      }
-      if (opt) {
         this.select(this.options.indexOf(opt));
         this.take(opt);
-      }
+      },
+      details: () => {
+        const opt = this.options.find((o) => o.id === node.id);
+        if (opt) this.select(this.options.indexOf(opt));
+        this.showTooltip(nv);
+      },
+      hideDetails: () => this.hideTooltip(),
+      detailsShown: () => this.tooltipFor === node.id,
+      hideOnAct: false, // `act` hides it itself, before the scene changes
     });
     return nv;
   }
@@ -1043,7 +1046,7 @@ export class RunMapScene implements Scene {
 
     const hint = label(
       isTouch()
-        ? "tap a node to read it, tap again to go · ☰ menu"
+        ? "tap a node to go · hold it to read · ☰ menu"
         : "1-3 / arrows pick a route · Enter confirms · Esc menu",
       {
         dim: true,
@@ -1073,13 +1076,25 @@ export class RunMapScene implements Scene {
     this.hudC.addChild(strip);
 
     this.cards = [];
-    run.cats.forEach((cat, i) => {
-      const rect = RM.cards[i];
+    // A cat that is not on this descent is a NOTE, not a card (roster.ts):
+    // at full size with a grey tag the strip read as a four-cat party.
+    const { party: rosterParty, camp: rosterCamp } = splitRoster(run);
+    [...rosterParty, ...rosterCamp].forEach((cat, slot) => {
+      const rect = RM.cards[slot];
       if (!rect) return;
-      const view = new Container();
-      view.position.set(rx(rect) - rx(RM.strip), ry(rect) - ry(RM.strip));
+      const i = run.cats.indexOf(cat);
       const w = rw(rect);
       const h = rh(rect);
+
+      if (slot >= rosterParty.length) {
+        const note = campCard(run, cat, w, h);
+        note.position.set(rx(rect) - rx(RM.strip), ry(rect) - ry(RM.strip));
+        strip.addChild(note);
+        return; // no live card is registered — nothing here to refresh
+      }
+
+      const view = new Container();
+      view.position.set(rx(rect) - rx(RM.strip), ry(rect) - ry(RM.strip));
       view.addChild(panel(w, h, { variant: "glass" }));
 
       const face = avatar(cat.classId, 44, { dead: cat.lives <= 0 });
@@ -1110,17 +1125,6 @@ export class RunMapScene implements Scene {
       const paws = makePawRow(cat.lives);
       paws.view.position.set(w - SPACE.md - 72, 44);
       view.addChild(paws.view);
-
-      // A run FIELDS a subset of the four slots (balance-and-meta.md §2).
-      // Undimmed, the strip shows four healthy cats while two of them are on
-      // the bench — the party looks twice the size it fights at.
-      if (cat.lives > 0 && !run.marchingOrder.includes(cat.classId)) {
-        view.alpha = 0.55;
-        const benched = label("BENCHED", { dim: true, size: TYPE.tiny });
-        benched.anchor.set(1, 0);
-        benched.position.set(w - SPACE.md, SPACE.sm);
-        view.addChild(benched);
-      }
 
       strip.addChild(view);
       this.cards.push({ catIndex: i, view, hp, hpText, paws });

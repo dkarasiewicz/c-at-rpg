@@ -82,6 +82,13 @@ import {
   makeTooltip,
   panel,
 } from "../widgets.js";
+import {
+  campAvatar,
+  campReason,
+  catStanding,
+  isAtCamp,
+  splitRoster,
+} from "../roster.js";
 import { isTouch, padHit } from "../touch.js";
 import {
   RARITY_COLOR,
@@ -810,15 +817,38 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
 
   /* ---- cat tabs --------------------------------------------------------- */
 
+  /**
+   * The cat tabs, SPLIT (roster.ts): the party this run fields on the left
+   * at full width, then a gap, then the cats who are back in Cat Town as
+   * narrow, greyed tabs saying so. Four identical tabs made the Den look
+   * like a four-cat party sheet — the same lie the party bar was telling.
+   * They stay tappable: a camp cat still levels with the run, and the
+   * player is allowed to look at it.
+   */
   function paintTabs(run: RunState): void {
     for (const c of tabLayer.removeChildren()) c.destroy({ children: true });
-    const n = run.cats.length;
-    const tabW = (W - PAD * 2 - TAB_GAP * (n - 1)) / n;
-    run.cats.forEach((cat, i) => {
+    const { party, camp } = splitRoster(run);
+    const order = [...party, ...camp];
+    if (order.length === 0) return;
+    /** A camp tab is a NOTE, not a card: about two-thirds of a party tab. */
+    const CAMP_SHARE = 0.62;
+    const groupGap = camp.length > 0 && party.length > 0 ? SPACE.xl : 0;
+    const gaps = TAB_GAP * Math.max(0, order.length - 1) + groupGap;
+    const unit =
+      (W - PAD * 2 - gaps) / (party.length + camp.length * CAMP_SHARE);
+
+    let x = 0;
+    order.forEach((cat, slot) => {
+      const i = run.cats.indexOf(cat);
+      const atCamp = slot >= party.length;
+      const tabW = atCamp ? unit * CAMP_SHARE : unit;
       const dead = cat.lives <= 0;
       const selected = i === catIndex;
+      if (atCamp && slot === party.length) x += groupGap;
+
       const tab = new Container();
-      tab.position.set(i * (tabW + TAB_GAP), 0);
+      tab.position.set(x, 0);
+      x += tabW + TAB_GAP;
       tab.addChild(
         panel(tabW, TAB_H, {
           variant: selected ? "raised" : "glass",
@@ -826,24 +856,30 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
           ...(selected ? { accent: PAL.gold } : {}),
         }),
       );
-      const face = avatar(cat.classId, 40, {
-        dead,
-        ...(selected ? { ring: PAL.gold } : {}),
-      });
-      face.position.set(SPACE.md + 20, TAB_H / 2);
+      const face = atCamp
+        ? campAvatar(cat, 30)
+        : avatar(cat.classId, 40, {
+            dead,
+            ...(selected ? { ring: PAL.gold } : {}),
+          });
+      face.position.set(SPACE.md + (atCamp ? 15 : 20), TAB_H / 2);
       tab.addChild(face);
+      const textX = SPACE.md + (atCamp ? 36 : 48);
       const name = label(CLASSES[cat.classId].catName, {
         bold: true,
-        fill: dead ? PAL.textDim : catNameColor(cat.classId),
+        size: atCamp ? TYPE.small : TYPE.body,
+        fill: dead || atCamp ? PAL.textDim : catNameColor(cat.classId),
       });
-      name.position.set(SPACE.md + 48, 12);
+      name.position.set(textX, atCamp ? 14 : 12);
       const sub = label(
         dead
           ? "gone for good"
-          : `${CLASSES[cat.classId].className} · Lv ${run.level}`,
+          : atCamp
+            ? "in Cat Town"
+            : `${CLASSES[cat.classId].className} · Lv ${run.level}`,
         { dim: true, size: TYPE.tiny },
       );
-      sub.position.set(SPACE.md + 48, 34);
+      sub.position.set(textX, atCamp ? 34 : 34);
       tab.addChild(name, sub);
 
       const badge = makePointBadgeAt(
@@ -854,6 +890,7 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
       if (badge) tab.addChild(badge);
 
       if (dead) tab.alpha = 0.45;
+      else if (atCamp) tab.alpha = selected ? 0.9 : 0.55;
       tab.eventMode = "static";
       tab.cursor = "pointer";
       tab.on("pointertap", () => {
@@ -909,6 +946,19 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     hpNow.anchor.set(1, 0);
     hpNow.position.set(LEFT_W - SPACE.lg, 102);
     card.addChild(hpNow);
+
+    // A cat that is not on this descent says so HERE, where the player is
+    // reading its sheet — the narrow tab alone can't carry the reason.
+    if (isAtCamp(catStanding(run, cat))) {
+      const away = label(`BACK IN CAT TOWN · ${campReason(run, cat)}`, {
+        size: TYPE.tiny,
+        bold: true,
+        dim: true,
+      });
+      away.anchor.set(1, 0);
+      away.position.set(LEFT_W - SPACE.lg, SPACE.sm);
+      card.addChild(away);
+    }
 
     // XP band
     const xp = xpProgress(run.xp, run.level);
@@ -1076,7 +1126,11 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
     row.on("pointerover", () => {
       if (!isTouch()) onHover?.();
     });
-    row.on("pointerout", clearTips);
+    // touch has no hover, but pixi still emits `pointerout` when the finger
+    // lifts — unguarded it tears down the tip the same tap just raised
+    row.on("pointerout", () => {
+      if (!isTouch()) clearTips();
+    });
     row.on("pointertap", () => {
       // A Den row's hover tip is its rules text; on touch the tap both
       // focuses the row (which is what activates it) and shows that text, so
@@ -1274,8 +1328,11 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
         chip.on("pointerover", () => {
           if (!isTouch()) explain();
         });
-        chip.on("pointerout", clearTips);
-        // purely informational: one tap says it, the next dismisses it
+        chip.on("pointerout", () => {
+          if (!isTouch()) clearTips();
+        });
+        // Purely informational — there is no action for a tap to shadow, so
+        // a tap says it and the next one dismisses it (mobile.md §2).
         chip.on("pointertap", explain);
       }
       host.addChild(chip);
