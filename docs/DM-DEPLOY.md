@@ -83,7 +83,7 @@ pulls `VERCEL_OIDC_TOKEN`) or set `AI_GATEWAY_API_KEY` in `.env.local`.
 
 | Var | Where | Required | What |
 |---|---|---|---|
-| `DM_ALLOWED_ORIGINS` | agent deployment | no | comma-separated CORS origins. Defaults to `https://c-at-rpg.vercel.app,http://localhost:5173,http://127.0.0.1:5173`. Add preview origins here rather than editing `agent/channels/eve.ts`. |
+| `DM_ALLOWED_ORIGINS` | agent deployment | no | comma-separated CORS origins, **added to** the built-in list in `agent/channels/eve.ts` — see [CORS](#cors). Use it for preview origins. It cannot remove a built-in. |
 | `AI_GATEWAY_API_KEY` | local only | no | gateway credential when the project is not linked |
 | `VERCEL_OIDC_TOKEN` | pulled by `eve link` | — | how a linked project reaches the gateway |
 | `VERCEL_AUTOMATION_BYPASS_SECRET` | local | no | set before `eve dev <url>` if the deployment has Deployment Protection on |
@@ -150,6 +150,22 @@ a real generation probe, start a session and send a trivial message).
 > This class of bug only reproduces in a real browser against a real
 > deployment. Verify it that way.
 
+> **The probe budget, and why a miss is retried.** `DM_PROBE_TIMEOUT_MS` was
+> 3s and a failure was cached for the whole session. The FIRST cross-origin
+> request of a session is the slowest one there is — DNS, TLS, a cold Vercel
+> function — and it routinely spent longer than that, so one unlucky cold start
+> meant no typed action for the rest of the session with no way back. Measured
+> from a browser at the final gate: **~0.9s warm**, and a miss under load.
+>
+> So: the budget is **6s**, a SUCCESS is still cached for the session, and a
+> FAILURE is retried on a later scene mount — at most `DM_PROBE_ATTEMPTS` (3)
+> times, never within `DM_PROBE_RETRY_MS` (5s) of the last miss. An absent DM
+> therefore costs at most three background requests per session and never a
+> burst, and `VITE_DM_URL` unset still makes **zero** requests, ever. That is
+> the same argument `markDmUnreachable` already makes for turns: one stumble
+> must not mute the DM for a whole run. Pinned in `tests/tabletop.spec.ts`
+> ("offline-first").
+
 ## HTTP surface
 
 `eveChannel()` mounts:
@@ -169,10 +185,74 @@ starts a new session.
 
 ### CORS
 
-Narrowed in `agent/channels/eve.ts` to `DM_ALLOWED_ORIGINS` (or the defaults),
-methods `GET`/`POST`, headers `authorization`/`content-type`, 600s preflight
-cache. Add a preview origin by setting the env var and redeploying — no code
-change.
+`agent/channels/eve.ts`: methods `GET`/`POST`, headers
+`authorization`/`content-type`, 600s preflight cache, and an allow-list that
+is **`DEFAULT_ORIGINS` ∪ `DM_ALLOWED_ORIGINS`**.
+
+**The env var is additive. It was not, and that was a bug.** It used to
+*replace* the defaults, and it is set on the DM's Vercel project — so the
+localhost port range in `DEFAULT_ORIGINS` had not applied in production since
+the day the variable was first set. Measured against the live deployment
+before the fix:
+
+```
+Origin: https://c-at-rpg-three.vercel.app  → 204, allow-origin: <echoed>
+Origin: http://localhost:5173              → 204, allow-origin: <echoed>
+Origin: http://localhost:5174              → 204, allow-origin: (absent)   ← dead branch
+Origin: https://evil.example.com           → 204, allow-origin: (absent)
+```
+
+A preflight that answers 204 with **no** `access-control-allow-origin` is the
+worst possible failure for this app: the browser cannot read the response,
+`probeDm` concludes there is no DM, and the offline path engages silently.
+Union means a deployment can only ever *add* origins. To remove one, edit
+`DEFAULT_ORIGINS` — shrinking who may talk to the DM should be a reviewed
+change, not a dashboard edit.
+
+**The local dev ports were also wrong.** `DEFAULT_ORIGINS` listed 5173-5179,
+Vite's default range. `vite.config.ts` sets `server.port: 8080`, so this
+project has never served the game on 5173 — the range could not match a real
+dev session (with 8080-8082 busy, the dev server comes up on 8083). The list
+is now 8080-8089, plus 5173-5176 and 4173-4174 for a bare `vite` /
+`vite preview` that ignores the config. 34 origins, deduplicated.
+
+Verify any change to this the only way that means anything — a preflight from
+each origin against the deployment:
+
+```bash
+for o in https://c-at-rpg-three.vercel.app http://localhost:8083 https://evil.example.com; do
+  printf '%-40s ' "$o"
+  curl -s -o /dev/null -D - -X OPTIONS https://c-at-rpg-dm.vercel.app/eve/v1/session \
+    -H "Origin: $o" -H 'Access-Control-Request-Method: POST' \
+    -H 'Access-Control-Request-Headers: content-type' \
+  | tr -d '\r' | grep -i '^access-control-allow-origin' || echo '(none)'
+done
+```
+
+> **Pending redeploy — still pending, and measured.** The additive fix and the
+> full 8080-8089 range are in the source and typecheck, but the DM has not been
+> redeployed, so the live allow-list is still the older, narrower one. Measured
+> against `c-at-rpg-dm.vercel.app` at the final gate:
+>
+> | origin | live answer |
+> |---|---|
+> | `https://c-at-rpg-three.vercel.app` | echoed ✅ |
+> | `http://localhost:8080` | echoed ✅ |
+> | `http://127.0.0.1:8080` | echoed ✅ |
+> | `http://localhost:5173` | echoed ✅ |
+> | `http://localhost:5174` | `(none)` ❌ |
+> | `http://localhost:8083` | `(none)` ❌ |
+> | `http://localhost:5199` | `(none)` ❌ |
+> | `https://evil.example.com` | `(none)` ✅ (correctly refused) |
+>
+> So the deployed game and a default `npm run dev` on **8080** both work today;
+> it is the *fallback* ports (8081-8089, 5174+) and the playtest port 5199 that
+> need the redeploy. `npm run dm:deploy` (with the DM project's org/project
+> ids, per [Deploy](#deploy)), then re-run the loop above.
+>
+> Browser gates that need a live DM must therefore serve the game on **8080**
+> (`vite --port 8080 --strictPort`), which is what the final gate's phone leg
+> does.
 
 ### Auth
 

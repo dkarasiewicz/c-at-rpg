@@ -23,27 +23,43 @@
  * protecting, swap `none()` for a real `AuthFn` (see eve
  * `guides/auth-and-route-protection`) and keep the ordering.
  *
- * CORS. Narrowed to the game's origins, configurable per deployment with
- * `DM_ALLOWED_ORIGINS` (comma-separated) so previews can be added without a
- * code change.
+ * CORS. Narrowed to the game's origins: `DEFAULT_ORIGINS` below, PLUS
+ * whatever `DM_ALLOWED_ORIGINS` adds, so previews can be allowed without a
+ * code change. The env var is ADDITIVE — see `allowedOrigins()`.
  */
 import { eveChannel } from "eve/channels/eve";
 import { localDev, none, vercelOidc } from "eve/channels/auth";
 
 /**
- * Origins the game is served from. Override per environment.
+ * Local dev ports, as a RANGE, because Vite hops to the next free port when
+ * its configured one is taken — two dev servers, or a stray one from an
+ * earlier session, and the game lands one port over with no warning. The DM
+ * then fails CORS on the reachability probe, and because this game is
+ * offline-first that failure is indistinguishable from "no DM configured":
+ * the typed-action UI simply is not built, and party generation silently
+ * falls back to the Strays. It cost a debugging session to notice, and
+ * localhost was already trusted, so the extra ports change nothing about who
+ * can reach this deployment.
  *
- * The local entries cover a RANGE because Vite hops to the next free port when
- * 5173 is taken — two dev servers, or a stray one from an earlier session, and
- * the game lands on 5174 with no warning. The DM then fails CORS on the
- * reachability probe, and because this game is offline-first that failure is
- * indistinguishable from "no DM configured": the typed-action UI simply is not
- * built, and party generation silently falls back to the Strays. It cost a
- * debugging session to notice, and localhost was already trusted, so the extra
- * ports change nothing about who can reach this deployment.
+ * **8080 is the one that matters.** `vite.config.ts` sets `server.port: 8080`
+ * — this project has never served the game on Vite's own 5173 default, so the
+ * 5173-5179 range this list used to hold could not match a single real dev
+ * session. (Checked while writing this: with 8080-8082 already occupied, the
+ * dev server came up on 8083.) The 5173 and 4173 rows are kept because they
+ * cost nothing and cover a bare `vite` / `vite preview` run that ignores the
+ * config.
  */
-const DEV_PORTS = [5173, 5174, 5175, 5176, 5177, 5178, 5179];
+const range = (lo: number, hi: number): number[] =>
+  Array.from({ length: hi - lo + 1 }, (_, i) => lo + i);
+const DEV_PORTS = [
+  ...range(8080, 8089), // vite.config.ts server.port, + hops
+  ...range(5173, 5176), // vite's own default, if the config ever goes
+  ...range(4173, 4174), // vite preview
+];
 const DEFAULT_ORIGINS = [
+  // The deployed game. Both names are live: `-three` is what Vercel assigned
+  // the project, the bare name is the alias. A player can arrive on either.
+  "https://c-at-rpg-three.vercel.app",
   "https://c-at-rpg.vercel.app",
   ...DEV_PORTS.flatMap((p) => [
     `http://localhost:${p}`,
@@ -51,14 +67,28 @@ const DEFAULT_ORIGINS = [
   ]),
 ];
 
+/**
+ * `DEFAULT_ORIGINS` ∪ `DM_ALLOWED_ORIGINS`.
+ *
+ * ADDITIVE, not an override, and that is the whole point of this function.
+ * The env var IS set on the DM's Vercel project, so while it replaced the
+ * defaults it silently deleted the port range above: a preflight from
+ * `http://localhost:5174` came back 204 with no `access-control-allow-origin`,
+ * the game read that as "no DM", and the dead-code comment about Vite hopping
+ * ports described a fix that had not applied in production since the variable
+ * was first set. Union means a deployment can only ADD origins — the local
+ * dev range and the deployed game can never be configured away by accident.
+ *
+ * To REMOVE an origin, remove it from `DEFAULT_ORIGINS` here. That is
+ * deliberate: shrinking who may talk to the DM should be a reviewed change,
+ * not a dashboard edit.
+ */
 function allowedOrigins(): string[] {
-  const configured = process.env.DM_ALLOWED_ORIGINS;
-  if (!configured) return DEFAULT_ORIGINS;
-  const list = configured
+  const extra = (process.env.DM_ALLOWED_ORIGINS ?? "")
     .split(",")
     .map((o) => o.trim())
     .filter((o) => o.length > 0);
-  return list.length > 0 ? list : DEFAULT_ORIGINS;
+  return [...new Set([...DEFAULT_ORIGINS, ...extra])];
 }
 
 export default eveChannel({

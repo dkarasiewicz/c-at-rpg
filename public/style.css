@@ -39,6 +39,15 @@
     --box-right: 0px;
     --box-bottom: 0px;
     --box-left: 0px;
+
+    /* The safe box's own height in CSS px, and the height of the GAME's top
+       HUD row expressed in the same units. Every screen keeps its first 64
+       design px for chrome that hugs the top edge — the Scatter! chip, the
+       floor header, a scene eyebrow — and 64/720 of the box is that row
+       whatever the letterbox scale is. (A length ÷ a length is not legal in
+       calc, so the scale is applied as a plain multiplier, not derived.) */
+    --box-h: calc(100dvh - var(--box-top) - var(--box-bottom));
+    --hud-row: calc(var(--box-h) * 0.0889);
 }
 
 /*
@@ -188,21 +197,33 @@ body {
 }
 
 /*
- * A REAL HOME, not the corner of the HUD.
+ * ONE HOME: the top-right corner, as far out of the game as the window will
+ * let it go.
  *
- * The safe box is contain-fitted, so on a phone (19.5:9 and wider) there is
- * always a band of painted backdrop beside it with nothing interactive in
- * it — the button parks in the middle of that band and can no longer land on
- * the Scatter! chip or the run map's header. `--box-*` is the measured gutter
- * per edge and main.ts picks the dock (src/main.ts `layout`):
+ * The safe box is contain-fitted, so the gutter it leaves depends entirely on
+ * the window's aspect, and `--box-*` is that gutter measured per edge.
+ * main.ts picks a dock name from it (src/main.ts `layout`) and all three
+ * spellings below say the SAME thing — top-right — they just differ in how
+ * far out they can get:
  *
- *   right  — a side band wide enough for the target (every phone)
- *   top    — a 4:3 tablet: the bands are above and below instead
- *   inset  — a window at exactly 16:9 has no band at all; hug the right edge
- *            at mid-height, the one column of the HUD that is always art.
+ *   right  — a side band wide enough for the target (every phone, 19.5:9 and
+ *            wider): centre the button in that band, level with the top of
+ *            the box.
+ *   top    — a 4:3 tablet, where the bands are above and below instead:
+ *            centre it in the top band, level with the right of the box.
+ *   inset  — a window at EXACTLY 16:9 has no band on any edge, so there is
+ *            nowhere outside the game to stand. It used to sit mid-right,
+ *            which read as arbitrary because it was: measured at 1280×720 it
+ *            floated over the battlefield, and in Cat Town it landed square
+ *            on the STORM DRAIN node — a tappable node under an opaque DOM
+ *            button. So it keeps the same corner as the other two and drops
+ *            below the game's own top HUD row instead: `--hud-row` clears the
+ *            Scatter! chip and the floor header, and the census of every
+ *            screen at 1280×720 (title, Cat Town, run map, battle, pause, the
+ *            Den, results) finds that 44px box empty on all of them.
  */
 :root[data-menu-dock="right"] #sys-menu {
-    top: calc(var(--safe-top) + 8px);
+    top: calc(var(--safe-top) + var(--box-top) + 8px);
     right: calc(
         var(--safe-right) + (var(--box-right) - var(--safe-right) - 44px) / 2
     );
@@ -210,13 +231,12 @@ body {
 
 :root[data-menu-dock="top"] #sys-menu {
     top: calc(var(--safe-top) + (var(--box-top) - var(--safe-top) - 44px) / 2);
-    right: calc(var(--safe-right) + 8px);
+    right: calc(var(--safe-right) + var(--box-right) + 8px);
 }
 
 :root[data-menu-dock="inset"] #sys-menu {
-    top: 50%;
-    right: calc(var(--safe-right) + 4px);
-    transform: translateY(-50%);
+    top: calc(var(--safe-top) + var(--box-top) + var(--hud-row));
+    right: calc(var(--safe-right) + var(--box-right) + 8px);
 }
 
 /* ---------------------------------------------------------------------- */

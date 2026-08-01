@@ -1182,12 +1182,22 @@ export function makeSkillBar(): SkillBar {
       specs = next;
       for (const v of slotViews) v.destroy({ children: true });
       slotViews.length = 0;
+      // All six null is the shelf going QUIET (battle.ts blanks it while an
+      // action animates and while the DM adjudicates), not six unfilled
+      // loadout slots. Only the mixed case names its holes.
+      const quiet = next.every((s) => s === null);
       next.forEach((spec, i) => {
         const rect = R.combat.slotRects[i];
         if (!rect) return;
-        const slot = buildSlot(spec, i, selected === i, () => {
-          if (spec?.ok) bar.onSlot?.(i);
-        });
+        const slot = buildSlot(
+          spec,
+          i,
+          selected === i,
+          () => {
+            if (spec?.ok) bar.onSlot?.(i);
+          },
+          !quiet,
+        );
         slot.position.set(rect[0], rect[1]);
         view.addChild(slot);
         slotViews.push(slot);
@@ -1223,6 +1233,8 @@ function buildSlot(
   index: number,
   selected: boolean,
   onTap: () => void,
+  /** False while the WHOLE shelf is quiet (animating / the DM is thinking). */
+  labelEmpty = true,
 ): Container {
   const w = 128;
   const h = 112;
@@ -1234,7 +1246,27 @@ function buildSlot(
     }),
   );
   if (!spec) {
+    // An UNFILLED loadout slot — this cat has fewer than four skills slotted
+    // (a level-1 class knows three; the capstone joins at 4, and The Den lets
+    // you bench one). Drawn as a bare 35%-alpha panel it read as a hole in the
+    // shelf, so it says what it is: one dim word, no hotkey chip, nothing to
+    // press. The Den is where it gets filled, and the Den is where that is
+    // explained — this only has to stop looking broken.
+    //
+    // `labelEmpty` is false when EVERY slot is null, which is not a loadout at
+    // all: it is the shelf going quiet mid-animation and while the DM thinks.
+    // Six cards reading "empty" during every swing would be worse than the
+    // hole this fixes.
     slot.alpha = 0.35;
+    if (labelEmpty) {
+      const empty = label("empty", {
+        size: TYPE.tiny,
+        dim: true,
+        center: true,
+      });
+      empty.position.set(w / 2, h / 2);
+      slot.addChild(empty);
+    }
     return slot;
   }
   if (!spec.ok) slot.alpha = 0.72;

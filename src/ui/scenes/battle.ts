@@ -2503,6 +2503,20 @@ export function createBattleScene(): Scene {
     }
 
     if (result.outcome === "defeat") {
+      // WRITE THE WIPE BACK before the results screen reads the run.
+      //
+      // Only the victory branch used to call `applyBattleResult`, so a run
+      // that ENDED here handed `results` a RunState frozen at the moment the
+      // fight began: the roll-call printed "3 lives left" under the portrait
+      // of a cat that had just been buried, and the enemies the clowder DID
+      // put down on its way out counted for neither the score table nor the
+      // Cat Town payout. Both are the last screen a losing player sees.
+      //
+      // The same call the win takes is correct here — a defeat carries 0 xp
+      // (turns.ts) and `floorsCleared` only moves on a victory, so all this
+      // folds in is the truth: final hp, spent Lives, grief loot, and the
+      // kills that were earned.
+      ctx.run = applyBattleResult(run, result).run;
       // 1.5s "the clowder scatters…" beat (gameloop §6)
       if (modalC) {
         const veil = new Graphics()

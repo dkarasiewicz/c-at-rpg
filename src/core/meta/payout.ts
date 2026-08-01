@@ -9,11 +9,14 @@
  *
  * Measured shape of the curve (tests/meta.spec.ts pins these):
  *   total wipe on floor 1, nothing cleared ................  20  (the floor)
- *   died on floor 2, one floor cleared, 8 kills, 60 carried  ~72
+ *   died on floor 2, one floor cleared, 8 kills, 60 carried   72
  *   died on floor 4, three cleared, 30 kills, 1 boss ....... ~230
- *   clean six-floor victory ............................... ~740
- * The authored unlock catalog totals 2770, i.e. ~4 victories or ~a dozen
- * failed runs to own the town outright.
+ *   clean six-floor victory, 1 boss, 150 carried ..........  757
+ * A real six-floor victory carries far more coin than that fixture — a
+ * measured DEEP-0 run banked 1013 ✦ on 984 carried and two bosses.
+ * The authored unlock catalog totals 2650 ✦ over 13 unlocks
+ * (`unlocks.ts` `catalogCost()`, pinned in tests/meta.spec.ts), i.e. ~3
+ * victories or ~a dozen failed runs to own the town outright.
  */
 import type { Payout, PayoutLine, RunSummary } from "./types.js";
 

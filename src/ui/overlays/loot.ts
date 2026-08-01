@@ -193,7 +193,7 @@ export class LootOverlay implements Overlay {
     // the level-up flourish (progressPanel.makeLevelUpCard) is measured here
     const levelUpH =
       leveled && runNow
-        ? levelUpCardHeight(runNow.cats, levelBefore, runNow.level)
+        ? levelUpCardHeight(runNow, levelBefore, runNow.level, PW - PAD * 2)
         : 0;
     const bodyH =
       (p.grant.shinies !== 0 ? 30 : 0) +
@@ -380,7 +380,7 @@ export class LootOverlay implements Overlay {
         // THE level-up moment (progression.md): new level, the growth rows
         // gained, any milestone skill learned, and where to spend the points
         const flourish = makeLevelUpCard(
-          runNow.cats,
+          runNow,
           levelBefore,
           runNow.level,
           PW - PAD * 2,

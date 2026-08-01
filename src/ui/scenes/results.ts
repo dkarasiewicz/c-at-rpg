@@ -21,6 +21,7 @@ import { Container, Graphics, Text } from "pixi.js";
 import {
   computeScore,
   discoveriesOf,
+  survivingLives,
   type ScoreSummary,
 } from "../../core/run/score.js";
 import { deleteSave, saveMeta } from "../../core/run/save.js";
@@ -45,7 +46,12 @@ import {
   sceneBackdrop,
   vignette,
 } from "../widgets.js";
-import { campNotePast, campSection, splitRoster } from "../roster.js";
+import {
+  campNotePast,
+  campSection,
+  livesPhrase,
+  splitRoster,
+} from "../roster.js";
 import { tween } from "../tween.js";
 import { randomSeed } from "./title.js";
 import { layer, type GameCtx, type Scene } from "../sceneManager.js";
@@ -146,7 +152,10 @@ export function createResultsScene(): Scene {
       seed = run.runSeed;
 
       // -- bookkeeping first: save deleted on entry, meta updated ------
-      const livesRemaining = run.cats.reduce((s, c) => s + c.lives, 0);
+      // SURVIVAL counts only the cats who actually walked the floors — the
+      // same roster the roll-call panel prints below, so the "lives
+      // remaining" line can never disagree with the Lives drawn beside it.
+      const livesRemaining = survivingLives(run);
       summary = computeScore(
         run.score,
         p.victory,
@@ -300,6 +309,14 @@ export function createResultsScene(): Scene {
       score.addChild(timeLine);
 
       /* ---- NEW BEST flair: a gold badge straddling the panel edge --- */
+      // The badge straddling the bottom border is authored; SITTING ON THE
+      // TIME LINE was not. Centred on the panel it landed squarely over
+      // "time 2:48 — never scored" and clipped the tail off it (measured at
+      // 844×390). So it docks to the bottom-RIGHT corner instead — still
+      // straddling the border, now directly under the gold TOTAL figure it is
+      // talking about, in the one part of the foot band that is empty. The
+      // clamp is the guarantee: whatever the time string says, the badge
+      // never crosses it.
       const best = heading("NEW BEST!", 2, { fill: PAL.gold, center: true });
       const chipW = Math.ceil(best.width) + SPACE.lg * 2;
       const chip = panel(chipW, 40, {
@@ -310,7 +327,11 @@ export function createResultsScene(): Scene {
       best.position.set(chipW / 2, 20);
       chip.addChild(best);
       chip.pivot.set(chipW / 2, 20); // pivot on the badge center, not bounds
-      chip.position.set(SCORE_W / 2, bodyH - 4);
+      const chipCx = Math.max(
+        colL + Math.ceil(timeLine.width) + SPACE.md + chipW / 2,
+        colR - chipW / 2,
+      );
+      chip.position.set(chipCx, bodyH - 4);
       chip.visible = false;
       score.addChild(chip);
       newBest = chip;
@@ -342,7 +363,14 @@ export function createResultsScene(): Scene {
       roll.addChild(rollSub);
 
       party.forEach((cat, i) => {
-        const dead = cat.lives <= 0;
+        // A WIPE IS NOT A HOMECOMING. A defeat ends the battle without the
+        // Nine Lives standup (combat.md §12), so a cat that went down on the
+        // last round keeps its Life count and comes back at 0 HP — and this
+        // roll-call used to read that as "alive": survivor ring, bobbing
+        // portrait, "1 lives left", under a banner that says THE ALLEY
+        // REMEMBERS. Nobody came back up from that fight. On a defeat, a cat
+        // at 0 HP is down; only a run the party WON can show survivors.
+        const dead = cat.lives <= 0 || (!p.victory && cat.hp <= 0);
         const rowY = 52 + i * CAT_ROW_H;
         const row = new Container();
         roll.addChild(row);
@@ -363,11 +391,18 @@ export function createResultsScene(): Scene {
           fill: dead ? PAL.textDim : PAL.text,
         });
         name.position.set(SPACE.lg + 68, rowY + 8);
-        const state = label(dead ? "out of lives" : `${cat.lives} lives left`, {
-          dim: true,
-          size: TYPE.tiny,
-          mono: true,
-        });
+        const state = label(
+          cat.lives <= 0
+            ? "out of lives"
+            : dead
+              ? "did not come back"
+              : `${livesPhrase(cat.lives)} left`,
+          {
+            dim: true,
+            size: TYPE.tiny,
+            mono: true,
+          },
+        );
         state.position.set(SPACE.lg + 68, rowY + 30);
         row.addChild(name, state);
 

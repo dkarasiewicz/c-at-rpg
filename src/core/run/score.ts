@@ -37,7 +37,10 @@ export const SCORE_MULT = {
   /** one per Mewthical unique the run turned up (`RunState.uniquesDropped`) */
   relicsFound: 250,
   shiniesCollected: 1,
-  livesRemaining: 25, // victory only; max 36 → up to 900
+  // victory only, and only for the cats that were FIELDED (`survivingLives`).
+  // A default party of 3 tops out at 27 Lives → 675; a Cat-Town-widened party
+  // of 4 at 36 → 900.
+  livesRemaining: 25,
 } as const;
 
 export const VICTORY_BONUS = 2000;
@@ -88,10 +91,33 @@ export function discoveriesOf(run: RunState): Discoveries {
 }
 
 /**
+ * The SURVIVAL count: Lives still held by the cats who actually walked the
+ * floors — `run.marchingOrder`, which is exactly the roll-call's PARTY half
+ * (roster.ts `splitRoster`; a cat that fell is still in the party list with
+ * 0 Lives, so it contributes nothing either way).
+ *
+ * `RunState.cats` always carries all four class slots whether or not the run
+ * fielded them (runState.ts `fieldedCats`), so summing THAT paid 25 points
+ * per Life of a cat who never left Cat Town. A benched cat was worth a free
+ * 225 — benching scored higher than fighting — and the results screen printed
+ * "3 went down · 1 stayed in town" directly above a count of 36 Lives over
+ * three rows of nine. This is the number the panel draws.
+ */
+export function survivingLives(run: RunState): number {
+  let lives = 0;
+  for (const classId of run.marchingOrder) {
+    const cat = run.cats.find((c) => c.classId === classId);
+    if (cat) lives += Math.max(0, cat.lives);
+  }
+  return lives;
+}
+
+/**
  * Compute the full score breakdown, lines in gameloop.md §7 table order.
- * `livesRemaining` = sum of Lives across all cats (dead cats contribute 0);
- * it and the flat victory bonus appear on victory only. `discoveries` is
- * optional so a caller with only counters in hand still gets a valid table.
+ * `livesRemaining` is the SURVIVAL count — pass `survivingLives(run)`, which
+ * counts only the cats that were fielded (dead cats contribute 0); it and the
+ * flat victory bonus appear on victory only. `discoveries` is optional so a
+ * caller with only counters in hand still gets a valid table.
  */
 export function computeScore(
   counters: ScoreCounters,

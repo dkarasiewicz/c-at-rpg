@@ -163,33 +163,33 @@
     },
     "town:bowls": {
       "file": "town-bowls.webp",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "town:stoop": {
       "file": "town-stoop.webp",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "town:fence": {
       "file": "town-fence.webp",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "town:cart": {
       "file": "town-cart.webp",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "town:board": {
       "file": "town-board.webp",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "town:drain": {
       "file": "town-drain.webp",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     }
   }
 }

@@ -673,9 +673,9 @@ export class EventScene implements Scene {
         return;
       }
       this.recordBeat(text, verdict, check.applied, check.problems);
-      if (!check.applied) {
-        // A refusal is the DM saying no, in character; a dropped verdict
-        // reads the same. Either way the prompt is still on the table.
+      if (!check.resolved) {
+        // The DM said no, or answered with something unusable. Either way the
+        // party did not do the thing, so the prompt is still on the table.
         bar.reply(verdict.narration, verdict.allowed ? "told" : "refused");
         return;
       }

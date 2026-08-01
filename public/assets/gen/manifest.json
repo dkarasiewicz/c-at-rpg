@@ -47,98 +47,98 @@
     },
     "portrait:bruno": {
       "file": "portrait-bruno.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:pixel": {
       "file": "portrait-pixel.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:mora": {
       "file": "portrait-mora.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:baguette": {
       "file": "portrait-baguette.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:ratThug": {
       "file": "portrait-ratThug.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:sewerBat": {
       "file": "portrait-sewerBat.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:dustBunny": {
       "file": "portrait-dustBunny.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:crowShaman": {
       "file": "portrait-crowShaman.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:roombaScout": {
       "file": "portrait-roombaScout.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:sprinklerImp": {
       "file": "portrait-sprinklerImp.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:yarnGolem": {
       "file": "portrait-yarnGolem.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:porcelainHound": {
       "file": "portrait-porcelainHound.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:laserGhost": {
       "file": "portrait-laserGhost.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:trashPanda": {
       "file": "portrait-trashPanda.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:sockWraith": {
       "file": "portrait-sockWraith.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:elderStray": {
       "file": "portrait-elderStray.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:vacuumKing": {
       "file": "portrait-vacuumKing.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:dogfather": {
       "file": "portrait-dogfather.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "portrait:ratPrince": {
       "file": "portrait-ratPrince.png",
-      "w": 320,
-      "h": 320
+      "w": 192,
+      "h": 192
     },
     "enemy:ratThug": {
       "file": "enemy-ratThug.png",

@@ -273,7 +273,8 @@ Cat Piles triggered          × 75      // celebrates the signature system
 events survived              × 80      // run.firedEventIds — the map's other half
 Mewthical relics found       × 250     // run.uniquesDropped
 shinies collected            × 1       // score-only currency from chests/loot/events
-lives remaining (sum, all cats) × 25   // victory only; max 36 → up to 900
+lives remaining (fielded cats)  × 25   // victory only; party of 3 → up to 675,
+                                       // a Cat-Town-widened 4 → up to 900
 VICTORY BONUS                  2000    // victory only
 TOTAL
 ```
@@ -286,6 +287,13 @@ DEEDS (kills, bosses, Cat Piles) and DISCOVERY (events, relics), with shinies at
 ×1. On the measured victory no line exceeds ~23% and shinies are ~11%. The two
 discovery lines are read straight off the RunState, so nothing new is counted
 anywhere for them to exist.
+
+**Survival counts the cats that WALKED.** `RunState.cats` always carries all
+four class slots whether or not the run fielded them, so summing *that* paid
+25 points per Life of a cat sitting in Cat Town: a benched cat was a free 225
+and fielding fewer cats scored higher. `score.ts survivingLives(run)` sums
+`run.marchingOrder` instead — exactly the roster the roll-call panel prints, so
+the line can never disagree with the paw rows drawn beside it.
 
 4. Records line from `MetaFile`: `best score`, `fastest victory`, `victories`,
    `runs played` — with "NEW BEST!" flair when beaten.

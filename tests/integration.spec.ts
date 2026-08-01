@@ -38,19 +38,30 @@ import {
   type SceneId,
 } from "../src/ui/sceneManager.js";
 import {
+  applyBattleResult,
   FLOOR_COUNT,
   floorConfig,
   generateCurrentFloorMap,
   newRun,
 } from "../src/core/run/runState.js";
+import { computePayout } from "../src/core/meta/payout.js";
 import {
   loadRun,
   memoryStorage,
   saveRun,
   serializeRun,
   emptyMeta,
+  SAVE_VERSION,
 } from "../src/core/run/save.js";
-import type { SaveFile } from "../src/core/types.js";
+import { ENEMIES } from "../src/content/enemies.js";
+import { BOSS_ENCOUNTERS } from "../src/content/bosses.js";
+import { ENEMY_CURVE, curvedEnemyStats } from "../src/content/floors.js";
+import type {
+  BattleResult,
+  EnemyId,
+  RunState,
+  SaveFile,
+} from "../src/core/types.js";
 import { GATE_SEED, scriptedRun } from "./support/scriptedRun.js";
 
 /* ------------------------------------------------------------------ */
@@ -518,6 +529,164 @@ describe("integration gate: the full descent (floors 1-6 + the boss)", () => {
       throw new Error(
         "missing tests/fixtures/integration-deep-run.json — record it with " +
           "RECORD_FIXTURES=1 npx vitest run tests/integration.spec.ts",
+      );
+    }
+    const fixture = JSON.parse(readFileSync(path, "utf8")) as SaveFile;
+    expect(snapshot).toEqual(fixture);
+  });
+
+  /* -- what the late floors actually FIELD -------------------------- */
+  //
+  // The RunState fixture above pins the run's outcome, but a RunState says
+  // nothing about the monsters that produced it: swap floor 6's roster for
+  // floor 1's and the recorded state changes, but the failure reads as "some
+  // number moved" rather than "floor 6 is fielding rats". The pack log is the
+  // readable half of the same guard — it is the tier ladder and the boss
+  // encounter, written down.
+
+  it("fields the tier-3 roster on floors 5-6, never the floor-1 rats", () => {
+    const late = out.packs.filter((p) => p.floor >= 5 && !p.boss);
+    expect(late.length).toBeGreaterThan(2);
+    const species = new Set<EnemyId>(late.flatMap((p) => p.enemies));
+    // at least one tier-3 monster is down there…
+    expect([...species].some((id) => ENEMIES[id].tier === 3)).toBe(true);
+    // …and the tier-1 opener is not: the floor-5/6 draw tables exclude it
+    expect(species.has("ratThug")).toBe(false);
+  });
+
+  it("walks the Dogfather's lair in with its authored escort", () => {
+    const lair = out.packs.filter((p) => p.boss).at(-1);
+    expect(lair).toBeDefined();
+    expect(lair!.floor).toBe(FLOOR_COUNT);
+    expect(lair!.enemies).toEqual(BOSS_ENCOUNTERS.dogfather);
+    // the escort is the tell that the lair is the AUTHORED encounter and not
+    // a rolled pack that happens to hold a boss
+    expect(lair!.enemies.length).toBeGreaterThan(1);
+  });
+
+  it("prices the deep floors off the deep end of ENEMY_CURVE", () => {
+    // the same species is measurably harder on floor 6 than on floor 1 —
+    // the one assertion that fails loudly if the curve is flattened
+    const hound = ENEMIES.porcelainHound.stats;
+    const f1 = curvedEnemyStats(hound, 1);
+    const f6 = curvedEnemyStats(hound, FLOOR_COUNT);
+    expect(f6.hp).toBeGreaterThan(f1.hp);
+    expect(f6.atk).toBeGreaterThan(f1.atk);
+    expect(f6.def).toBeGreaterThanOrEqual(f1.def);
+    expect(ENEMY_CURVE).toHaveLength(FLOOR_COUNT);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* the ENDING that is a LOSS: the wipe has to reach the run            */
+/* ------------------------------------------------------------------ */
+//
+// The results screen reads the RunState it is handed, so the battle scene
+// must fold a LOST battle back into the run before it navigates — otherwise
+// the defeat screen prints "3 lives left" under a cat that was just buried,
+// and the kills the clowder scored on its way out reach neither the score
+// table nor the Cat Town payout. (Measured in a browser: tests/browser/
+// full-run.ts reached the defeat results with all four cats "standing".)
+// This pins the core half of that contract; the browser gate pins the wiring.
+
+describe("a lost battle folds back into the run", () => {
+  it("buries the cats and still counts what they felled", () => {
+    const run = generateCurrentFloorMap(newRun("WIPE-1"));
+    const doomed: RunState = {
+      ...run,
+      cats: run.cats.map((c) => ({ ...c, lives: 1, hp: 1 })),
+    };
+    const result: BattleResult = {
+      outcome: "defeat",
+      cats: doomed.cats.map((c) => ({ classId: c.classId, hp: 0, lives: 0 })),
+      xpGained: 0,
+      catPiles: 0,
+      enemiesDefeated: 2, // they took two down before they went
+      bossDefeated: false,
+      ninthBellSpent: false,
+      events: [],
+    };
+    const after = applyBattleResult(doomed, result).run;
+    expect(after.cats.every((c) => c.lives === 0)).toBe(true);
+    expect(after.cats.every((c) => c.hp === 0)).toBe(true);
+    expect(after.marchingOrder).toEqual([]);
+    expect(after.score.enemiesDefeated).toBe(2);
+    // a defeat never clears a floor and never pays xp
+    expect(after.score.floorsCleared).toBe(doomed.score.floorsCleared);
+    expect(after.xp).toBe(doomed.xp);
+    // …and the payout the town computes from it is scaled, never zero
+    const paid = computePayout({
+      seed: after.runSeed,
+      victory: false,
+      floorsReached: after.score.floorsReached,
+      floorsCleared: after.score.floorsCleared,
+      enemiesDefeated: after.score.enemiesDefeated,
+      bossesDefeated: after.score.bossesDefeated,
+      catPiles: after.score.catPiles,
+      shiniesCarried: after.inventory.shinies,
+      score: 0,
+      playTimeMs: 1000,
+    });
+    expect(paid.total).toBeGreaterThan(0);
+    expect(paid.lossRate).toBeLessThan(1);
+  });
+});
+
+/* ------------------------------------------------------------------ */
+/* the FLOOR-5 HANDOFF: the save the browser playtest plays from       */
+/* ------------------------------------------------------------------ */
+//
+// tests/browser/full-run.ts fast-forwards floors 1-4 with this driver and
+// then plays 5, 6 and the Dogfather in a real browser. If the handoff state
+// drifts — a different party level, a different wallet, a floor-5 board that
+// generates differently — the browser gate starts somewhere else and its
+// result stops meaning what it says. So the parked state is a fixture of its
+// own, recorded at exactly the point the browser picks the run up.
+
+const FLOOR5_FIXTURE_URL = new URL(
+  "./fixtures/integration-floor5-start.json",
+  import.meta.url,
+);
+
+describe("integration gate: the floor-5 handoff (browser playtest save)", () => {
+  const out = scriptedRun(DEEP_SEED, { throughFloor: FLOOR_COUNT - 2 });
+
+  it("parks the party at the mouth of floor 5 on a fresh board", () => {
+    expect(out.floorsWalked).toEqual([1, 2, 3, 4]);
+    expect(out.run.floorNum).toBe(FLOOR_COUNT - 1);
+    expect(out.run.floorMap).not.toBeNull();
+    // nothing on floor 5 has happened yet: the party stands on the entry
+    // node and the run map will HOLD it there for a confirm
+    expect(out.run.currentNodeId).toBe(out.run.floorMap!.entryId);
+    expect(out.run.visitedNodeIds).toEqual([out.run.floorMap!.entryId]);
+    expect(out.run.resolvedNodes).toBeUndefined();
+    expect(out.run.floorFiredEventIds).toEqual([]);
+    // and it arrives as a party that could plausibly survive what is next
+    expect(out.run.level).toBeGreaterThanOrEqual(6);
+    expect(out.run.cats.filter((c) => c.lives > 0).length).toBeGreaterThan(1);
+    expect(out.run.score.bossesDefeated).toBe(1); // the floor-3 lair fell
+  });
+
+  it("round-trips through the save file the browser injects", () => {
+    const file = serializeRun(out.run);
+    const back = JSON.parse(JSON.stringify(file)) as SaveFile;
+    expect(back.version).toBe(SAVE_VERSION);
+    expect(back.run.floorNum).toBe(FLOOR_COUNT - 1);
+  });
+
+  it("deep-equals the recorded floor-5 handoff fixture", () => {
+    const snapshot = JSON.parse(
+      JSON.stringify(serializeRun(out.run)),
+    ) as SaveFile;
+    const path = fileURLToPath(FLOOR5_FIXTURE_URL);
+    if (process.env.RECORD_FIXTURES) {
+      mkdirSync(dirname(path), { recursive: true });
+      writeFileSync(path, JSON.stringify(snapshot, null, 2) + "\n");
+    }
+    if (!existsSync(path)) {
+      throw new Error(
+        "missing tests/fixtures/integration-floor5-start.json — record it " +
+          "with RECORD_FIXTURES=1 npx vitest run tests/integration.spec.ts",
       );
     }
     const fixture = JSON.parse(readFileSync(path, "utf8")) as SaveFile;

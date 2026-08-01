@@ -25,7 +25,17 @@ npm run dev     # http://localhost:8080 (next free port if it is taken)
 
 Keyboard: **Enter** start / confirm · **S** enter a seed · **1–6** pick a place in
 Cat Town · **1–3 / arrows** pick a route on the run map · **1–6** skills ·
-**T** say what you do · **R** flee · **P** The Den · **Esc** pause.
+**I** inspect an enemy · **T** say what you do · **R** flee · **P** The Den ·
+**Esc** pause.
+
+**On a phone it is all taps.** Every keyboard action has a real control, and
+one rule covers the lot: **a tap acts, a long press reads.** Tapping a legal
+target attacks it, a map medallion takes the route, a skill card picks it; a
+400 ms hold opens the details instead — enemy intel, a cat's nameplate, a
+route's blurb. Hit targets grow from the live letterbox scale so a 34 px route
+chip answers to an 81 px box under a finger and still paints 34 px on a
+monitor. Landscape only (portrait gets a rotate prompt), installable as a PWA,
+and it runs offline after one visit. See `docs/design/mobile.md`.
 
 ## The game
 
@@ -152,6 +162,16 @@ renderers take over. **The game stays fully playable with zero generated assets*
 and that is verified as part of the release gate. Direction and asset contract:
 `docs/design/visual-v2.md`. Visit `/?gallery=1` for the procedural fallback gallery.
 
+**`npm run audit` keeps the art honest.** It cross-references all four manifests
+against every reference in `src/` and `agent/` — literals *and* the template
+prefixes most ids are actually built from (`` `scene:map:${n}` ``,
+`` `equip:${id}` ``) — and reports dead ids, missing files, orphans, duplicates,
+and anything stored past 3× the box it is drawn into. That last check quotes the
+draw size from the call site and re-reads the constant out of the source, so it
+fails if `CELL` or `R_BOSS` moves without the budget moving with it. Acting on
+its first clean run took the art payload from **60.7 MB to 24.6 MB (−59.5%)**
+with no visible change: `docs/art/ASSET-AUDIT.md`.
+
 ## The Dungeon Master (optional service)
 
 The DM is a **Vercel [eve](https://vercel.com) agent with one durable session per
@@ -189,7 +209,11 @@ never re-consulted.
 **The DM is optional and the game is offline-first — a hard rule, not a
 nice-to-have.** With `VITE_DM_URL` unset (the default) the probe short-circuits
 *without a request*, the typed-action affordance is never built, and every screen is
-byte-identical to its no-DM behaviour. The party creator falls back to a "using the
+byte-identical to its no-DM behaviour. When a DM *is* configured, a probe that
+merely **misses** — a cold TLS handshake, a sleeping function — no longer mutes it
+for the whole session: the miss is retried on a later screen, at most three times
+and never in a burst, because "slow" and "gone" look identical from the player's
+side and only one of them should cost them the feature. The party creator falls back to a "using the
 Strays" toast, event modals render without the extra row, and battles run with stock
 powers. This is verified in the release gate by playing a run with the DM pointed at
 a dead host. There is no fallback service behind it: the six stateless
@@ -207,9 +231,29 @@ npm run typecheck   # tsc --noEmit (strict; src only)
 npm run lint        # eslint, incl. layering rule: src/core imports no pixi
 npm run build       # production build
 npm run sim         # headless balance harness (see --floors/--trials/--party/--roster)
+npm run audit       # generated-art audit: dead ids, orphans, oversized art (exit 1 on findings)
+npm run audit:fix   # resample whatever the audit calls oversized, rewrite the manifests
 npm run typecheck:agent        # typecheck the DM agent (src/ is pulled in transitively)
 npx eve info                   # compile-check the agent (tools, skills, subagents)
 ```
+
+**The release gate is a browser playing the game, not a test suite.** Under
+`tests/browser/` are Playwright harnesses that drive the real bundle in headless
+chromium and read the live scene through DEV-only hooks (`__scene`, `__run`,
+`__battle`, `__ui`, `__units`, `__hits`, `__text`) rather than guessing from
+pixels — so "the run got stuck" fails the gate instead of being absorbed by a
+rotation of hopeful keypresses.
+
+```bash
+npx tsx tests/browser/full-run.ts      # floors 5→6→the Dogfather→victory→Cat Town,
+                                       # then a wipe; both to the results screen
+npx tsx tests/browser/final-gate.ts    # desktop + phone sweep, every screen
+npx tsx tests/browser/boss-playtest.ts # the lair on its own
+```
+
+Anything that must exercise the **live** DM has to be served on **port 8080** —
+that origin is on the deployed agent's CORS allow-list and the playtest port is
+not (`docs/DM-DEPLOY.md`).
 
 The codebase is strictly layered (see `docs/ARCHITECTURE.md`):
 

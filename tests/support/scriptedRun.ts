@@ -271,6 +271,14 @@ export interface ScriptedOutcome {
   /** Enemy ids the driver put down, deepest floor last. */
   bossesFelled: EnemyId[];
   /**
+   * Every pack the driver actually fought, in order, tagged with the floor it
+   * was fought on. This is the only place a test can see WHAT the late floors
+   * field — `nodesVisited` reports a node was a fight, never that the fight
+   * was three tier-3 monsters — so it is what pins the deep end of
+   * `ENEMY_CURVE` and the tier roster to a fixture.
+   */
+  packs: { floor: number; enemies: EnemyId[]; boss: boolean }[];
+  /**
    * 1-based route number the driver stopped in FRONT of (the run map's own
    * `1`/`2`/`3` hotkeys), or 0 when it did not stop short.
    */
@@ -316,6 +324,7 @@ export function scriptedRun(
   const nodesVisited: NodeType[] = [];
   const floorsWalked: number[] = [];
   const bossesFelled: EnemyId[] = [];
+  const packs: { floor: number; enemies: EnemyId[]; boss: boolean }[] = [];
   let fights = 0;
   let treasures = 0;
   let eventsResolved = 0;
@@ -381,6 +390,11 @@ export function scriptedRun(
     if (out.fightRequest) {
       const fr = out.fightRequest;
       const encIdx = 1000 + node.id; // event.ts convention
+      packs.push({
+        floor: run.floorNum,
+        enemies: [...fr.encounter],
+        boss: false,
+      });
       const result = driveBattle(run, fr.encounter, encIdx, false);
       if (result.outcome !== "victory") {
         throw new Error(`scripted event fight ended in ${result.outcome}`);
@@ -422,6 +436,11 @@ export function scriptedRun(
         if (!enemies) throw new Error(`fight node ${node.id} has no pack`);
         const isBoss = node.type === "boss";
         const encIdx = encounterIndexOf(node);
+        packs.push({
+          floor: run.floorNum,
+          enemies: [...enemies],
+          boss: isBoss,
+        });
         const result = driveBattle(run, enemies, encIdx, isBoss);
         if (result.outcome !== "victory") {
           throw new Error(
@@ -526,6 +545,7 @@ export function scriptedRun(
     rests,
     floorsWalked,
     bossesFelled,
+    packs,
     stoppedBeforeRoute,
   };
 }

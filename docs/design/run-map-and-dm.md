@@ -1,5 +1,10 @@
 # Run Map + the Tabletop DM — design v3
 
+> **STATUS: shipped, all five build steps.** The run map, the DM agent, the
+> tabletop layer and both §4b presence requirements are in the tree; §5 is
+> kept as a record of the order, not a plan. Where a section below still
+> reads as future tense, a **SHIPPED** note names the code.
+
 Supersedes `dungeon.md` (tile maze, fog of war, WASD movement) and reframes
 `gm-system.md` from six stateless endpoints into one persistent Game Master.
 
@@ -95,6 +100,16 @@ agent/
     adjust_shinies.ts
     remember.ts            write a fact to run state for later callback
     offer_encounter.ts     bias what the next node contains
+    contribute_content.ts  publish an item/event/flavour to the shared pool
+  skills/
+    item.ts, event.ts      the two surviving one-shot procedures
+  lib/
+    effects.ts             zod mirror of EffectSpec + the per-floor ramp;
+                           pricing is IMPORTED from src/, never reimplemented
+    memory.ts              defineState run memory: facts + emissions
+    catalog.ts             the closed item menu, per-floor shinies cap
+    oneshot.ts             one-shot output schemas, parity-asserted
+    pool.ts                the shared pool — SERVER-SIDE ONLY
   subagents/
     encounter/             one fight's adjudicator: gets the battle snapshot
       agent.ts             (ranks, HP, statuses, powers), narrower toolset
@@ -105,7 +120,10 @@ agent/
     resonance/             the Stand-pair judge, same shape and same reason
       agent.ts             declares outputSchema: resonanceOutputSchema
       instructions.ts
-  channels/eve.ts          HTTP channel: CORS to the game origin, auth
+    encounter/tools/       check_effect_budget.ts — the ONE tool a subagent
+                           has, so it can lint itself before answering
+  channels/eve.ts          HTTP channel: CORS (DEFAULT_ORIGINS ∪ the env
+                           var — additive, see docs/DM-DEPLOY.md), auth
 ```
 
 Why eve rather than more endpoints:
@@ -161,12 +179,15 @@ same voice and the same bounds:
 | context | what typing means |
 |---|---|
 | **exploration** (the run map) | scout ahead, talk among yourselves, try something with a node before committing, ask the DM about the floor. May reveal intel, cost time, or spring something. |
-| **events** | the free-text option alongside the authored choices (already shipped). |
-| **fights** | improvise an action; the encounter subagent adjudicates it into a bounded effect and it costs the turn (already shipped). |
+| **events** | the free-text option alongside the authored choices. |
+| **fights** | improvise an action; the encounter subagent adjudicates it into a bounded effect and it costs the turn. |
 
-Exploration is the missing one. It is also the most natural place to talk,
-because nothing is under time pressure — so it should feel like the table
-between fights, not a command prompt.
+**SHIPPED — all three.** `src/ui/overlays/tabletopBar.ts` is the one typed-action
+card, mounted by `scenes/runMap.ts`, `scenes/event.ts` and `scenes/battle.ts`.
+Exploration was the missing one when this was written and is no longer: the
+run map carries the same `[T]` affordance the other two do, which is also the
+one place nothing is under time pressure, so it reads as the table between
+fights rather than a command prompt.
 
 ### The DM interferes on its own
 
@@ -181,6 +202,12 @@ An interjection may be pure narration, or — within the same bounded, linted
 effect vocabulary — a small twist: an offer, a complication, a gift, a warning.
 It draws on run-long session memory, so it can call back to what the party did
 three floors ago.
+
+**SHIPPED.** `src/services/dm.ts` (`planInterjection`, `requestInterjection`,
+`withQueuedInterjection`, `withInterjectionRecorded`) plus the battle-scene
+wiring at `scenes/battle.ts` §"presence". An interjection lands between turns
+with nothing else on the card, and answering it is an ordinary improvised
+turn; acting instead of answering closes it.
 
 **Constraints (non-negotiable):**
 
@@ -200,7 +227,21 @@ its style version, so it is reused by later runs and other players (§4,
 `gm-system.md`). Generation happens outside the resolution loop and its results
 are recorded in the run log, so determinism and replay are preserved.
 
-## 5. Build order
+**SHIPPED — the WRITE side only.** `agent/tools/contribute_content.ts` lints
+and publishes `item` / `event` / `flavour` into `agent/lib/pool.ts`. Nothing
+reads it back into a run yet: the pool is server-side by design (`src/` never
+imports it), so a pooled item or enemy description cannot currently reach the
+browser. `core/meta/types.ts` already defines the seam — a `pool:<ns>` unlock
+opens a namespace and `overlay.pool[ns]` is where entries would land — and
+Cat Town already sells those unlocks. What is missing is the transport: a DM
+tool or route that hands pool rows to the client at run start. Until then,
+"the unlock IS the content pool" (`balance-and-meta.md` §4) is true of the
+architecture and not yet of the content.
+
+## 5. Build order — DONE
+
+All four steps shipped, in this order.
+
 
 1. **Run map core** — graph generator on its own RNG stream, node/edge types,
    run-state migration, tests. Engine only, no art.

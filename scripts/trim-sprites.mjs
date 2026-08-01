@@ -70,7 +70,13 @@ const MAX_FRAME_H = 900;
 
 /** Portrait crop: extra margin around the face box, and output side length. */
 const PORTRAIT_PAD = 0.14;
-const PORTRAIT_SIZE = 320;
+/**
+ * 192, not 320: `avatar()` never draws a portrait into a box bigger than
+ * 88 design px (ui/scenes/battleWidgets.ts), and the stage renders at up to
+ * 2× design — see the `portrait:` row in `scripts/audit-assets.mjs`. Raising
+ * this without raising that budget makes `npm run audit` fail, by design.
+ */
+const PORTRAIT_SIZE = 192;
 
 /** Which files are battle sprites (title/hero art is left alone). */
 const isBattleSprite = (f) => /^(cat|enemy|boss)-.+\.png$/.test(f);

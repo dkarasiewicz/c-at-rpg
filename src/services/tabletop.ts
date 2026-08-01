@@ -274,6 +274,21 @@ export interface VerdictCheck<T> {
   verdict: T | null;
   /** Did the effects survive the lint? */
   applied: boolean;
+  /**
+   * Did the DM ANSWER — a readable narration, not a refusal, nothing illegal?
+   *
+   * Distinct from `applied`, and the distinction matters: a verdict with an
+   * empty `effects` array is the COMMON case, because the DM is told most
+   * beats should be pure flavour. Callers that used `applied` to mean "the
+   * action happened" therefore treated every narration-only answer as a
+   * non-event — a player typed at an event, got a good reply, and was still
+   * made to pick an authored option, as if they had not acted at all.
+   *
+   * `applied` means "numbers changed". `resolved` means "the party did the
+   * thing". A refusal is deliberately NOT resolved: the DM said no, so the
+   * turn is still on the table.
+   */
+  resolved: boolean;
   /** Why not. Recorded in the transcript, never shown as an error. */
   problems: string[];
 }
@@ -295,10 +310,11 @@ export function validateCombatVerdict(
   raw: unknown,
   floor: number,
 ): VerdictCheck<CombatVerdict> {
-  if (!isRecord(raw)) return { verdict: null, applied: false, problems: [] };
+  if (!isRecord(raw))
+    return { verdict: null, applied: false, resolved: false, problems: [] };
   const narration = narrationOf(raw);
   if (narration === null || typeof raw.allowed !== "boolean") {
-    return { verdict: null, applied: false, problems: [] };
+    return { verdict: null, applied: false, resolved: false, problems: [] };
   }
   const target =
     typeof raw.target === "string" && raw.target.length > 0 ? raw.target : null;
@@ -316,19 +332,25 @@ export function validateCombatVerdict(
     energyCost: refused ? 0 : energyCost,
     target: refused ? null : target,
   };
-  if (refused) return { verdict: narrated, applied: false, problems: [] };
+  if (refused)
+    return { verdict: narrated, applied: false, resolved: false, problems: [] };
 
   const problems: string[] = [];
   const rawEffects = Array.isArray(raw.effects) ? raw.effects : [];
   if (rawEffects.length === 0) {
     // a purely cosmetic action: allowed, nothing to apply, nothing wrong
-    return { verdict: { ...narrated, energyCost }, applied: false, problems };
+    return {
+      verdict: { ...narrated, energyCost },
+      applied: false,
+      resolved: true,
+      problems,
+    };
   }
   if (rawEffects.length > 3) problems.push("more than 3 effects");
   if (!rawEffects.every(isEffectSpec))
     problems.push("effect outside the union");
   if (problems.length > 0)
-    return { verdict: narrated, applied: false, problems };
+    return { verdict: narrated, applied: false, resolved: true, problems };
 
   const effects = rawEffects as EffectSpec[];
   const f = clampFloor(floor);
@@ -344,10 +366,11 @@ export function validateCombatVerdict(
     }
   }
   if (problems.length > 0)
-    return { verdict: narrated, applied: false, problems };
+    return { verdict: narrated, applied: false, resolved: true, problems };
   return {
     verdict: { ...narrated, effects, energyCost },
     applied: true,
+    resolved: true,
     problems: [],
   };
 }
@@ -402,21 +425,23 @@ export function validateEncounterVerdict(
   raw: unknown,
   floor: number,
 ): VerdictCheck<EncounterVerdict> {
-  if (!isRecord(raw)) return { verdict: null, applied: false, problems: [] };
+  if (!isRecord(raw))
+    return { verdict: null, applied: false, resolved: false, problems: [] };
   const narration = narrationOf(raw);
   if (narration === null)
-    return { verdict: null, applied: false, problems: [] };
+    return { verdict: null, applied: false, resolved: false, problems: [] };
   const refused = raw.allowed === false;
   const narrated: EncounterVerdict = {
     allowed: !refused,
     narration,
     effects: [],
   };
-  if (refused) return { verdict: narrated, applied: false, problems: [] };
+  if (refused)
+    return { verdict: narrated, applied: false, resolved: false, problems: [] };
 
   const rawEffects = Array.isArray(raw.effects) ? raw.effects : [];
   if (rawEffects.length === 0) {
-    return { verdict: narrated, applied: false, problems: [] };
+    return { verdict: narrated, applied: false, resolved: true, problems: [] };
   }
   const problems: string[] = [];
   if (rawEffects.length > 3) problems.push("more than 3 effects");
@@ -428,7 +453,7 @@ export function validateEncounterVerdict(
     problems.push("effect kind outside the engine's union");
   }
   if (problems.length > 0)
-    return { verdict: narrated, applied: false, problems };
+    return { verdict: narrated, applied: false, resolved: true, problems };
 
   const effects = rawEffects as Effect[];
   const f = clampFloor(floor);
@@ -511,8 +536,13 @@ export function validateEncounterVerdict(
     }
   }
   if (problems.length > 0)
-    return { verdict: narrated, applied: false, problems };
-  return { verdict: { ...narrated, effects }, applied: true, problems: [] };
+    return { verdict: narrated, applied: false, resolved: true, problems };
+  return {
+    verdict: { ...narrated, effects },
+    applied: true,
+    resolved: true,
+    problems: [],
+  };
 }
 
 /* ------------------------------------------------------------------------ */

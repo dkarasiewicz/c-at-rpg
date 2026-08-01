@@ -333,6 +333,9 @@ Two residuals that are NOT tuned out, and should be read as known:
 A persistent hub between runs (the existing `MetaFile` / `META_KEY` save slot is
 already there and unused for this).
 
+> **SHIPPED** — see [§4.1](#41-shipped--the-town) below for the file map. The
+> paragraph above describes the state of the tree before it was built.
+
 - **Currency**: shinies banked at the end of a run (win or lose) — a losing run
   must still pay out, or failure feels wasted.
 - **Unlocks**, each a permanent addition to the *pool of possibilities*, never a
@@ -362,3 +365,34 @@ Consequences:
   accumulates across players instead of being rerolled per run.
 - Determinism is preserved because generation happens *outside* the resolution
   loop and its results are recorded (see `run-map-and-dm.md` §3).
+
+### 4.1 SHIPPED — the town
+
+| Piece | Where | Notes |
+|---|---|---|
+| The payout | `core/meta/payout.ts` | one pure `RunSummary → Payout`. Every line is something the party did, so the receipt doubles as the run's obituary; the outcome only *scales* the total, never zeroes a line. `LOSS_RATE = 0.6`, `MIN_PAYOUT = 20` — a floor-1 wipe still banks something |
+| The unlock graph | `core/meta/unlocks.ts` | 13 authored defs totalling **2650 ✦** (pinned by `tests/meta.spec.ts`), spread across the six places |
+| The open namespace | `core/meta/types.ts` | `"<namespace>:<localId>"`. Five namespaces have a scalar meaning (`slot:` `shinies:` `biome:` `shop:` `gear:`), `pool:<ns>` opens a shared pool, and **every other namespace is a content pool keyed by its own name** — so a Stand or item the DM generated can be registered as `stand:<poolId>` later and reach a run with no engine change |
+| The runtime registry | `unlocks.ts#registerUnlocks` | the catalog is deliberately not a closed list; every function takes an explicit `catalog` argument so the pure logic never depends on module state |
+| The run overlay | `core/meta/overlay.ts`, `startRun.ts` | `applyUnlocks` folds owned ids into what a run contains: capacity, wallet, class pool, starting gear, biome depth |
+| The profile | `core/meta/profile.ts` | the `MetaFile` slot this section said was "there and unused". A v1 records-only profile migrates forward |
+| The scene | `ui/scenes/catTown.ts` | a painted street, not a menu. Six `PLACES` anchored in design px on the `scene:catTown` art (board, bowls, cart, stoop, fence, drain), the recruited clowder visibly living there, and the Bestiary as one of the places |
+
+Two things worth reading as they are, not as the spec wrote them:
+
+- **"Never a flat power increase" held.** Nothing in the catalog is `+2 atk
+  forever`. `slot:fourth` is the closest thing to raw power, and §1.1
+  deliberately keeps a 4-cat party at a 100% clear rate on floors 1-5 so that
+  the fourth bowl reads as the genuine spike this section promises.
+- **"The unlock IS the content pool" is architecturally true and not yet
+  content-true.** The namespace machinery, the `pool:<ns>` unlocks and the
+  registry all exist and Cat Town sells them, but nothing transports pool rows
+  from `agent/lib/pool.ts` into the browser — the pool is server-side by
+  design. See `run-map-and-dm.md` §4b "Auto-generated content, persisted" for
+  the missing seam.
+
+> **Fixed at the final gate.** The header of `src/core/meta/payout.ts` used to
+> say the catalog totals **2770**; it is **2650** over 13 unlocks, as
+> `unlocks.ts catalogCost()` and `tests/meta.spec.ts` have always said. The
+> prose now matches, and quotes the pinned 757 ✦ victory fixture rather than a
+> remembered "~740".

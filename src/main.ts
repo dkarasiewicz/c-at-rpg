@@ -311,6 +311,35 @@ const RUN_SCENES: readonly SceneId[] = [
     return out;
   };
 
+  // Read-only census of every VISIBLE line of text on the stage, in reading
+  // order — the sibling `__hits` cannot answer, because it only ever lists
+  // INTERACTIVE nodes and most of what the game says to the player is not
+  // interactive: the DM's narration, a verdict beat, a tooltip, a score row.
+  //
+  // A gate that has to prove "a real narration came back and a refusal reads
+  // as the DM saying no" otherwise has to infer it from pixels or from the
+  // network, and neither of those is what the player is looking at.
+  //
+  // Bounds are `getBounds()`, i.e. GLOBAL/stage space, exactly like `__hits`.
+  (
+    window as unknown as {
+      __text?: () => { text: string; x: number; y: number }[];
+    }
+  ).__text = () => {
+    const out: { text: string; x: number; y: number }[] = [];
+    const walk = (n: Container): void => {
+      if (!n.visible || n.alpha <= 0.01) return;
+      const t = (n as unknown as { text?: unknown }).text;
+      if (typeof t === "string" && t.trim() !== "" && n.renderable) {
+        const b = n.getBounds();
+        out.push({ text: t.trim(), x: b.x, y: b.y });
+      }
+      for (const k of n.children) walk(k as Container);
+    };
+    walk(root);
+    return out.sort((a, b) => a.y - b.y || a.x - b.x);
+  };
+
   // ?smoke=battle — dev/CI hook (like ?gallery=1): skip boot/title, start a
   // fresh run and drop straight into a non-boss battle so automated UI
   // smokes can exercise combat deterministically. Follows the FSM legally:

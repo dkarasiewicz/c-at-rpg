@@ -1,5 +1,13 @@
 # Enemy Intel — intents, inspection, and the Bestiary
 
+> **STATUS: shipped.** Everything below is implemented. The sections are kept
+> in their original proposal voice ("`EnemyDef` gains…") because the reasoning
+> is what makes them worth reading; [What shipped](#what-shipped) at the
+> bottom maps every section to the code and records the two places reality
+> diverged from the plan. Its balance cost is measured in
+> `balance-and-meta.md` §3.3 — intents alone moved clear rate by up to 13pp
+> and forced a retune of `ENEMY_CURVE`.
+
 Two complaints, one system: combat does not tell you what is about to happen,
 and enemies are anonymous stat-blocks with no level, description or weakness.
 
@@ -98,3 +106,38 @@ Cat Town (`balance-and-meta.md` §4).
   explained on tap — never a bare icon whose meaning must be memorised.
 - **Threat highlight**: when an enemy intends to strike a specific cat,
   visually connect them, so the consequence of not defending is obvious.
+
+---
+
+## What shipped
+
+| § | Where | Notes |
+|---|---|---|
+| 1 — data model | `core/types.ts#EnemyDef`, `content/enemies.ts` | `level`, `description`, `tell`, `weaknesses`, `resistances` all present. `level` is **derived**, as specified: `baseLevel(tier, isBoss)` + `curveLevelSteps` off the same `ENEMY_CURVE` row that scales the stat block, so the printed number and the damage formula cannot drift (`balance-and-meta.md` §3.2) |
+| 1 — "fold the tier resistance in" | `EnemyDef.resistances` | done. `'offBalance'` in `resistances` **is** the tier Off-Paw resistance; `offBalanceResistOf` reads it there, so there is one source of truth rather than a per-tier implication |
+| 1 — weaknesses are mechanical | `IntelTag` + `combat/resolve.ts` | a shove-weak enemy takes ×1.25 from any force-move hit; a status it is weak to always lands, one it resists never does — and **neither rolls**, because neither outcome was ever in doubt |
+| 2 — intents | `core/combat/intent.ts` | `declareIntents` runs at `startRound`, in queue order, one `chooseEnemyAction` per living enemy, off the same seeded stream. The resolver is bound to the declaration |
+| 2 — truthfulness | `intent.ts` | bends in exactly two documented ways, both the player's own doing, both announced with `intentBroken`: the declared target died or left the skill's ranks (same skill retargets, no roll), or the skill went offline (AI re-picks at that slot — exactly where the pre-intent engine picked) |
+| 2 — authored uncertainty | `intent.ts` | a double-turn boss declares only its FIRST slot; the second is `'unknown'` and chosen live. Its state cannot be known at round start and inventing a number for it would be a lie |
+| 3 — inspect panel | `ui/scenes/battleWidgets.ts#makeInspectPanel`, `ui/draw/intel.ts` | portrait, name, Stand, level, tier, HP, statuses, description, `tell`, and what you know. Unknown facts render `???`. Opens on `I`, on hover, or on a ~400 ms hold on touch — `mobile.md`'s **tap acts, long press reads** |
+| 4 — Bestiary | `core/meta/bestiary.ts` | `KILLS_TO_COMPLETE = 5`. Reveals are driven by `intel` events the engine emits when a modifier actually fires, so nothing re-derives rules or peeks at unseen content. Persisted in the meta profile |
+| 4 — Cat Town hosts it | `ui/scenes/catTown.ts` | the Bestiary is a place on the street; unmet species render `???` for name, level and every stat, so the grid reads as a checklist |
+| 5 — damage preview | `combat/state.ts#previewDamage` | used by both the intent plate and target selection |
+| 5 — turn order bar | `battleWidgets.ts#makeRibbon` | current unit emphasised, round boundary explicit, `portrait:*` faces |
+| 5 — status chips | `ui/widgets.ts#makeStatusChip` | duration, stack count, and `explain: true` so a chip states what it does — never a bare icon to be memorised |
+| 5 — threat highlight | `battle.ts#makeThreatLayer` | each declaration is drawn to the cat it named, and that cat carries the **total** incoming |
+
+### Where reality diverged from the plan
+
+- **§2 "intent is shown for enemies you have met before."** Shipped, but the
+  *engine* never withholds anything: `intent.ts` always computes the truth and
+  `bestiary.ts` decides what the UI may show. An unmet enemy renders `???`
+  without the engine ever lying to itself — which matters because the AI's
+  own decisions read the same state.
+- **§4 "the GM writes the descriptions."** Half shipped. The DM can publish
+  enemy flavour — `agent/tools/contribute_content.ts` with `kind: "flavour"`
+  writes to the `enemies` pool — but **nothing reads it back.** `agent/lib/pool.ts`
+  is server-side only by design (`src/` never imports it), so shipped
+  descriptions still come from `content/enemies.ts`. The write side exists;
+  the read side is an unbuilt seam, the same one `run-map-and-dm.md` §4b
+  describes for every other pool namespace.

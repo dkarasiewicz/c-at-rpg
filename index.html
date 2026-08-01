@@ -45,7 +45,10 @@
       The game itself now paints edge to edge — 1280×720 is a SAFE AREA and
       the backdrop bleeds past it (src/main.ts, src/ui/layout.ts) — so this
       button docks to the band beside the safe box, measured per-edge into
-      --box-* and picked by <html data-menu-dock>. It is deliberately the
+      --box-* and picked by <html data-menu-dock>. It is always the TOP-RIGHT
+      corner: out in the side band on a phone, up in the top band on a 4:3
+      tablet, and — at exactly 16:9, where there is no band at all — inside
+      the box but below the game's own top HUD row. It is deliberately the
       quietest control on screen: a 34px plate inside a 44px target.
     -->
     <button id="sys-menu" type="button" aria-label="Menu / back (Esc)">

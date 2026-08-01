@@ -21,10 +21,14 @@
  *    timeout, non-2xx, malformed body, schema-less result), so a caller can
  *    always fall back to authored content;
  *  - one hard timeout per turn, one for the probe; nothing is unbounded;
- *  - OFFLINE-FIRST IS A HARD RULE. `probeDm()` runs at most once per session
- *    and its answer is cached; when it is false the typed-action UI is not
- *    built at all and the game plays exactly as it does today. With
- *    `VITE_DM_URL` unset the probe short-circuits to false WITHOUT a request.
+ *  - OFFLINE-FIRST IS A HARD RULE. With `VITE_DM_URL` unset `probeDm()`
+ *    short-circuits to false WITHOUT a request, ever; when the probe is false
+ *    the typed-action UI is not built at all and the game plays exactly as it
+ *    does today. A SUCCESSFUL probe is cached for the session; a FAILED one is
+ *    retried on a later scene mount, at most `DM_PROBE_ATTEMPTS` times and
+ *    never within `DM_PROBE_RETRY_MS` of the last miss — one slow cold request
+ *    must not mute the DM for a whole session (see `markDmUnreachable`, which
+ *    makes the same argument for turns).
  *  - responses are NEVER trusted: the verdicts come back as `unknown` and the
  *    caller re-lints them through `services/tabletop.ts` before the engine
  *    sees a single number.
@@ -57,8 +61,29 @@ import {
 
 /** One turn of the DM, including a subagent delegation. */
 export const DM_TURN_TIMEOUT_MS = 35_000;
-/** The liveness probe. Short: a slow DM is an absent DM. */
-export const DM_PROBE_TIMEOUT_MS = 3_000;
+/**
+ * The liveness probe. Short, because a slow DM is an absent DM as far as the
+ * first frame is concerned — but not 3s, which was too short to survive the
+ * FIRST cross-origin request of a session: DNS + TLS + a cold Vercel function
+ * routinely spends longer than that, and the probe then aborted and the game
+ * silently played the whole session with no DM. Measured warm from a browser:
+ * ~0.9s. This is generous enough for a cold start and still an eighth of the
+ * turn budget.
+ */
+export const DM_PROBE_TIMEOUT_MS = 6_000;
+/**
+ * How long to wait before a FAILED probe may be retried, and how many times.
+ *
+ * `markDmUnreachable` below already argues that one bad turn must not kill the
+ * DM for the rest of the run. The same is true of the first probe, and it was
+ * worse there: `probeResult` cached the failure forever, so a single slow cold
+ * request meant no typed action for the entire session with no way back. A
+ * failed probe is now retried on a later scene mount — bounded, so an
+ * genuinely absent DM costs at most PROBE_ATTEMPTS requests per session and
+ * never a burst.
+ */
+export const DM_PROBE_RETRY_MS = 5_000;
+export const DM_PROBE_ATTEMPTS = 3;
 
 /**
  * Where the agent lives. It is a SEPARATE Vercel project from the game
@@ -72,6 +97,8 @@ let baseUrl: string =
 export function setDmBaseUrl(url: string): void {
   baseUrl = url.replace(/\/$/, "");
   probeResult = null; // a new base invalidates the reachability verdict
+  probeAttempts = 0;
+  lastProbeFailedAt = 0;
 }
 
 export function dmBaseUrl(): string {
@@ -84,6 +111,9 @@ export function dmBaseUrl(): string {
 
 let probeResult: Promise<boolean> | null = null;
 let reachable = false;
+/** How many times this session has actually asked (see `DM_PROBE_ATTEMPTS`). */
+let probeAttempts = 0;
+let lastProbeFailedAt = 0;
 
 /**
  * Is a DM reachable? `GET /eve/v1/info` — an inspection route that makes no
@@ -99,8 +129,19 @@ let reachable = false;
  * `/eve/v1/info` is served by the channel and does carry the CORS headers.
  */
 export function probeDm(): Promise<boolean> {
+  // No DM configured is a CONFIGURATION, not a failure: no request, ever, and
+  // nothing to retry. This is the offline-first hard rule.
+  if (baseUrl === "") return Promise.resolve(false);
+  if (probeResult === null && probeAttempts > 0) {
+    // A previous attempt failed. Retry — but only on a later scene mount, and
+    // only a few times, so an absent DM never becomes a request storm.
+    if (probeAttempts >= DM_PROBE_ATTEMPTS) return Promise.resolve(false);
+    if (Date.now() - lastProbeFailedAt < DM_PROBE_RETRY_MS) {
+      return Promise.resolve(false);
+    }
+  }
   probeResult ??= (async () => {
-    if (baseUrl === "") return false;
+    probeAttempts += 1;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), DM_PROBE_TIMEOUT_MS);
     try {
@@ -108,14 +149,18 @@ export function probeDm(): Promise<boolean> {
         method: "GET",
         signal: controller.signal,
       });
-      if (!res.ok) return false;
+      if (!res.ok) throw new Error(`probe ${res.status}`);
       const isJson =
         res.headers.get("content-type")?.includes("application/json") ?? false;
-      if (!isJson) return false;
+      if (!isJson) throw new Error("probe: not json");
       await res.json();
       reachable = true;
       return true;
     } catch {
+      // Drop the cached verdict so a LATER mount can ask again. Callers
+      // already holding this promise still get false — this turn has no DM.
+      lastProbeFailedAt = Date.now();
+      probeResult = null;
       return false;
     } finally {
       clearTimeout(timer);
@@ -144,9 +189,6 @@ export function isDmAvailable(): boolean {
  */
 let consecutiveFailures = 0;
 const FAILURES_BEFORE_GIVING_UP = 2;
-/** After this long, a written-off DM earns one more chance. */
-const DM_RETRY_AFTER_MS = 90_000;
-let gaveUpAt = 0;
 
 /**
  * Report a failed turn. The DM is only written off after
@@ -157,8 +199,18 @@ export function markDmUnreachable(): void {
   consecutiveFailures += 1;
   if (consecutiveFailures < FAILURES_BEFORE_GIVING_UP) return;
   reachable = false;
-  gaveUpAt = Date.now();
-  probeResult = Promise.resolve(false);
+  // Clear the cached verdict rather than pinning it to `false`.
+  //
+  // Pinning it defeated the probe's own retry, which only re-asks when
+  // `probeResult === null` — so a write-off was permanent in practice even
+  // after the retry existed, and scenes probe once when they mount. That is
+  // the mechanism behind "I don't see custom action during fight": one slow
+  // turn at an event removed the affordance from every later battle in the
+  // session. Nulling it hands the decision to the ONE retry policy
+  // (`DM_PROBE_ATTEMPTS` / `DM_PROBE_RETRY_MS`) instead of having two that
+  // disagree, and stamping the failure time keeps the backoff honest.
+  probeResult = null;
+  lastProbeFailedAt = Date.now();
 }
 
 /** A turn came back. Forgive the earlier stumbles. */
@@ -167,29 +219,12 @@ export function markDmAlive(): void {
   reachable = true;
 }
 
-/**
- * Should we re-probe a DM we previously wrote off? Called by the UI when it is
- * about to decide whether to offer the typed-action affordance, so a run that
- * lost the DM to a slow patch can get it back rather than staying mute to the
- * end.
- */
-export function dmDeservesAnotherChance(): boolean {
-  return (
-    !reachable && gaveUpAt !== 0 && Date.now() - gaveUpAt > DM_RETRY_AFTER_MS
-  );
-}
-
-/** Clear the write-off so the next `probeDm()` actually asks. */
-export function retryDm(): void {
-  consecutiveFailures = 0;
-  gaveUpAt = 0;
-  probeResult = null;
-}
-
 /** Test hook: forget the cached probe verdict. */
 export function resetDmProbe(): void {
   probeResult = null;
   reachable = false;
+  probeAttempts = 0;
+  lastProbeFailedAt = 0;
 }
 
 /* ------------------------------------------------------------------------ */

@@ -3,58 +3,58 @@
   "sprites": {
     "prop:chestOpen": {
       "file": "prop-chestOpen.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "prop:hoardChest": {
       "file": "prop-hoardChest.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "node:fight": {
       "file": "node-fight.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "node:elite": {
       "file": "node-elite.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "node:event": {
       "file": "node-event.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "node:shop": {
       "file": "node-shop.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "node:rest": {
       "file": "node-rest.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "node:treasure": {
       "file": "node-treasure.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "node:boss": {
       "file": "node-boss.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "node:locked": {
       "file": "node-locked.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     },
     "node:visited": {
       "file": "node-visited.png",
-      "w": 256,
-      "h": 256
+      "w": 192,
+      "h": 192
     }
   }
 }

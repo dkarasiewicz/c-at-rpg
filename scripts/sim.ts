@@ -24,7 +24,10 @@
  *   win%      per-BATTLE win rate
  *   clear%    trials that survived the whole chain
  *   rounds    mean rounds per battle
- *   OB%       Off-Balance uptime: share of (living enemy × round) slots in
+ *   stale%    battles still ongoing at MAX_ROUNDS (40) — neither side could
+ *             finish. The ENGINE has no round cap; only this harness does, so
+ *             anything above zero here is a fight a player could sit in
+ *    *   OB%       Off-Balance uptime: share of (living enemy × round) slots in
  *             which that enemy carried Off-Balance at any observed point
  *   pile/bt   Cat Piles executed per battle
  *   lives     mean Lives burned per trial
@@ -608,6 +611,7 @@ export function simulateFloor(
     winPct: (100 * acc.wins) / Math.max(1, acc.battles),
     clearPct: (100 * acc.clears) / Math.max(1, acc.trials),
     avgRounds: acc.rounds / Math.max(1, acc.battles),
+    stalematePct: (100 * acc.stalemates) / Math.max(1, acc.battles),
     obUptimePct: (100 * acc.obHitRounds) / Math.max(1, acc.obEnemyRounds),
     pilesPerBattle: acc.piles / Math.max(1, acc.battles),
     avgLivesLost: acc.livesLost / Math.max(1, acc.trials),
@@ -676,10 +680,10 @@ function main(): void {
     `\nc(at)rpg balance sim — seed=${seed} trials=${trials} chain=${chain} ${label}\n\n`,
   );
   process.stdout.write(
-    "fl  party lvl  pack   win%  clear%  rounds   OB%  pile/bt  lives  shove/bt  OB+/bt  res/bt\n",
+    "fl  party lvl  pack   win%  clear%  rounds  stale%   OB%  pile/bt  lives  shove/bt  OB+/bt  res/bt\n",
   );
   process.stdout.write(
-    "--  ----- ---  ----  -----  ------  ------  ----  -------  -----  --------  ------  ------\n",
+    "--  ----- ---  ----  -----  ------  ------  ------  ----  -------  -----  --------  ------  ------\n",
   );
   for (const r of reports) {
     process.stdout.write(
@@ -691,6 +695,7 @@ function main(): void {
         pad(fmt(r.winPct), 6),
         pad(fmt(r.clearPct), 7),
         pad(fmt(r.avgRounds), 7),
+        pad(fmt(r.stalematePct, 1), 7),
         pad(fmt(r.obUptimePct), 6),
         pad(fmt(r.pilesPerBattle, 2), 8),
         pad(fmt(r.avgLivesLost, 2), 7),

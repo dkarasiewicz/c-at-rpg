@@ -54,6 +54,7 @@ import {
   type DenFocus,
   type DenSection,
 } from "../src/ui/overlays/progressPanel.js";
+import { campStats, livesPhrase } from "../src/ui/roster.js";
 
 /* ---------------------------------------------------------------------- */
 /* fixtures                                                                */
@@ -549,5 +550,31 @@ describe("the UI never overrides the engine", () => {
       expect(unspentPoints(cat, level)).toBe(0);
       expect(buildPointRows(cat, level).some((x) => x.canSpend)).toBe(false);
     }
+  });
+});
+
+/* ---------------------------------------------------------------------- */
+/* roster vocabulary (src/ui/roster.ts)                                    */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * A cat on its LAST Life is the most dramatic state in the game, and it was
+ * the one the copy got wrong: the camp strip and the defeat roll-call both
+ * printed "1 lives". One helper now, used by both.
+ */
+describe("livesPhrase", () => {
+  it("says 'life' for exactly one and 'lives' for everything else", () => {
+    expect(livesPhrase(1)).toBe("1 life");
+    expect(livesPhrase(0)).toBe("0 lives");
+    expect(livesPhrase(2)).toBe("2 lives");
+    expect(livesPhrase(9)).toBe("9 lives");
+  });
+
+  it("campStats uses it, so a benched cat on its last Life reads right", () => {
+    const r = run();
+    const cat = { ...r.cats[BRUNO], lives: 1 };
+    expect(campStats(r, cat)).toContain("· 1 life");
+    expect(campStats(r, cat)).not.toContain("1 lives");
+    expect(campStats(r, { ...cat, lives: 9 })).toContain("· 9 lives");
   });
 });

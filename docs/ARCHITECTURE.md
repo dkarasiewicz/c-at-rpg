@@ -699,9 +699,11 @@ export interface MetaFile {        // localStorage 'catrpg.meta.v1' — records 
   records: { bestScore: number; fastestVictoryMs: number | null };
 }
 
-// Score lines (core/run/score.ts): floorsCleared×100, floorsReached×50,
-// enemiesDefeated×10, bossesDefeated×300, shinies×5, catPiles×20,
-// livesRemaining×25 (victory only), victory bonus 1000. Time shown, never scored.
+// Score lines (core/run/score.ts, 2nd-pass weights): floorsCleared×250,
+// floorsReached×100, enemiesDefeated×15, bossesDefeated×500, catPiles×75,
+// eventsSurvived×80, relicsFound×250, shinies×1, livesRemaining×25 (victory
+// only, and only for the cats that were FIELDED — `survivingLives`), victory
+// bonus 2000. Time shown, never scored.
 ```
 
 ### 2.10 Content table types (what `src/content` must export)

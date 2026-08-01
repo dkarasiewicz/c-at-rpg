@@ -73,10 +73,18 @@ list is natural, and keep battle and the run map landscape-only.
 
 ## Performance notes
 
-Backdrops are 1600×900 WebP and sprites are 640² PNGs; after the alpha-bbox
-crop pass they shrink meaningfully. Watch total texture memory on low-end
-devices — prefer WebP everywhere, and consider a reduced-resolution asset tier
-if profiling shows pressure. Pixi v8 WebGL is fine on modern mobile GPUs.
+Pixi v8 WebGL is fine on modern mobile GPUs; the pressure is texture memory,
+not fill rate.
+
+**The reduced-resolution tier this section asked for has been built** — see
+`docs/art/ASSET-AUDIT.md`. Every icon pack is now stored at the size it is
+actually drawn: `skill:`/`item:`/`equip:` 512²→128², `status:` 256²→64²,
+`portrait:` 320²→192², `node:`/`prop:`/`town:` 256²→192². The art payload went
+**60.7 MB → 24.6 MB (−59.5%)** with no visible change at rendered size, and
+`npm run audit` now fails the build if anything ships past 3× the box it draws
+into. Backdrops stay 1600×900 WebP: that is *under* 2× the 1280×720 design
+stage, so it is the one place there is nothing to reclaim. Battle sprites
+(635-728² PNG) are likewise inside budget.
 
 
 ---
@@ -153,9 +161,11 @@ That is the ruling: **an interaction that needs a confirming tap has two
 failure modes stacked on one gesture**, and on a phone you cannot see which
 one you hit. Details moved to a long press, where a mistake costs nothing.
 
-### Known gap
+### Known gap — CLOSED
 
-`runMap`'s entry-hold state (the "Into the …" gate on a fresh floor) swallows
-every key including Esc, so the menu button is inert until that button is
-taken. It has its own tappable control, so touch is not blocked — but Esc
-should probably fall through it.
+`runMap`'s entry-hold state (the "Into the …" gate on a fresh floor) used to
+swallow every key including Esc, so the menu button was inert until that
+button was taken. Fixed: `runMap.ts` now guards with
+`if (this.entryHold && key !== "esc") return true;`, so Esc falls through the
+hold and the gutter menu button works on every screen without exception. The
+header promises "Esc menu" right there, so it had to.

@@ -75,6 +75,7 @@ import {
   bar,
   button,
   heading,
+  hintRow,
   iconTile,
   label,
   makePawRow,
@@ -85,6 +86,7 @@ import {
 import {
   campAvatar,
   campReason,
+  campSection,
   catStanding,
   isAtCamp,
   splitRoster,
@@ -704,10 +706,21 @@ export function makeProgressPanel(opts: ProgressPanelOpts): ProgressPanelApi {
   const tipLayer = new Container();
   view.addChild(tabLayer, leftLayer, sectionTabLayer, sectionLayer, tipLayer);
 
-  const hint = label(
-    "Tab / ← → cat   ·   ↑ ↓ row   ·   Q E section   ·   Enter act   ·   1-9 quick   ·   Esc close",
-    { dim: true, size: TYPE.tiny, mono: true },
-  );
+  // The footer says how to WORK the Den — and a phone has none of the keys it
+  // used to name. Every row, tab and card in here is already tappable
+  // (`rowShell` grows each one to a 44 CSS px target), so the affordances
+  // were never missing: the SENTENCE was wrong. `hintRow` prints the keycaps
+  // on a mouse and the gestures under a finger, and drops the two items that
+  // have no finger form at all (the ↑ ↓ row cursor, the 1-9 shortcuts) rather
+  // than inventing one.
+  const hint = hintRow([
+    { keys: "Tab / ← → cat", touch: "tap a cat to switch" },
+    { keys: "↑ ↓ row" },
+    { keys: "Q E section", touch: "tap a tab to change section" },
+    { keys: "Enter act", touch: "tap a row to act — and to read it" },
+    { keys: "1-9 quick" },
+    { keys: "Esc close", touch: "Close when you're done" },
+  ]);
   hint.position.set(PAD, H - FOOT_H + 14);
   view.addChild(hint);
 
@@ -1782,38 +1795,102 @@ const LEVELUP_SKILL_H = 22;
 const LEVELUP_FOOT_H = 22;
 
 /**
+ * A run FIELDS a subset of its four class slots, but LEVEL is run-wide: every
+ * living cat crosses the boundary and every living cat banks the Whisker
+ * Points. The card used to print all of them in one undifferentiated list, so
+ * a player who fielded two cats watched a benched one gain HP in a fight she
+ * was never in — and reasonably asked why.
+ *
+ * The answer is not to hide her (she really did level), it is to say WHERE
+ * she was, in the same vocabulary the other five roster surfaces now use
+ * (roster.ts): the party that fought gets the full growth rows, and the cats
+ * back home get the compact camp strip under a rule, with the reason written
+ * out. `campNoteLevelUp` is that reason, in this screen's tense.
+ */
+const LEVELUP_CAMP_NOTE =
+  "The clowder shares a level, so these two grew too — back in Cat Town, not in the fight.";
+
+const campNoteLevelUp = (n: number): string =>
+  n === 1
+    ? "The clowder shares a level, so this one grew too — back in Cat Town, not in the fight."
+    : LEVELUP_CAMP_NOTE;
+
+/**
+ * Either a live run (preferred — it knows who was actually fielded) or a bare
+ * cat list (every cat is treated as party, the pre-split behaviour).
+ */
+export type LevelUpSource = RunState | readonly CatRunState[];
+
+const sourceCats = (src: LevelUpSource): readonly CatRunState[] =>
+  Array.isArray(src) ? src : (src as RunState).cats;
+const sourceRun = (src: LevelUpSource): RunState | null =>
+  Array.isArray(src) ? null : (src as RunState);
+
+/** Build the camp strip for this card, or null when the whole roster walked. */
+function levelUpCamp(
+  src: LevelUpSource,
+  width: number,
+): { view: Container; height: number; ids: Set<ClassId> } | null {
+  const run = sourceRun(src);
+  if (!run) return null;
+  const { camp } = splitRoster(run);
+  if (camp.length === 0) return null;
+  const section = campSection(run, width, {
+    note: campNoteLevelUp(camp.length),
+  });
+  if (section.height <= 0) return null;
+  return {
+    view: section.view,
+    height: section.height,
+    ids: new Set(camp.map((c) => c.classId)),
+  };
+}
+
+/**
  * Exact height `makeLevelUpCard` will occupy — hosts that measure their panel
  * before building it (the loot overlay does) call this first.
  */
 export function levelUpCardHeight(
-  cats: readonly CatRunState[],
+  src: LevelUpSource,
   fromLevel: number,
   toLevel: number,
+  width = 0,
 ): number {
-  const s = buildLevelUpSummary(cats, fromLevel, toLevel);
+  const s = buildLevelUpSummary(sourceCats(src), fromLevel, toLevel);
   if (s.toLevel <= s.fromLevel) return 0;
-  const skills = s.cats.reduce((n, c) => n + c.newSkills.length, 0);
+  // Measuring the camp strip means building it; it is thrown away immediately
+  // and the host builds the real one a frame later. One throwaway container
+  // per level-up is cheaper than a second layout engine that can disagree.
+  const camp = width > 0 ? levelUpCamp(src, width) : null;
+  const shown = camp ? s.cats.filter((c) => !camp.ids.has(c.classId)) : s.cats;
+  const skills = shown.reduce((n, c) => n + c.newSkills.length, 0);
+  const campH = camp ? SPACE.sm + camp.height : 0;
+  camp?.view.destroy({ children: true });
   return (
     LEVELUP_TITLE_H +
     LEVELUP_SUB_H +
-    s.cats.length * LEVELUP_CAT_H +
+    shown.length * LEVELUP_CAT_H +
     skills * LEVELUP_SKILL_H +
+    campH +
     LEVELUP_FOOT_H
   );
 }
 
 /**
- * THE level-up moment: the new level, what each cat's growth row gave it, any
- * milestone skill it just learned (with the Stand that throws it), and the
- * standing invitation to go spend the Whisker Points it earned.
+ * THE level-up moment: the new level, what each FIELDED cat's growth row gave
+ * it, any milestone skill it just learned (with the Stand that throws it), the
+ * cats who levelled back in Cat Town in their own quiet strip, and the
+ * standing invitation to go spend the Whisker Points everyone earned.
  */
 export function makeLevelUpCard(
-  cats: readonly CatRunState[],
+  src: LevelUpSource,
   fromLevel: number,
   toLevel: number,
   width: number,
 ): { view: Container; height: number } {
-  const s = buildLevelUpSummary(cats, fromLevel, toLevel);
+  const s = buildLevelUpSummary(sourceCats(src), fromLevel, toLevel);
+  const camp = levelUpCamp(src, width);
+  const shown = camp ? s.cats.filter((c) => !camp.ids.has(c.classId)) : s.cats;
   const view = new Container();
   let y = 0;
 
@@ -1841,7 +1918,7 @@ export function makeLevelUpCard(
   view.addChild(sub);
   y += LEVELUP_SUB_H;
 
-  for (const c of s.cats) {
+  for (const c of shown) {
     const cls = CLASSES[c.classId];
     const line = label(cls.catName, {
       bold: true,
@@ -1872,8 +1949,19 @@ export function makeLevelUpCard(
     }
   }
 
+  // …and the cats who levelled without being there, in the compact camp strip
+  // every other roster surface uses. Small, quiet, obviously ELSEWHERE — and
+  // the note says why they are on this card at all.
+  if (camp) {
+    camp.view.position.set(0, y + SPACE.sm);
+    view.addChild(camp.view);
+    y += SPACE.sm + camp.height;
+  }
+
   const foot = label(
-    "Open THE DEN (P — the Landing or the pause menu) to spend them.",
+    isTouch()
+      ? "Open THE DEN (the ≡ menu, or the Landing) to spend them."
+      : "Open THE DEN (P — the Landing or the pause menu) to spend them.",
     { dim: true, size: TYPE.tiny, wrap: width },
   );
   foot.position.set(0, y + 4);

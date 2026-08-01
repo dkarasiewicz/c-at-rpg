@@ -144,10 +144,19 @@ export function campReason(run: RunState, cat: CatRunState): string {
     : "no room in the party";
 }
 
+/**
+ * "9 lives", "1 life" — a cat on its last one is the most dramatic state in
+ * the game and it was the one the copy got wrong ("1 lives" on the camp strip
+ * and under the defeat roll-call). One helper, so every screen agrees.
+ */
+export function livesPhrase(n: number): string {
+  return `${n} ${n === 1 ? "life" : "lives"}`;
+}
+
 /** "24/24 hp · 9 lives" — the numbers a camp row must never hide. */
 export function campStats(run: RunState, cat: CatRunState): string {
   const max = maxHp(cat, run.level);
-  return `${cat.hp}/${max} hp · ${cat.lives} lives`;
+  return `${cat.hp}/${max} hp · ${livesPhrase(cat.lives)}`;
 }
 
 /* ---------------------------------------------------------------------- */

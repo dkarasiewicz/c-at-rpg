@@ -47,6 +47,7 @@ import {
 import {
   computeScore,
   discoveriesOf,
+  survivingLives,
   VICTORY_BONUS,
 } from "../src/core/run/score.js";
 import {
@@ -568,6 +569,64 @@ describe("score", () => {
       uniquesDropped: ["ninthBell"],
     } as RunState;
     expect(discoveriesOf(r)).toEqual({ eventsSurvived: 2, relicsFound: 1 });
+  });
+
+  /**
+   * SURVIVAL counts the cats that WALKED, not the four data slots.
+   *
+   * `RunState.cats` always carries all four classes; a run fields
+   * `marchingOrder`. Summing `cats` paid 25 points per Life of a cat sitting
+   * in Cat Town — a benched cat was a free 225, so fielding fewer cats scored
+   * HIGHER — and the results screen printed "3 went down · 1 stayed in town"
+   * directly above a count of 36 Lives over three rows of nine.
+   */
+  describe("survivingLives — only the cats that went down", () => {
+    const run = (
+      order: RunState["marchingOrder"],
+      lives: Partial<Record<string, number>>,
+    ): RunState => {
+      const base = newRun(SEED);
+      return {
+        ...base,
+        marchingOrder: order,
+        cats: base.cats.map((c) => ({
+          ...c,
+          lives: lives[c.classId] ?? 9,
+        })),
+      } as RunState;
+    };
+
+    it("ignores the cats who never left Cat Town", () => {
+      const r = run(["bruiser", "trickster", "hexer"], {});
+      expect(r.cats).toHaveLength(4); // the fourth slot is still there
+      expect(survivingLives(r)).toBe(27); // …and worth nothing
+    });
+
+    it("a fallen cat contributes 0 but is still counted as fielded", () => {
+      const r = run(["bruiser", "trickster", "hexer"], { trickster: 0 });
+      expect(survivingLives(r)).toBe(18);
+    });
+
+    it("a widened party of four is the only way to reach 36", () => {
+      const r = run(["bruiser", "trickster", "hexer", "medic"], {});
+      expect(survivingLives(r)).toBe(36);
+      expect(
+        computeScore(
+          { ...counters },
+          true,
+          survivingLives(r),
+          found,
+        ).lines.find((l) => l.id === "livesRemaining")!.points,
+      ).toBe(900);
+    });
+
+    it("benching a cat can never score MORE than fielding it", () => {
+      const three = survivingLives(run(["bruiser", "trickster", "hexer"], {}));
+      const four = survivingLives(
+        run(["bruiser", "trickster", "hexer", "medic"], {}),
+      );
+      expect(four).toBeGreaterThan(three);
+    });
   });
 
   /**

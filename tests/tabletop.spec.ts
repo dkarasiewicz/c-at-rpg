@@ -62,7 +62,13 @@ import {
   withDmSession,
   type TabletopRun,
 } from "../src/services/tabletop.js";
-import { probeDm, resetDmProbe, setDmBaseUrl } from "../src/services/dm.js";
+import {
+  DM_PROBE_ATTEMPTS,
+  DM_PROBE_RETRY_MS,
+  probeDm,
+  resetDmProbe,
+  setDmBaseUrl,
+} from "../src/services/dm.js";
 // The agent's lint, to check the DM is briefed against the same budget the
 // client enforces. The per-floor TABLES are no longer asserted for parity:
 // `agent/lib/effects.ts` and `services/tabletop.ts` both re-export them from
@@ -641,7 +647,7 @@ describe("offline-first", () => {
     }
   });
 
-  it("caches the probe verdict for the rest of the session", async () => {
+  it("never storms: a burst of probes is one request", async () => {
     const original = globalThis.fetch;
     let called = 0;
     globalThis.fetch = (() => {
@@ -658,6 +664,101 @@ describe("offline-first", () => {
     } finally {
       globalThis.fetch = original;
       setDmBaseUrl("");
+      resetDmProbe();
+    }
+  });
+
+  /**
+   * A FAILED probe used to be cached for the whole session. The first
+   * cross-origin request of a session is the slowest one there is (DNS + TLS +
+   * a cold Vercel function), so one unlucky cold start meant no typed action
+   * for the rest of the session and no way back — the same failure
+   * `markDmUnreachable` already refuses to accept for turns. It now gets
+   * another chance on a later scene mount, bounded so an absent DM still
+   * costs a handful of requests and not one per mount forever.
+   */
+  it("gives a cold-start miss another chance, at most DM_PROBE_ATTEMPTS", async () => {
+    const original = globalThis.fetch;
+    let called = 0;
+    globalThis.fetch = (() => {
+      called += 1;
+      return Promise.reject(new Error("cold start took too long"));
+    }) as typeof fetch;
+    const now = Date.now();
+    let clock = now;
+    const realNow = Date.now;
+    Date.now = () => clock;
+    try {
+      setDmBaseUrl("https://dm.example");
+      resetDmProbe();
+      await expect(probeDm()).resolves.toBe(false);
+      expect(called).toBe(1);
+      // still inside the cooldown: no second request
+      clock += DM_PROBE_RETRY_MS - 1;
+      await expect(probeDm()).resolves.toBe(false);
+      expect(called).toBe(1);
+      // a later scene mount, past the cooldown: ask again
+      clock += 2;
+      await expect(probeDm()).resolves.toBe(false);
+      expect(called).toBe(2);
+      clock += DM_PROBE_RETRY_MS + 1;
+      await expect(probeDm()).resolves.toBe(false);
+      expect(called).toBe(DM_PROBE_ATTEMPTS);
+      // …and then it stops asking, however long the run goes on
+      clock += DM_PROBE_RETRY_MS * 100;
+      await expect(probeDm()).resolves.toBe(false);
+      await expect(probeDm()).resolves.toBe(false);
+      expect(called).toBe(DM_PROBE_ATTEMPTS);
+    } finally {
+      Date.now = realNow;
+      globalThis.fetch = original;
+      setDmBaseUrl("");
+      resetDmProbe();
+    }
+  });
+
+  it("a probe that SUCCEEDS is cached — one request for the session", async () => {
+    const original = globalThis.fetch;
+    let called = 0;
+    globalThis.fetch = (() => {
+      called += 1;
+      return Promise.resolve(
+        new Response("{}", {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        }),
+      );
+    }) as typeof fetch;
+    try {
+      setDmBaseUrl("https://dm.example");
+      resetDmProbe();
+      await expect(probeDm()).resolves.toBe(true);
+      await expect(probeDm()).resolves.toBe(true);
+      await expect(probeDm()).resolves.toBe(true);
+      expect(called).toBe(1);
+    } finally {
+      globalThis.fetch = original;
+      setDmBaseUrl("");
+      resetDmProbe();
+    }
+  });
+
+  it("an unset DM still makes ZERO requests, however many mounts ask", async () => {
+    const original = globalThis.fetch;
+    let called = 0;
+    globalThis.fetch = (() => {
+      called += 1;
+      return Promise.reject(new Error("no network in tests"));
+    }) as typeof fetch;
+    try {
+      setDmBaseUrl("");
+      resetDmProbe();
+      for (let i = 0; i < 20; i++) {
+        await expect(probeDm()).resolves.toBe(false);
+      }
+      expect(called).toBe(0);
+    } finally {
+      globalThis.fetch = original;
       resetDmProbe();
     }
   });

@@ -1128,6 +1128,68 @@ export function label(
 }
 
 /* ---------------------------------------------------------------------- */
+/* hint row — the footer that tells you how to work a panel                */
+/* ---------------------------------------------------------------------- */
+
+/**
+ * ONE affordance, said twice: how you do it with a keyboard, how you do it
+ * with a finger.
+ *
+ * `button()` already refuses to print a hotkey chip on a coarse pointer (a
+ * phone has no Esc key, so naming one is a promise the device cannot keep).
+ * A footer hint line is the same lie at ten times the size: "Tab / ← → cat ·
+ * ↑ ↓ row · Q E section · Enter act · 1-9 quick · Esc close" is the entire
+ * instruction set of a panel, and under a finger it explains nothing about a
+ * panel that is, in fact, completely tappable.
+ *
+ * So a hint carries both forms. On a fine pointer the `keys` string is
+ * printed verbatim; on a coarse one the `touch` sentence is, written as the
+ * gesture you actually make. An item with NO `touch` form is keyboard-only
+ * (a number-key shortcut, a cursor row) and is dropped entirely rather than
+ * mistranslated — a shorter true line beats a long false one.
+ */
+export interface HintItem {
+  /** Fine pointer: key names and all — "Tab / ← →  cat". */
+  keys: string;
+  /** Coarse pointer: the gesture — "tap a cat to switch". Omit if none. */
+  touch?: string;
+}
+
+/** The separator between hints; wide enough to read as a list, not a run-on. */
+const HINT_SEP = "   ·   ";
+
+/** The hint line's TEXT, for callers that lay out their own Text. */
+export function hintText(items: readonly HintItem[]): string {
+  const coarse = isTouch();
+  const parts: string[] = [];
+  for (const it of items) {
+    if (!coarse) {
+      parts.push(it.keys);
+      continue;
+    }
+    if (it.touch !== undefined && it.touch !== "") parts.push(it.touch);
+  }
+  return parts.join(HINT_SEP);
+}
+
+/**
+ * THE hint line. Mono on a keyboard (it is quoting keycaps) and prose under a
+ * finger (it is quoting nothing) — callers can still override either through
+ * `opts`.
+ */
+export function hintRow(
+  items: readonly HintItem[],
+  opts: LabelOpts & { center?: boolean } = {},
+): Text {
+  return label(hintText(items), {
+    dim: true,
+    size: TYPE.tiny,
+    mono: !isTouch(),
+    ...opts,
+  });
+}
+
+/* ---------------------------------------------------------------------- */
 /* button                                                                  */
 /* ---------------------------------------------------------------------- */
 
