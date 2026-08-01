@@ -59,8 +59,19 @@ import {
   type TabletopRun,
 } from "./tabletop.js";
 
-/** One turn of the DM, including a subagent delegation. */
-export const DM_TURN_TIMEOUT_MS = 35_000;
+/**
+ * One turn of the DM, including a subagent delegation.
+ *
+ * MEASURED, not guessed. Out of combat a turn lands in 13-21s. IN COMBAT it
+ * goes through the encounter subagent — a second model call inside the same
+ * turn — and measured 28.3s warm against the deployed agent. At the previous
+ * 35s that left ~6s of headroom, which a cold Vercel function eats on its own:
+ * the turn was abandoned mid-flight, the card sat on "the DM considers it..",
+ * and the next call opened a SECOND session. Improvisation already costs the
+ * player a turn and the narration streams in as it is written, so waiting is
+ * cheap and giving up early is not.
+ */
+export const DM_TURN_TIMEOUT_MS = 60_000;
 /**
  * The liveness probe. Short, because a slow DM is an absent DM as far as the
  * first frame is concerned — but not 3s, which was too short to survive the
