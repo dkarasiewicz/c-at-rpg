@@ -243,14 +243,26 @@ function cardArt(
   //
   // 40 bands, eased: fewer and the step between two flat alphas is a visible
   // horizontal seam across the card — 14 of them looked like scan lines.
+  //
+  // WASH_FLOOR is the part of the wash that is NOT a gradient. Without it the
+  // top of the card is unwashed paint, and that is what made these two panels
+  // the least tonally even screens in the game: measured across a 4×3 grid the
+  // clowder spanned 41 levels of luma and the memorial 38, against 22 for the
+  // Den, 25 for the Bestiary and 25 for a battle. The bright half of a
+  // painting outranking the UI is not "art direction", it is a screen that
+  // does not match the rest of the game. The floor costs the top of the card
+  // some paint and brings both panels inside the house range; the t² term
+  // above it still sinks the body, so nothing about the reading order moves.
   const wash = new Graphics();
   const steps = 40;
   const deep = opts.fade ?? 0.62;
+  const WASH_FLOOR = 0.38;
   for (let i = 0; i < steps; i++) {
     const t = i / (steps - 1);
-    wash
-      .rect(0, (h * i) / steps, w, h / steps + 1)
-      .fill({ color: PAL.bgDeep, alpha: deep * t * t });
+    wash.rect(0, (h * i) / steps, w, h / steps + 1).fill({
+      color: PAL.bgDeep,
+      alpha: deep * (WASH_FLOOR + (1 - WASH_FLOOR) * t * t),
+    });
   }
   view.addChild(wash);
 
@@ -291,13 +303,19 @@ export function makeRosterPanel(opts: RosterPanelOpts): Container {
   // pack this is exactly the flat scrim it has always been.
   const artId = opts.memorial ? SCREEN_ART.memorial : SCREEN_ART.clowder;
   const painted = hasSprite(artId);
+  //
+  // The room is BEHIND the modal and has to look it. At dim 0.52 / scrim 0.34
+  // the painting outside the card was brighter than the card in places, which
+  // reads as a leak rather than a room — worst on a phone, where a 2.16 aspect
+  // crops to the busiest part of both paintings. These values keep the room
+  // legible and put the card back on top of it.
   if (painted) {
     box.addChild(
-      sceneBackdrop(artId, DESIGN_W, DESIGN_H, { dim: 0.52 }),
+      sceneBackdrop(artId, DESIGN_W, DESIGN_H, { dim: 0.6 }),
       vignette(DESIGN_W, DESIGN_H, 0.95),
     );
   }
-  const back = scrim(DESIGN_W, DESIGN_H, painted ? 0.34 : 0.72);
+  const back = scrim(DESIGN_W, DESIGN_H, painted ? 0.44 : 0.72);
   back.eventMode = "static";
   back.on("pointertap", () => opts.onClose());
   box.addChild(back);
