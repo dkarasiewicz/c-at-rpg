@@ -169,33 +169,28 @@ export function createTitleScene(): Scene {
 
       const heroTex = spriteTextureFor("title:hero");
       if (heroTex && heroTex.height > 0) {
-        // TWO copies of the same art, because 1280×720 is a safe area and
-        // not the screen (ui/layout.ts): the kit's backdrop COVER-fits the
-        // hero across the whole device, bleed included, so a 19.5:9 phone
-        // has no black bars — and the crisp CONTAIN-fitted copy sits on top
-        // at the safe-area height, because cropping this one to fill would
-        // decapitate the cast. The dim between them keeps the bled copy as
-        // atmosphere rather than a second, wrongly-scaled picture, and the
-        // blur is what stops the join at the safe-area edge from reading as
-        // a mirrored duplicate: soft, it is the room the poster hangs in.
+        // ONE crisp copy, cover-fitted across the whole device.
+        //
+        // This used to be two copies — a blurred bled copy with a crisp
+        // contain-fitted one on top — deliberately, as "a poster hanging in a
+        // room". It was a nice idea and it read to the player as black bars:
+        // on a 19.5:9 phone the poster is only the middle ~75%, and the join
+        // is a hard vertical edge down both sides no matter how the two
+        // copies are exposed, because they show different parts of the image.
+        // A player does not see an intent, they see a letterbox.
+        //
+        // Cover-fitting one copy removes the join by construction. The crop
+        // it costs is vertical, so it is anchored high: the cast sits in the
+        // upper half of this painting and centring the crop cut their heads.
         view.addChild(
           sceneBackdrop("title:hero", DESIGN_W, DESIGN_H, {
-            // darker than the crisp copy on purpose: the bleed should read
-            // as the shadow the poster hangs in, never as a brighter halo
-            // around it
-            dim: 0.8,
-            blur: true,
+            dim: 0.42,
+            anchorY: 0.3,
           }),
         );
-        const hero = new Sprite({ texture: heroTex, anchor: 0.5 });
-        hero.scale.set(DESIGN_H / heroTex.height);
-        hero.position.set(DESIGN_W / 2, DESIGN_H / 2);
-        view.addChild(hero);
-        // The readability wash goes over the SCREEN, bleed included. Drawn
-        // at DESIGN_W×DESIGN_H it only dimmed the safe box, so the bled
-        // copy stayed undimmed beside it and the join read as a hard bright
-        // seam down both sides of the poster on any phone aspect.
-        view.addChild(scrim(DESIGN_W, DESIGN_H, 0.55, PAL.bgDeep));
+        // Readability wash over the SCREEN, bleed included — drawn at
+        // DESIGN_W×DESIGN_H it would dim only the safe box.
+        view.addChild(scrim(DESIGN_W, DESIGN_H, 0.3, PAL.bgDeep));
       } else {
         buildProceduralSky();
       }

@@ -1470,6 +1470,15 @@ export interface BackdropOpts {
   dim?: number;
   /** Blur the art (core BlurFilter; silently skipped if unavailable). */
   blur?: boolean;
+  /**
+   * Where the vertical overflow is taken from when cover-fitting: 0 keeps the
+   * top of the art, 0.5 centres (the default), 1 keeps the bottom.
+   *
+   * Cover-fit on a very wide viewport crops height, and centring that crop
+   * decapitates art whose subject sits high in the frame — which is exactly
+   * the title hero. Biasing toward the top keeps the cast's heads.
+   */
+  anchorY?: number;
 }
 
 /**
@@ -1528,9 +1537,10 @@ export function sceneBackdrop(
       // — the canvas edge is the only crop that matters out here.
       const s = Math.max(fw / tex.width, fh / tex.height);
       art.scale.set(s);
+      const ay = Math.min(1, Math.max(0, opts.anchorY ?? 0.5));
       art.position.set(
         x + (fw - tex.width * s) / 2,
-        y + (fh - tex.height * s) / 2,
+        y + (fh - tex.height * s) * ay,
       );
     }
     if (dim) {
