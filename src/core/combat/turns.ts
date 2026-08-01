@@ -155,6 +155,18 @@ export function processDeathsAndOutcome(
   } else if (cats.length === 0) {
     state.outcome = "defeat";
     events.push({ t: "defeat" });
+    // A WIPE COSTS LIVES TOO.
+    //
+    // This branch used to record the defeat and stop, so Lives were only ever
+    // spent in fights you WON. Measured: a 1-HP party lost twelve fights in a
+    // row without spending a single Life, which makes perma-death almost
+    // unreachable and losing almost free — the exact opposite of the stakes
+    // the roster is built on (roster-and-persistence.md §2).
+    //
+    // Every cat is down here by definition, so the same standup rule applies:
+    // each spends a Life, and the Ninth Bell can still save one. A cat who runs
+    // out is buried by `settleRun` exactly as after a won fight.
+    standUpNineLives(state, events);
   }
 }
 

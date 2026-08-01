@@ -38,6 +38,7 @@ import {
 import {
   battleResult,
   fleeChance,
+  processDeathsAndOutcome,
   startRound,
 } from "../src/core/combat/turns.js";
 import { takeEnemyTurn } from "../src/core/combat/ai.js";
@@ -1315,5 +1316,48 @@ describe("engine behavior", () => {
     const moved = byId(r.state, "e2:crowShaman");
     expect(moved.rank).toBe(2);
     expect(hasStatus(moved, "offBalance")).toBe(false);
+  });
+});
+
+/* -------------------------------------------------------------------------- */
+/* Nine Lives on DEFEAT (roster-and-persistence.md §2)                          */
+/* -------------------------------------------------------------------------- */
+
+describe("nine lives are spent when the party is wiped", () => {
+  it("a wipe costs every downed cat a Life, like a won fight does", () => {
+    const bs = makeBattle(["ratThug"]);
+    const cats = bs.combatants.filter((c) => c.side === "cat");
+    const before = cats.map((c) => c.lives ?? 0);
+    // wipe the party
+    for (const c of cats) {
+      c.hp = 0;
+      c.ko = true;
+    }
+    const events: BattleEvent[] = [];
+    processDeathsAndOutcome(bs, events);
+
+    expect(bs.outcome).toBe("defeat");
+    // Lives were previously spent ONLY in the victory branch, so a party could
+    // lose indefinitely for free and perma-death could never fire.
+    for (const [i, c] of cats.entries()) {
+      expect(c.lives).toBe(before[i]! - 1);
+      expect(c.hp).toBe(1); // stood up, same as after a won fight
+    }
+    expect(events.filter((e) => e.t === "lifeLost")).toHaveLength(cats.length);
+  });
+
+  it("the Ninth Bell still saves a Life on a wipe", () => {
+    const bs = makeBattle(["ratThug"], { hooks: { bruiser: ["ninthBell"] } });
+    for (const c of bs.combatants.filter((x) => x.side === "cat")) {
+      c.hp = 0;
+      c.ko = true;
+    }
+    const events: BattleEvent[] = [];
+    processDeathsAndOutcome(bs, events);
+    const bruno = bs.combatants.find((c) => c.classId === "bruiser")!;
+    expect(bruno.lives).toBe(9);
+    expect(events.some((e) => e.t === "lifeSaved" && e.id === bruno.id)).toBe(
+      true,
+    );
   });
 });
