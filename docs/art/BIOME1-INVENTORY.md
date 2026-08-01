@@ -343,10 +343,8 @@ composed by `src/services/artPrompt.ts` from `ART_STYLE` (`basePrompt` + `framin
 `framing.icon` + `Avoid: …`), anchored on `docs/art/style-anchor-bruno.png`.
 
 Contact sheet: [`contact-camp-memorial.png`](contact-camp-memorial.png).
-Before/after: [`camp-before-after.png`](camp-before-after.png),
-[`roster-before-after.png`](roster-before-after.png),
-[`memorial-before-after.png`](memorial-before-after.png),
-[`boot-before-after.png`](boot-before-after.png).
+Before/after comparison sheets for these screens were one-off review artefacts
+and have been removed; the shipped result is in docs/screenshots/.
 
 | id | file | px | what it is |
 |---|---|---|---|

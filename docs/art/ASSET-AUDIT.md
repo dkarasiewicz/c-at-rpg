@@ -157,7 +157,7 @@ resolution nobody could see.
 
 ### Visual verification
 
-`docs/art/downscale-before-after.png` — ten samples spanning every touched
+The downscale comparison sheet was a one-off gate artefact and has been removed; re-generate it from the pipeline if a future downscale needs reviewing. It sampled every touched
 namespace, each drawn into its **real** on-screen box at 2× device pixels
 (the size a player actually sees) before and after, then nearest-neighbour
 zoomed. They are indistinguishable. That check was run *before* the resample
